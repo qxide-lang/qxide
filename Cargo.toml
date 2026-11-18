@@ -11,3 +11,7 @@ keywords = ["quantum", "qubit", "openqasm", "simulator"]
 categories = ["science", "simulation"]
 
 [dependencies]
+
+# The simulator comparison tests run hundreds of thousands of shots; unoptimized builds make them ~50x slower.
+[profile.test]
+opt-level = 2
