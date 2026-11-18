@@ -45,7 +45,10 @@ cargo test                 # 시뮬레이터 테스트 + 컴파일 오류가 나
 
 ## 지금 지원하는 것
 
-- 게이트: `h`, `x`, `z`, `cx`, `measure`
+- 게이트: `h`, `x`, `z`, `s`, `t`, `rx`, `ry`, `rz`, `cx`, `measure`, `reset`
+- 분기: `c.if_one`·`c.if_zero`로 측정 비트별 실행, OpenQASM 3 `if` 출력, 분기 내 측정 불가
+- 재사용: `c.reset`으로 활성 큐비트 |0⟩ 복귀, `measure` 후 `c.qubit()`가 물리 슬롯 초기화·재사용
+- 레지스터: `c.qreg`·`measure_reg`, `Shot::value` 정수, 복사 불가·인덱싱·순회·`get_disjoint_mut`
 - 출력: OpenQASM 3
 - 시뮬레이터: 최대 20큐비트 상태 벡터, 측정 후 붕괴, 같은 seed면 같은 결과
 
