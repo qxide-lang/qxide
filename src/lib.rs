@@ -492,7 +492,8 @@ fn write_qasm(ops: &[Op], depth: usize, s: &mut String) {
             Op::Measure { qubit, bit } => *s += &format!("c[{bit}] = measure q[{qubit}];\n"),
             Op::Reset(i) => *s += &format!("reset q[{i}];\n"),
             Op::If { bit, value, body } => {
-                *s += &format!("if (c[{bit}] == {}) {{\n", u8::from(*value));
+                // Qiskit's importer only accepts `bit == const bool` for single-bit conditions.
+                *s += &format!("if (c[{bit}] == {value}) {{\n");
                 write_qasm(body, depth + 1, s);
                 *s += &pad;
                 *s += "}\n";

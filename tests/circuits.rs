@@ -303,7 +303,7 @@ fn branch_qasm_output_nests() {
         c.to_qasm(),
         "OPENQASM 3.0;\ninclude \"stdgates.inc\";\nqubit[3] q;\nbit[2] c;\n\
          h q[0];\nh q[1];\nc[0] = measure q[0];\nc[1] = measure q[1];\n\
-         if (c[0] == 1) {\n  x q[2];\n  if (c[1] == 0) {\n    reset q[2];\n  }\n}\n"
+         if (c[0] == true) {\n  x q[2];\n  if (c[1] == false) {\n    reset q[2];\n  }\n}\n"
     );
 }
 
