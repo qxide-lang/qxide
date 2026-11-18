@@ -51,6 +51,7 @@ cargo test                 # 시뮬레이터 테스트 + 컴파일 오류가 나
 - 레지스터: `c.qreg`·`measure_reg`, `Shot::value` 정수, 복사 불가·인덱싱·순회·`get_disjoint_mut`
 - 출력: OpenQASM 3
 - 시뮬레이터: 상태 벡터(모든 게이트·메모리 제한)와 스태빌라이저(Clifford·수천 큐비트), `Backend::Auto` 자동 선택, 같은 seed면 같은 결과
+- GPU: CubeCL wgpu·f32 프로토타입(`gpu` 피처·`Backend::Gpu`), 24~26큐비트 게이트 전용 회로에서 단일 스레드 CPU 대비 실측 약 11배 빠름([docs/gpu.md](docs/gpu.md))
 
 앞으로의 계획은 [ROADMAP.md](ROADMAP.md)에 있습니다.
 
