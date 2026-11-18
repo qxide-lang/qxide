@@ -75,6 +75,10 @@
 //! c.cx(a, b);
 //! ```
 
+mod rng;
+mod stabilizer;
+mod statevector;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_CIRCUIT_ID: AtomicUsize = AtomicUsize::new(0);
@@ -94,7 +98,7 @@ pub struct Bit {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Gate {
+pub(crate) enum Gate {
     H,
     X,
     Z,
@@ -106,48 +110,62 @@ enum Gate {
 }
 
 impl Gate {
-    fn qasm(self) -> String {
+    fn name(self) -> &'static str {
         match self {
-            Gate::H => "h".into(),
-            Gate::X => "x".into(),
-            Gate::Z => "z".into(),
-            Gate::S => "s".into(),
-            Gate::T => "t".into(),
-            Gate::Rx(a) => format!("rx({a:?})"),
-            Gate::Ry(a) => format!("ry({a:?})"),
-            Gate::Rz(a) => format!("rz({a:?})"),
+            Gate::H => "h",
+            Gate::X => "x",
+            Gate::Z => "z",
+            Gate::S => "s",
+            Gate::T => "t",
+            Gate::Rx(_) => "rx",
+            Gate::Ry(_) => "ry",
+            Gate::Rz(_) => "rz",
         }
     }
 
-    // [[m00, m01], [m10, m11]], following the OpenQASM 3 stdgates.inc definitions.
-    fn matrix(self) -> [[C; 2]; 2] {
-        let r = std::f64::consts::FRAC_1_SQRT_2;
-        let re = |x: f64| C { re: x, im: 0.0 };
-        let im = |y: f64| C { re: 0.0, im: y };
+    fn qasm(self) -> String {
         match self {
-            Gate::H => [[re(r), re(r)], [re(r), re(-r)]],
-            Gate::X => [[C::ZERO, C::ONE], [C::ONE, C::ZERO]],
-            Gate::Z => [[C::ONE, C::ZERO], [C::ZERO, re(-1.0)]],
-            Gate::S => [[C::ONE, C::ZERO], [C::ZERO, im(1.0)]],
-            Gate::T => [
-                [C::ONE, C::ZERO],
-                [C::ZERO, C::cis(std::f64::consts::FRAC_PI_4)],
-            ],
-            Gate::Rx(a) => {
-                let (s, c) = (a / 2.0).sin_cos();
-                [[re(c), im(-s)], [im(-s), re(c)]]
-            }
-            Gate::Ry(a) => {
-                let (s, c) = (a / 2.0).sin_cos();
-                [[re(c), re(-s)], [re(s), re(c)]]
-            }
-            Gate::Rz(a) => [[C::cis(-a / 2.0), C::ZERO], [C::ZERO, C::cis(a / 2.0)]],
+            Gate::Rx(a) | Gate::Ry(a) | Gate::Rz(a) => format!("{}({a:?})", self.name()),
+            _ => self.name().into(),
         }
     }
 }
 
+/// `Circuit::simulate_with`에서 회로를 실행할 시뮬레이터를 선택한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// 2^n개 복소 진폭의 밀집 상태 벡터. 모든 게이트를 지원하지만 큐비트 수에 따라 메모리가 지수적으로 늘어난다.
+    StateVector,
+    /// Aaronson–Gottesman 태블로: Clifford(`h`/`s`/`x`/`z`/`cx`/`measure`/`reset`/분기)만 쓰며 다항 시간이라 수천 큐비트도 된다.
+    Stabilizer,
+}
+
+/// 시뮬레이션을 실행할 수 없는 이유. 조용히 다른 결과를 내는 대신 이 오류를 돌려준다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SimError {
+    /// 스태빌라이저 백엔드로 비Clifford 게이트(`t`, `rx`, `ry`, `rz`)를 실행하려 했다. 미실행 분기 안이나 Clifford 각도 회전도 거부한다.
+    NotClifford {
+        /// 문제가 된 첫 게이트의 OpenQASM 이름(예: `t`, `rx`)을 담는다.
+        gate: &'static str,
+    },
+}
+
+impl std::fmt::Display for SimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimError::NotClifford { gate } => write!(
+                f,
+                "스태빌라이저 시뮬레이터는 Clifford 게이트만 지원하며 `{gate}` 게이트는 이에 해당하지 않습니다. 상태 벡터 백엔드 사용을 권장합니다"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SimError {}
+
 #[derive(Debug, Clone)]
-enum Op {
+pub(crate) enum Op {
     Gate(Gate, usize),
     Cx(usize, usize),
     Measure {
@@ -352,6 +370,23 @@ impl Circuit {
         s
     }
 
+    /// 지정한 `backend`로 회로를 한 번 실행한다. 같은 백엔드에서는 `seed`가 같으면 결과가 같지만, 난수 소비 방식이 달라 백엔드 사이에서는 다를 수 있다.
+    pub fn simulate_with(&self, backend: Backend, seed: u64) -> Result<Shot, SimError> {
+        let bits = match backend {
+            Backend::StateVector => statevector::run(&self.ops, self.n_qubits, self.n_bits, seed),
+            Backend::Stabilizer => {
+                if let Some(gate) = stabilizer::first_non_clifford(&self.ops) {
+                    return Err(SimError::NotClifford { gate });
+                }
+                stabilizer::run(&self.ops, self.n_qubits, self.n_bits, seed)
+            }
+        };
+        Ok(Shot {
+            circuit: self.id,
+            bits,
+        })
+    }
+
     /// 상태 벡터 시뮬레이터로 회로를 한 번 실행한다(한 번의 "샷").
     /// 같은 seed면 같은 결과가 나온다. 큐비트가 n개면 2^n 크기의 벡터를 쓰므로 작은 회로용이다.
     pub fn simulate(&self, seed: u64) -> Shot {
@@ -359,14 +394,9 @@ impl Circuit {
             self.n_qubits <= 20,
             "작은 회로 전용 시뮬레이터입니다 (최대 20큐비트)"
         );
-        let mut rng = SplitMix64(seed);
-        let mut state = vec![C::ZERO; 1usize << self.n_qubits];
-        state[0] = C::ONE;
-        let mut bits = vec![false; self.n_bits];
-        run(&self.ops, &mut state, &mut bits, &mut rng);
         Shot {
             circuit: self.id,
-            bits,
+            bits: statevector::run(&self.ops, self.n_qubits, self.n_bits, seed),
         }
     }
 }
@@ -392,74 +422,6 @@ fn write_qasm(ops: &[Op], depth: usize, s: &mut String) {
             }
         }
     }
-}
-
-fn run(ops: &[Op], state: &mut [C], bits: &mut [bool], rng: &mut SplitMix64) {
-    let dim = state.len();
-    for op in ops {
-        match op {
-            &Op::Gate(g, q) => {
-                let m = 1 << q;
-                let [[m00, m01], [m10, m11]] = g.matrix();
-                for i in 0..dim {
-                    if i & m == 0 {
-                        let (a, b) = (state[i], state[i | m]);
-                        state[i] = m00 * a + m01 * b;
-                        state[i | m] = m10 * a + m11 * b;
-                    }
-                }
-            }
-            &Op::Cx(c, t) => {
-                let (mc, mt) = (1 << c, 1 << t);
-                for i in 0..dim {
-                    if i & mc != 0 && i & mt == 0 {
-                        state.swap(i, i | mt);
-                    }
-                }
-            }
-            &Op::Measure { qubit, bit } => {
-                bits[bit] = collapse(state, qubit, rng);
-            }
-            &Op::Reset(q) => {
-                // Reset = measure, then flip back to |0⟩ if the outcome was 1.
-                if collapse(state, q, rng) {
-                    let m = 1 << q;
-                    for i in 0..dim {
-                        if i & m == 0 {
-                            state.swap(i, i | m);
-                        }
-                    }
-                }
-            }
-            Op::If { bit, value, body } => {
-                if bits[*bit] == *value {
-                    run(body, state, bits, rng);
-                }
-            }
-        }
-    }
-}
-
-// Projective measurement of qubit `q`: samples the outcome, collapses and renormalises the state.
-fn collapse(state: &mut [C], q: usize, rng: &mut SplitMix64) -> bool {
-    let m = 1 << q;
-    let p1: f64 = state
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| i & m != 0)
-        .map(|(_, a)| a.norm_sqr())
-        .sum();
-    let one = rng.next_f64() < p1;
-    let keep = if one { p1 } else { 1.0 - p1 };
-    let renorm = 1.0 / keep.sqrt();
-    for (i, amp) in state.iter_mut().enumerate() {
-        *amp = if ((i & m) != 0) == one {
-            amp.scale(renorm)
-        } else {
-            C::ZERO
-        };
-    }
-    one
 }
 
 /// 한 번 실행한 측정 결과.
@@ -538,67 +500,5 @@ impl std::ops::Deref for BitReg {
 impl From<Vec<Bit>> for BitReg {
     fn from(bits: Vec<Bit>) -> Self {
         Self { bits }
-    }
-}
-
-// ---- 내부: 복소수와 난수 (외부 의존성 없이) ----
-
-#[derive(Debug, Clone, Copy)]
-struct C {
-    re: f64,
-    im: f64,
-}
-
-impl C {
-    const ZERO: C = C { re: 0.0, im: 0.0 };
-    const ONE: C = C { re: 1.0, im: 0.0 };
-    fn scale(self, k: f64) -> C {
-        C {
-            re: self.re * k,
-            im: self.im * k,
-        }
-    }
-    fn norm_sqr(self) -> f64 {
-        self.re * self.re + self.im * self.im
-    }
-    // e^{iφ}
-    fn cis(phi: f64) -> C {
-        let (im, re) = phi.sin_cos();
-        C { re, im }
-    }
-}
-
-impl std::ops::Mul for C {
-    type Output = C;
-    fn mul(self, o: C) -> C {
-        C {
-            re: self.re * o.re - self.im * o.im,
-            im: self.re * o.im + self.im * o.re,
-        }
-    }
-}
-
-impl std::ops::Add for C {
-    type Output = C;
-    fn add(self, o: C) -> C {
-        C {
-            re: self.re + o.re,
-            im: self.im + o.im,
-        }
-    }
-}
-
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
