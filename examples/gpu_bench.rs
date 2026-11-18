@@ -1,6 +1,6 @@
-//! `cargo run --release --features gpu --example gpu_bench [max_qubits]`
-//! Prints CSV: mode,qubits,gates,cpu_ms,gpu_ms,speedup (end-to-end `simulate_with`, incl. GPU upload/readback).
-//! mode `measured` ends by measuring every qubit (done on the CPU in both backends); `gates` has no measurement.
+// `cargo run --release --features gpu --example gpu_bench [max_qubits]`
+// Prints CSV: mode,qubits,gates,cpu_ms,gpu_ms,speedup (end-to-end `simulate_with`, incl. GPU upload/readback).
+// mode `measured` ends by measuring every qubit (done on the CPU in both backends); `gates` has no measurement.
 
 use qxide::{Backend, Circuit};
 use std::time::{Duration, Instant};

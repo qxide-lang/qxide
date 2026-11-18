@@ -1,7 +1,7 @@
-//! Writes the OpenQASM 3 of several sample circuits to `<dir>/<name>.qasm` (default dir: `qasm-out`).
-//! CI parses these with `qiskit.qasm3.loads` (see `ci/check_qasm.py`).
-//!
-//! `cargo run --example qasm_dump -- qasm-out`
+// Writes the OpenQASM 3 of several sample circuits to `<dir>/<name>.qasm` (default dir: `qasm-out`).
+// CI parses these with `qiskit.qasm3.loads` (see `ci/check_qasm.py`).
+//
+// `cargo run --example qasm_dump -- qasm-out`
 
 use qxide::Circuit;
 use std::f64::consts::PI;

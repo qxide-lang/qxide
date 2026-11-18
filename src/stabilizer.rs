@@ -1,10 +1,10 @@
-//! Stabilizer backend: Aaronson–Gottesman tableau (quant-ph/0406196), rows bit-packed in u64 words.
-//! Rows 0..n are destabilizers, n..2n stabilizers, row 2n is scratch.
+// Stabilizer backend: Aaronson–Gottesman tableau (quant-ph/0406196), rows bit-packed in u64 words.
+// Rows 0..n are destabilizers, n..2n stabilizers, row 2n is scratch.
 
 use crate::rng::SplitMix64;
 use crate::{Gate, Op};
 
-/// First gate (in program order, including branch bodies) the tableau cannot represent.
+// First gate (in program order, including branch bodies) the tableau cannot represent.
 pub(crate) fn first_non_clifford(ops: &[Op]) -> Option<&'static str> {
     ops.iter().find_map(|op| match op {
         Op::Gate(g @ (Gate::T | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_)), _) => Some(g.name()),
@@ -78,7 +78,8 @@ impl Tableau {
             Gate::X => self.x(q),
             Gate::Z => self.z(q),
             Gate::T | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_) => {
-                unreachable!("non-Clifford gates are rejected before simulation")
+                // Non-Clifford gates are rejected by `first_non_clifford` before simulation.
+                unreachable!()
             }
         }
     }
@@ -152,8 +153,8 @@ impl Tableau {
         self.r[h] = total.rem_euclid(4) == 2;
     }
 
-    /// Measures qubit `a` in the Z basis. `choose` supplies the outcome when it is random.
-    /// Returns (outcome, was_random).
+    // Measures qubit `a` in the Z basis. `choose` supplies the outcome when it is random.
+    // Returns (outcome, was_random).
     pub(crate) fn measure(&mut self, a: usize, choose: impl FnOnce() -> bool) -> (bool, bool) {
         let (n, w) = (self.n, self.w);
         if let Some(p) = (n..2 * n).find(|&p| self.xbit(p, a)) {

@@ -462,7 +462,8 @@ impl Circuit {
             b => b,
         };
         let bits = match backend {
-            Backend::Auto => unreachable!("resolved above"),
+            // Auto was resolved to a concrete backend just above.
+            Backend::Auto => unreachable!(),
             Backend::StateVector => {
                 self.check_memory()?;
                 statevector::run(&self.ops, self.n_qubits, self.n_bits, seed)

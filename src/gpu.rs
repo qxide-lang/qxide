@@ -1,6 +1,6 @@
-//! GPU state-vector backend (prototype) on CubeCL's wgpu runtime, f32 amplitudes.
-//! The unitary prefix of the circuit runs on the GPU; from the first measurement/reset/branch on,
-//! the state is read back and the CPU backend finishes the run.
+// GPU state-vector backend (prototype) on CubeCL's wgpu runtime, f32 amplitudes.
+// The unitary prefix of the circuit runs on the GPU; from the first measurement/reset/branch on,
+// the state is read back and the CPU backend finishes the run.
 
 use crate::statevector::{self, C};
 use crate::Op;
@@ -9,6 +9,7 @@ use cubecl::Device;
 use std::sync::OnceLock;
 
 const BLOCK: u32 = 256;
+const READBACK_FAILED: &str = "GPU 상태를 CPU로 읽어오지 못했습니다";
 // wgpu caps each dispatch dimension at 65535 workgroups.
 const MAX_GRID_X: u32 = 65535;
 
@@ -69,8 +70,8 @@ fn grid(threads: u32) -> CubeCount {
     CubeCount::Static(blocks.min(MAX_GRID_X), blocks.div_ceil(MAX_GRID_X), 1)
 }
 
-/// Runs the leading unitary ops on the GPU. Returns the resulting state (as f64) and
-/// how many ops were consumed.
+// Runs the leading unitary ops on the GPU. Returns the resulting state (as f64) and
+// how many ops were consumed.
 pub(crate) fn run_prefix(ops: &[Op], n_qubits: usize) -> (Vec<C>, usize) {
     let dim = 1usize << n_qubits;
     let client = client();
@@ -122,8 +123,8 @@ pub(crate) fn run_prefix(ops: &[Op], n_qubits: usize) -> (Vec<C>, usize) {
         }
         done += 1;
     }
-    let re = f32::from_bytes(&client.read_one(re).expect("GPU readback failed")).to_vec();
-    let im = f32::from_bytes(&client.read_one(im).expect("GPU readback failed")).to_vec();
+    let re = f32::from_bytes(&client.read_one(re).expect(READBACK_FAILED)).to_vec();
+    let im = f32::from_bytes(&client.read_one(im).expect(READBACK_FAILED)).to_vec();
     let state = re
         .iter()
         .zip(&im)

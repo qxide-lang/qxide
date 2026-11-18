@@ -1,4 +1,4 @@
-//! Dense state-vector backend: 2^n complex amplitudes.
+// Dense state-vector backend: 2^n complex amplitudes.
 
 use crate::rng::SplitMix64;
 use crate::{Gate, Op};

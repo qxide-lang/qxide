@@ -1,4 +1,4 @@
-//! `cargo run --release --example ghz_large [qubits]`
+// `cargo run --release --example ghz_large [qubits]`
 
 use qxide::{Backend, Circuit};
 use std::time::Instant;

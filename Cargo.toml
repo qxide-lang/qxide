@@ -15,7 +15,7 @@ categories = ["science", "simulation"]
 gpu = ["dep:cubecl"]
 
 [dependencies]
-cubecl = { version = "0.11.4", default-features = false, features = ["wgpu"], optional = true }
+cubecl = { version = "=0.11.4", default-features = false, features = ["wgpu"], optional = true }
 
 [[example]]
 name = "gpu_bench"

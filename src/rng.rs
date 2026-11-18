@@ -1,4 +1,4 @@
-//! Dependency-free deterministic RNG.
+// Dependency-free deterministic RNG.
 
 pub(crate) struct SplitMix64(pub(crate) u64);
 
