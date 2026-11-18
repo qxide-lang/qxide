@@ -4,9 +4,15 @@ use crate::rng::SplitMix64;
 use crate::{Gate, Op};
 
 pub(crate) fn run(ops: &[Op], n_qubits: usize, n_bits: usize, seed: u64) -> Vec<bool> {
-    let mut rng = SplitMix64(seed);
     let mut state = vec![C::ZERO; 1usize << n_qubits];
     state[0] = C::ONE;
+    run_from(ops, state, n_bits, seed)
+}
+
+// Continues a run from an already-prepared state (used by the GPU backend).
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub(crate) fn run_from(ops: &[Op], mut state: Vec<C>, n_bits: usize, seed: u64) -> Vec<bool> {
+    let mut rng = SplitMix64(seed);
     let mut bits = vec![false; n_bits];
     exec(ops, &mut state, &mut bits, &mut rng);
     bits
@@ -15,15 +21,23 @@ pub(crate) fn run(ops: &[Op], n_qubits: usize, n_bits: usize, seed: u64) -> Vec<
 // Exact |amplitude|² of every basis state after running a measurement-free circuit.
 #[cfg(test)]
 pub(crate) fn probabilities(ops: &[Op], n_qubits: usize) -> Vec<f64> {
+    amplitudes(ops, n_qubits)
+        .iter()
+        .map(|a| a.norm_sqr())
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn amplitudes(ops: &[Op], n_qubits: usize) -> Vec<C> {
     let mut rng = SplitMix64(0);
     let mut state = vec![C::ZERO; 1usize << n_qubits];
     state[0] = C::ONE;
     exec(ops, &mut state, &mut [], &mut rng);
-    state.iter().map(|a| a.norm_sqr()).collect()
+    state
 }
 
 // [[m00, m01], [m10, m11]], following the OpenQASM 3 stdgates.inc definitions.
-fn matrix(g: Gate) -> [[C; 2]; 2] {
+pub(crate) fn matrix(g: Gate) -> [[C; 2]; 2] {
     let r = std::f64::consts::FRAC_1_SQRT_2;
     let re = |x: f64| C { re: x, im: 0.0 };
     let im = |y: f64| C { re: 0.0, im: y };
@@ -118,8 +132,8 @@ fn collapse(state: &mut [C], q: usize, rng: &mut SplitMix64) -> bool {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct C {
-    re: f64,
-    im: f64,
+    pub(crate) re: f64,
+    pub(crate) im: f64,
 }
 
 impl C {

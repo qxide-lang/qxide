@@ -75,6 +75,8 @@
 //! c.cx(a, b);
 //! ```
 
+#[cfg(feature = "gpu")]
+mod gpu;
 mod rng;
 mod stabilizer;
 mod statevector;
@@ -141,6 +143,9 @@ pub enum Backend {
     StateVector,
     /// Aaronson–Gottesman 태블로: Clifford(`h`/`s`/`x`/`z`/`cx`/`measure`/`reset`/분기)만 쓰며 다항 시간이라 수천 큐비트도 된다.
     Stabilizer,
+    /// CubeCL(wgpu) f32 진폭 GPU 상태 벡터 프로토타입(gpu 피처 전용). 첫 측정·리셋·분기 전 유니터리 구간은 GPU, 이후는 CPU가 마친다. 상세는 docs/gpu.md에 있다.
+    #[cfg(feature = "gpu")]
+    Gpu,
 }
 
 /// 시뮬레이션을 실행할 수 없는 이유. 조용히 다른 결과를 내는 대신 이 오류를 돌려준다.
@@ -419,6 +424,18 @@ impl Circuit {
         s
     }
 
+    fn check_memory(&self) -> Result<(), SimError> {
+        let required = state_vector_bytes(self.n_qubits);
+        if required > u128::from(self.memory_limit) {
+            return Err(SimError::OutOfMemory {
+                qubits: self.n_qubits,
+                required_bytes: required,
+                limit_bytes: self.memory_limit.into(),
+            });
+        }
+        Ok(())
+    }
+
     /// 분기 본문을 포함해 회로가 Clifford 연산(`h`, `s`, `x`, `z`, `cx`, `measure`, `reset`)만 쓰면 `true`를 반환한다.
     pub fn is_clifford(&self) -> bool {
         stabilizer::first_non_clifford(&self.ops).is_none()
@@ -447,15 +464,14 @@ impl Circuit {
         let bits = match backend {
             Backend::Auto => unreachable!("resolved above"),
             Backend::StateVector => {
-                let required = state_vector_bytes(self.n_qubits);
-                if required > u128::from(self.memory_limit) {
-                    return Err(SimError::OutOfMemory {
-                        qubits: self.n_qubits,
-                        required_bytes: required,
-                        limit_bytes: self.memory_limit.into(),
-                    });
-                }
+                self.check_memory()?;
                 statevector::run(&self.ops, self.n_qubits, self.n_bits, seed)
+            }
+            // The GPU result is read back into a CPU state vector, so the same limit applies.
+            #[cfg(feature = "gpu")]
+            Backend::Gpu => {
+                self.check_memory()?;
+                gpu::run(&self.ops, self.n_qubits, self.n_bits, seed)
             }
             Backend::Stabilizer => {
                 if let Some(gate) = stabilizer::first_non_clifford(&self.ops) {

@@ -10,7 +10,16 @@ readme = "README.md"
 keywords = ["quantum", "qubit", "openqasm", "simulator"]
 categories = ["science", "simulation"]
 
+[features]
+# GPU state-vector backend (prototype). Pulls in CubeCL + wgpu, so it is off by default.
+gpu = ["dep:cubecl"]
+
 [dependencies]
+cubecl = { version = "0.11.4", default-features = false, features = ["wgpu"], optional = true }
+
+[[example]]
+name = "gpu_bench"
+required-features = ["gpu"]
 
 # The simulator comparison tests run hundreds of thousands of shots; unoptimized builds make them ~50x slower.
 [profile.test]
