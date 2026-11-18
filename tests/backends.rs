@@ -264,3 +264,127 @@ fn random_clifford_circuits_agree_between_backends() {
         }
     }
 }
+
+// ---- 자동 선택과 메모리 한도 ----
+
+use qxide::{state_vector_bytes, DEFAULT_MEMORY_LIMIT};
+
+#[test]
+fn auto_picks_stabilizer_only_for_clifford_circuits() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    c.h(&mut a);
+    c.cx(&mut a, &mut b);
+    assert!(c.is_clifford());
+    assert_eq!(c.select_backend(), Backend::Stabilizer);
+
+    c.t(&mut b);
+    assert!(!c.is_clifford());
+    assert_eq!(c.select_backend(), Backend::StateVector);
+}
+
+#[test]
+fn auto_sees_non_clifford_gates_inside_branches() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    c.h(&mut a);
+    let m = c.measure(a);
+    c.if_zero(m, |c| c.rz(&mut b, 0.1));
+    assert_eq!(c.select_backend(), Backend::StateVector);
+}
+
+#[test]
+fn auto_runs_large_clifford_circuit_on_stabilizer() {
+    let mut c = Circuit::new();
+    let mut r = c.qreg(500);
+    let (head, rest) = r.split_first_mut().unwrap();
+    c.h(head);
+    for t in rest {
+        c.cx(head, t);
+    }
+    let bits = c.measure_reg(r);
+    let s = c.simulate_with(Backend::Auto, 1).unwrap();
+    let first = s.get(bits[0]);
+    assert!(bits.iter().all(|&b| s.get(b) == first));
+}
+
+#[test]
+fn auto_and_state_vector_agree_on_small_non_clifford_circuit() {
+    let mut c = Circuit::new();
+    let mut q = c.qubit();
+    c.h(&mut q);
+    c.t(&mut q);
+    let m = c.measure(q);
+    for seed in 0..20 {
+        assert_eq!(
+            c.simulate_with(Backend::Auto, seed).unwrap().get(m),
+            c.simulate_with(Backend::StateVector, seed).unwrap().get(m)
+        );
+    }
+}
+
+#[test]
+fn state_vector_memory_is_sixteen_bytes_per_amplitude() {
+    assert_eq!(state_vector_bytes(0), 16);
+    assert_eq!(state_vector_bytes(20), 16 << 20);
+    assert_eq!(state_vector_bytes(30), 16 << 30);
+    assert_eq!(state_vector_bytes(123), 16 << 123);
+    assert_eq!(state_vector_bytes(124), u128::MAX); // 넘치면 포화
+    assert_eq!(DEFAULT_MEMORY_LIMIT, 1 << 30);
+}
+
+fn big_non_clifford(n: usize) -> Circuit {
+    let mut c = Circuit::new();
+    let mut r = c.qreg(n);
+    c.t(&mut r[0]);
+    c.measure_reg(r);
+    c
+}
+
+#[test]
+fn too_many_qubits_for_state_vector_reports_required_memory() {
+    let c = big_non_clifford(40);
+    let err = c.simulate_with(Backend::Auto, 0).unwrap_err();
+    assert_eq!(
+        err,
+        SimError::OutOfMemory {
+            qubits: 40,
+            required_bytes: 16 << 40,
+            limit_bytes: DEFAULT_MEMORY_LIMIT as u128,
+        }
+    );
+    let text = err.to_string();
+    assert!(text.contains("16.0 TiB"), "{text}");
+    assert!(text.contains("1.0 GiB"), "{text}");
+}
+
+#[test]
+fn memory_limit_can_be_changed() {
+    let mut c = big_non_clifford(10); // 16 KiB
+    assert!(c.simulate_with(Backend::StateVector, 0).is_ok());
+    c.set_memory_limit(8 << 10);
+    assert!(matches!(
+        c.simulate_with(Backend::StateVector, 0),
+        Err(SimError::OutOfMemory { qubits: 10, .. })
+    ));
+}
+
+#[test]
+fn forcing_state_vector_on_large_clifford_circuit_still_checks_memory() {
+    let mut c = Circuit::new();
+    let r = c.qreg(40);
+    c.measure_reg(r);
+    assert!(c.simulate_with(Backend::Stabilizer, 0).is_ok());
+    assert!(matches!(
+        c.simulate_with(Backend::StateVector, 0),
+        Err(SimError::OutOfMemory { qubits: 40, .. })
+    ));
+}
+
+#[test]
+#[should_panic(expected = "제한(1.0 GiB)을 초과합니다")]
+fn simulate_panics_with_memory_error_instead_of_allocating() {
+    big_non_clifford(40).simulate(0);
+}

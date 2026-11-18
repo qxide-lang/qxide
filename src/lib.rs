@@ -133,7 +133,10 @@ impl Gate {
 
 /// `Circuit::simulate_with`에서 회로를 실행할 시뮬레이터를 선택한다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Backend {
+    /// `Circuit::select_backend`로 백엔드를 고른다. Clifford 전용이면 스태빌라이저, 아니면 상태 벡터를 쓴다.
+    Auto,
     /// 2^n개 복소 진폭의 밀집 상태 벡터. 모든 게이트를 지원하지만 큐비트 수에 따라 메모리가 지수적으로 늘어난다.
     StateVector,
     /// Aaronson–Gottesman 태블로: Clifford(`h`/`s`/`x`/`z`/`cx`/`measure`/`reset`/분기)만 쓰며 다항 시간이라 수천 큐비트도 된다.
@@ -149,6 +152,39 @@ pub enum SimError {
         /// 문제가 된 첫 게이트의 OpenQASM 이름(예: `t`, `rx`)을 담는다.
         gate: &'static str,
     },
+    /// 상태 벡터에 필요한 메모리(2^n × 16바이트)가 회로 한도를 넘어 아무것도 할당하지 않았다.
+    OutOfMemory {
+        /// 회로에 있는 큐비트 수다.
+        qubits: usize,
+        /// 상태 벡터에 필요한 바이트 수다(2^n × 16이며 `u128::MAX`에서 포화된다).
+        required_bytes: u128,
+        /// 현재 적용 중인 바이트 단위 메모리 한도다.
+        limit_bytes: u128,
+    },
+}
+
+/// 상태 벡터의 기본 메모리 한도인 1 GiB로, 최대 26큐비트까지 수용한다.
+pub const DEFAULT_MEMORY_LIMIT: u64 = 1 << 30;
+
+/// `n_qubits`큐비트 상태 벡터에 필요한 메모리(16바이트 복소수 2^n개, `f64` 2개)로, 오버플로 대신 `u128::MAX`에서 포화된다.
+pub fn state_vector_bytes(n_qubits: usize) -> u128 {
+    if n_qubits <= 123 {
+        16u128 << n_qubits
+    } else {
+        u128::MAX
+    }
+}
+
+// Binary-prefixed size with one decimal, e.g. 16.0 TiB.
+fn fmt_bytes(b: u128) -> String {
+    const UNITS: [&str; 9] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"];
+    let mut v = b as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    format!("{v:.1} {}", UNITS[u])
 }
 
 impl std::fmt::Display for SimError {
@@ -158,6 +194,17 @@ impl std::fmt::Display for SimError {
                 f,
                 "스태빌라이저 시뮬레이터는 Clifford 게이트만 지원하며 `{gate}` 게이트는 이에 해당하지 않습니다. 상태 벡터 백엔드 사용을 권장합니다"
             ),
+            SimError::OutOfMemory {
+                qubits,
+                required_bytes,
+                limit_bytes,
+            } => {
+                let (required, limit) = (fmt_bytes(*required_bytes), fmt_bytes(*limit_bytes));
+                write!(
+                    f,
+                    "{qubits}큐비트 상태 벡터 시뮬레이션에 {required}가 필요해 제한({limit})을 초과합니다. `set_memory_limit`이나 스태빌라이저 백엔드용 Clifford 전용 회로를 권장합니다"
+                )
+            }
         }
     }
 }
@@ -191,6 +238,7 @@ pub struct Circuit {
     free: std::collections::VecDeque<usize>,
     // Nesting level of `if_one`/`if_zero` bodies currently being recorded.
     depth: usize,
+    memory_limit: u64,
 }
 
 impl Default for Circuit {
@@ -208,6 +256,7 @@ impl Circuit {
             ops: Vec::new(),
             free: std::collections::VecDeque::new(),
             depth: 0,
+            memory_limit: DEFAULT_MEMORY_LIMIT,
         }
     }
 
@@ -370,10 +419,44 @@ impl Circuit {
         s
     }
 
+    /// 분기 본문을 포함해 회로가 Clifford 연산(`h`, `s`, `x`, `z`, `cx`, `measure`, `reset`)만 쓰면 `true`를 반환한다.
+    pub fn is_clifford(&self) -> bool {
+        stabilizer::first_non_clifford(&self.ops).is_none()
+    }
+
+    /// `Backend::Auto`가 선택할 백엔드로, Clifford 전용이면 `Stabilizer`, 아니면 `StateVector`를 돌려준다.
+    pub fn select_backend(&self) -> Backend {
+        if self.is_clifford() {
+            Backend::Stabilizer
+        } else {
+            Backend::StateVector
+        }
+    }
+
+    /// 이 회로의 상태 벡터 백엔드 최대 할당 메모리를 바꾼다. 한도를 넘으면 `SimError::OutOfMemory`를 돌려준다.
+    pub fn set_memory_limit(&mut self, bytes: u64) {
+        self.memory_limit = bytes;
+    }
+
     /// 지정한 `backend`로 회로를 한 번 실행한다. 같은 백엔드에서는 `seed`가 같으면 결과가 같지만, 난수 소비 방식이 달라 백엔드 사이에서는 다를 수 있다.
     pub fn simulate_with(&self, backend: Backend, seed: u64) -> Result<Shot, SimError> {
+        let backend = match backend {
+            Backend::Auto => self.select_backend(),
+            b => b,
+        };
         let bits = match backend {
-            Backend::StateVector => statevector::run(&self.ops, self.n_qubits, self.n_bits, seed),
+            Backend::Auto => unreachable!("resolved above"),
+            Backend::StateVector => {
+                let required = state_vector_bytes(self.n_qubits);
+                if required > u128::from(self.memory_limit) {
+                    return Err(SimError::OutOfMemory {
+                        qubits: self.n_qubits,
+                        required_bytes: required,
+                        limit_bytes: self.memory_limit.into(),
+                    });
+                }
+                statevector::run(&self.ops, self.n_qubits, self.n_bits, seed)
+            }
             Backend::Stabilizer => {
                 if let Some(gate) = stabilizer::first_non_clifford(&self.ops) {
                     return Err(SimError::NotClifford { gate });
@@ -390,14 +473,8 @@ impl Circuit {
     /// 상태 벡터 시뮬레이터로 회로를 한 번 실행한다(한 번의 "샷").
     /// 같은 seed면 같은 결과가 나온다. 큐비트가 n개면 2^n 크기의 벡터를 쓰므로 작은 회로용이다.
     pub fn simulate(&self, seed: u64) -> Shot {
-        assert!(
-            self.n_qubits <= 20,
-            "작은 회로 전용 시뮬레이터입니다 (최대 20큐비트)"
-        );
-        Shot {
-            circuit: self.id,
-            bits: statevector::run(&self.ops, self.n_qubits, self.n_bits, seed),
-        }
+        self.simulate_with(Backend::StateVector, seed)
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 }
 
