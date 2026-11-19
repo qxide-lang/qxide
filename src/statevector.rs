@@ -150,7 +150,7 @@ impl C {
             im: self.im * k,
         }
     }
-    fn norm_sqr(self) -> f64 {
+    pub(crate) fn norm_sqr(self) -> f64 {
         self.re * self.re + self.im * self.im
     }
     // e^{iφ}

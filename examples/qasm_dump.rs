@@ -101,11 +101,35 @@ fn no_measurement() -> Circuit {
     c
 }
 
+fn ancilla_parity() -> Circuit {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    let mut target = c.qubit();
+    c.h(&mut a);
+    c.h(&mut b);
+    c.with_ancillas(
+        |u, [x, y]: &mut [_; 2]| {
+            u.cx(&a, x);
+            u.cx(&b, x);
+            u.x(y);
+        },
+        |c, [x, y]| {
+            c.cx_ctrl(x, &mut target);
+            c.cx_ctrl(y, &mut target);
+        },
+    );
+    c.measure(a);
+    c.measure(b);
+    c.measure(target);
+    c
+}
+
 fn main() -> std::io::Result<()> {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "qasm-out".into());
     std::fs::create_dir_all(&dir)?;
     type Sample = (&'static str, fn() -> Circuit);
-    let circuits: [Sample; 7] = [
+    let circuits: [Sample; 8] = [
         ("bell", bell),
         ("gates", gates),
         ("teleport", teleport),
@@ -113,6 +137,7 @@ fn main() -> std::io::Result<()> {
         ("reset_and_reuse", reset_and_reuse),
         ("ghz_register", ghz_register),
         ("no_measurement", no_measurement),
+        ("ancilla_parity", ancilla_parity),
     ];
     for (name, make) in circuits {
         let path = std::path::Path::new(&dir).join(format!("{name}.qasm"));

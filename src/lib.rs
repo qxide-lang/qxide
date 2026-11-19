@@ -74,6 +74,80 @@
 //! let [a, b] = r.get_disjoint_mut([0, 2]).unwrap();
 //! c.cx(a, b);
 //! ```
+//!
+//! ## 자동 되돌림(uncomputation)
+//!
+//! `with_ancilla`는 보조 큐비트에 값을 계산해 제어로만 쓰게 한 뒤 역연산을 자동으로 내보낸다. 정상 컴파일되는 예제:
+//! ```
+//! let mut c = qxide::Circuit::new();
+//! let mut a = c.qubit();
+//! let mut t = c.qubit();
+//! c.h(&mut a);
+//! c.with_ancilla(
+//!     |u, anc| {
+//!         u.cx(&a, anc);
+//!         u.x(anc);
+//!     },
+//!     |c, anc| {
+//!         c.cx_ctrl(anc, &mut t);
+//!         c.cx_ctrl(&a, &mut t);
+//!     },
+//! );
+//! ```
+//!
+//! 계산 단계에서 `ReversibleCircuit`이 제공하지 않는 기저 변환 게이트(`h`) 쓰기:
+//! ```compile_fail,E0599
+//! let mut c = qxide::Circuit::new();
+//! let mut a = c.qubit();
+//! let mut t = c.qubit();
+//! c.h(&mut a);
+//! c.with_ancilla(
+//!     |u, anc| {
+//!         u.cx(&a, anc);
+//!         u.h(anc);
+//!     },
+//!     |c, anc| {
+//!         c.cx_ctrl(anc, &mut t);
+//!         c.cx_ctrl(&a, &mut t);
+//!     },
+//! );
+//! ```
+//!
+//! 적용 단계에서 `&Qubit`인 보조 큐비트를 수정하기(`c.x(anc)`):
+//! ```compile_fail,E0308
+//! let mut c = qxide::Circuit::new();
+//! let mut a = c.qubit();
+//! let mut t = c.qubit();
+//! c.h(&mut a);
+//! c.with_ancilla(
+//!     |u, anc| {
+//!         u.cx(&a, anc);
+//!         u.x(anc);
+//!     },
+//!     |c, anc| {
+//!         c.cx_ctrl(anc, &mut t);
+//!         c.x(anc);
+//!     },
+//! );
+//! ```
+//!
+//! 계산 단계에서 읽은 입력 큐비트를 적용 단계에서 수정하기(`c.h(&mut a)`, 빌림 검사기 거부):
+//! ```compile_fail,E0502
+//! let mut c = qxide::Circuit::new();
+//! let mut a = c.qubit();
+//! let mut t = c.qubit();
+//! c.h(&mut a);
+//! c.with_ancilla(
+//!     |u, anc| {
+//!         u.cx(&a, anc);
+//!         u.x(anc);
+//!     },
+//!     |c, anc| {
+//!         c.cx_ctrl(anc, &mut t);
+//!         c.h(&mut a);
+//!     },
+//! );
+//! ```
 
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -81,6 +155,9 @@ mod groups;
 mod rng;
 mod stabilizer;
 mod statevector;
+mod uncompute;
+
+pub use uncompute::ReversibleCircuit;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -395,9 +472,14 @@ impl Circuit {
             qubit: i,
             bit: b.index,
         });
-        self.free.push_back(i);
-        self.groups.detach(i);
+        self.release_clean(i);
         b
+    }
+
+    // Returns a slot whose qubit is gone (measured or uncomputed) to the reuse pool.
+    fn release_clean(&mut self, slot: usize) {
+        self.free.push_back(slot);
+        self.groups.detach(slot);
     }
 
     /// |0⟩ 상태의 새 큐비트 `n`개로 이루어진 레지스터(`QReg`)를 한 번에 만든다.
