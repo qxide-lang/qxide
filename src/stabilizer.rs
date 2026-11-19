@@ -7,7 +7,9 @@ use crate::{Gate, Op};
 // First gate (in program order, including branch bodies) the tableau cannot represent.
 pub(crate) fn first_non_clifford(ops: &[Op]) -> Option<&'static str> {
     ops.iter().find_map(|op| match op {
-        Op::Gate(g @ (Gate::T | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_)), _) => Some(g.name()),
+        Op::Gate(g @ (Gate::T | Gate::Tdg | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_)), _) => {
+            Some(g.name())
+        }
         Op::If { body, .. } => first_non_clifford(body),
         _ => None,
     })
@@ -75,9 +77,15 @@ impl Tableau {
         match g {
             Gate::H => self.h(q),
             Gate::S => self.s(q),
+            // S† = S³ (S has order 4).
+            Gate::Sdg => {
+                self.s(q);
+                self.s(q);
+                self.s(q);
+            }
             Gate::X => self.x(q),
             Gate::Z => self.z(q),
-            Gate::T | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_) => {
+            Gate::T | Gate::Tdg | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_) => {
                 // Non-Clifford gates are rejected by `first_non_clifford` before simulation.
                 unreachable!()
             }

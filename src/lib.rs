@@ -106,6 +106,8 @@ pub(crate) enum Gate {
     Z,
     S,
     T,
+    Sdg,
+    Tdg,
     Rx(f64),
     Ry(f64),
     Rz(f64),
@@ -119,6 +121,8 @@ impl Gate {
             Gate::Z => "z",
             Gate::S => "s",
             Gate::T => "t",
+            Gate::Sdg => "sdg",
+            Gate::Tdg => "tdg",
             Gate::Rx(_) => "rx",
             Gate::Ry(_) => "ry",
             Gate::Rz(_) => "rz",
@@ -141,7 +145,7 @@ pub enum Backend {
     Auto,
     /// 2^n개 복소 진폭의 밀집 상태 벡터. 모든 게이트를 지원하지만 큐비트 수에 따라 메모리가 지수적으로 늘어난다.
     StateVector,
-    /// Aaronson–Gottesman 태블로: Clifford(`h`/`s`/`x`/`z`/`cx`/`measure`/`reset`/분기)만 쓰며 다항 시간이라 수천 큐비트도 된다.
+    /// Aaronson–Gottesman 태블로: Clifford(`h`/`s`/`sdg`/`x`/`z`/`cx`/`measure`/`reset`/분기)만 쓰며 다항 시간이라 수천 큐비트도 된다.
     Stabilizer,
     /// CubeCL(wgpu) f32 진폭 GPU 상태 벡터 프로토타입(gpu 피처 전용). 첫 측정·리셋·분기 전 유니터리 구간은 GPU, 이후는 CPU가 마친다. 상세는 docs/gpu.md에 있다.
     #[cfg(feature = "gpu")]
@@ -152,7 +156,7 @@ pub enum Backend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SimError {
-    /// 스태빌라이저 백엔드로 비Clifford 게이트(`t`, `rx`, `ry`, `rz`)를 실행하려 했다. 미실행 분기 안이나 Clifford 각도 회전도 거부한다.
+    /// 스태빌라이저 백엔드로 비Clifford 게이트(`t`, `tdg`, `rx`, `ry`, `rz`)를 실행하려 했다. 미실행 분기 안이나 Clifford 각도 회전도 거부한다.
     NotClifford {
         /// 문제가 된 첫 게이트의 OpenQASM 이름(예: `t`, `rx`)을 담는다.
         gate: &'static str,
@@ -325,6 +329,16 @@ impl Circuit {
         self.gate(Gate::T, q);
     }
 
+    /// S†(S-dagger) 게이트: S의 역게이트이자 OpenQASM 3 `sdg`로, |1⟩에 위상 -i를 더한다(P(-π/2)와 같다).
+    pub fn sdg(&mut self, q: &mut Qubit) {
+        self.gate(Gate::Sdg, q);
+    }
+
+    /// T†(T-dagger) 게이트: T의 역게이트이자 OpenQASM 3 `tdg`로, |1⟩에 위상 e^{-iπ/4}를 더한다.
+    pub fn tdg(&mut self, q: &mut Qubit) {
+        self.gate(Gate::Tdg, q);
+    }
+
     /// X축 주위로 `theta` 라디안 회전한다(exp(-iθX/2), OpenQASM 3 `rx`와 같다).
     pub fn rx(&mut self, q: &mut Qubit, theta: f64) {
         self.gate(Gate::Rx(theta), q);
@@ -436,7 +450,7 @@ impl Circuit {
         Ok(())
     }
 
-    /// 분기 본문을 포함해 회로가 Clifford 연산(`h`, `s`, `x`, `z`, `cx`, `measure`, `reset`)만 쓰면 `true`를 반환한다.
+    /// 분기 본문을 포함해 회로가 Clifford 연산(`h`, `s`, `sdg`, `x`, `z`, `cx`, `measure`, `reset`)만 쓰면 `true`를 반환한다.
     pub fn is_clifford(&self) -> bool {
         stabilizer::first_non_clifford(&self.ops).is_none()
     }

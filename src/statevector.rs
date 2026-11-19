@@ -50,6 +50,11 @@ pub(crate) fn matrix(g: Gate) -> [[C; 2]; 2] {
             [C::ONE, C::ZERO],
             [C::ZERO, C::cis(std::f64::consts::FRAC_PI_4)],
         ],
+        Gate::Sdg => [[C::ONE, C::ZERO], [C::ZERO, im(-1.0)]],
+        Gate::Tdg => [
+            [C::ONE, C::ZERO],
+            [C::ZERO, C::cis(-std::f64::consts::FRAC_PI_4)],
+        ],
         Gate::Rx(a) => {
             let (s, c) = (a / 2.0).sin_cos();
             [[re(c), im(-s)], [im(-s), re(c)]]

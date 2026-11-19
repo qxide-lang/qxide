@@ -163,6 +163,60 @@ fn t_twice_is_not_z() {
 }
 
 #[test]
+fn sdg_undoes_s_and_tdg_undoes_t() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    c.h(&mut a);
+    c.s(&mut a);
+    c.sdg(&mut a);
+    c.h(&mut a);
+    c.h(&mut b);
+    c.t(&mut b);
+    c.tdg(&mut b);
+    c.h(&mut b);
+    let ma = c.measure(a);
+    let mb = c.measure(b);
+    assert!((0..50).all(|seed| {
+        let s = c.simulate(seed);
+        !s.get(ma) && !s.get(mb)
+    }));
+}
+
+#[test]
+fn sdg_twice_is_z_and_tdg_four_times_is_z() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    c.h(&mut a);
+    c.sdg(&mut a);
+    c.sdg(&mut a);
+    c.h(&mut a);
+    c.h(&mut b);
+    for _ in 0..4 {
+        c.tdg(&mut b);
+    }
+    c.h(&mut b);
+    let ma = c.measure(a);
+    let mb = c.measure(b);
+    assert!(always_one(&c, ma));
+    assert!(always_one(&c, mb));
+}
+
+#[test]
+fn sdg_has_opposite_phase_to_s() {
+    // S·S† = I 이지만 S·S = Z: sdg가 s와 같은 행렬이면 이 회로는 항상 1이 된다
+    let mut c = Circuit::new();
+    let mut q = c.qubit();
+    c.h(&mut q);
+    c.s(&mut q);
+    c.sdg(&mut q);
+    c.h(&mut q);
+    let m = c.measure(q);
+    assert_eq!(count_ones(&c, m, 50), 0);
+}
+
+#[test]
 fn rotation_qasm_output() {
     let mut c = Circuit::new();
     let mut q = c.qubit();
@@ -171,10 +225,13 @@ fn rotation_qasm_output() {
     c.rz(&mut q, PI);
     c.s(&mut q);
     c.t(&mut q);
+    c.sdg(&mut q);
+    c.tdg(&mut q);
     assert_eq!(
         c.to_qasm(),
         "OPENQASM 3.0;\ninclude \"stdgates.inc\";\nqubit[1] q;\n\
-         rx(0.5) q[0];\nry(-1.0) q[0];\nrz(3.141592653589793) q[0];\ns q[0];\nt q[0];\n"
+         rx(0.5) q[0];\nry(-1.0) q[0];\nrz(3.141592653589793) q[0];\ns q[0];\nt q[0];\n\
+         sdg q[0];\ntdg q[0];\n"
     );
 }
 

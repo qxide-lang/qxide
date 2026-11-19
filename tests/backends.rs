@@ -120,6 +120,41 @@ fn stabilizer_rejects_non_clifford_gates() {
 }
 
 #[test]
+fn sdg_is_clifford_but_tdg_is_not() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    c.h(&mut a);
+    c.s(&mut a);
+    c.sdg(&mut a);
+    c.sdg(&mut a);
+    c.h(&mut a);
+    assert!(c.is_clifford());
+    let m = c.measure(a);
+    // H S S† S† H = H S† H: 위상이 틀리면 결정적인 결과가 나온다
+    let ones = (0..2000).filter(|&seed| stab(&c, seed).get(m)).count();
+    assert!((800..1200).contains(&ones), "ones = {ones}");
+
+    let mut c = Circuit::new();
+    let mut q = c.qubit();
+    c.h(&mut q);
+    c.sdg(&mut q);
+    c.sdg(&mut q);
+    c.h(&mut q);
+    let m = c.measure(q);
+    assert!((0..50).all(|seed| stab(&c, seed).get(m)));
+
+    let mut c = Circuit::new();
+    let mut q = c.qubit();
+    c.tdg(&mut q);
+    assert!(!c.is_clifford());
+    assert_eq!(c.select_backend(), Backend::StateVector);
+    assert_eq!(
+        c.simulate_with(Backend::Stabilizer, 0).unwrap_err(),
+        SimError::NotClifford { gate: "tdg" }
+    );
+}
+
+#[test]
 fn stabilizer_rejects_non_clifford_gate_inside_branch() {
     let mut c = Circuit::new();
     let mut a = c.qubit();
@@ -177,7 +212,8 @@ fn random_clifford_circuit(rng: &mut Lcg) -> (Circuit, Vec<Bit>) {
     let mut bits = Vec::new();
     for _ in 0..(5 + rng.below(40)) {
         let i = rng.below(n as u64) as usize;
-        match rng.below(9) {
+        match rng.below(10) {
+            9 => c.sdg(&mut qs[i]),
             0 | 1 => c.h(&mut qs[i]),
             2 => c.s(&mut qs[i]),
             3 => c.x(&mut qs[i]),

@@ -25,6 +25,8 @@ fn gates() -> Circuit {
     c.z(&mut q);
     c.s(&mut q);
     c.t(&mut q);
+    c.sdg(&mut q);
+    c.tdg(&mut q);
     c.rx(&mut q, 0.5);
     c.ry(&mut q, -1.0);
     c.rz(&mut q, PI);

@@ -18,6 +18,22 @@ fn gpu_interference_is_exact_enough_to_be_deterministic() {
 }
 
 #[test]
+fn gpu_inverse_phase_gates_cancel() {
+    let mut c = Circuit::new();
+    let mut q = c.qubit();
+    c.h(&mut q);
+    c.s(&mut q);
+    c.t(&mut q);
+    c.tdg(&mut q);
+    c.sdg(&mut q);
+    c.h(&mut q);
+    let m = c.measure(q);
+    for seed in 0..50 {
+        assert!(!c.simulate_with(Backend::Gpu, seed).unwrap().get(m));
+    }
+}
+
+#[test]
 fn gpu_teleportation_with_branches_matches_cpu() {
     let theta = 1.0;
     let mut c = Circuit::new();
