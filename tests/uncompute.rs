@@ -153,3 +153,154 @@ fn ancilla_compute_rejects_qubit_from_another_circuit() {
     let a = c2.qubit();
     c1.with_ancilla(|u, anc| u.cx(&a, anc), |_, _| ());
 }
+
+// ---- runtime guard: qubits the compute step touched are control-only during apply ----
+// Interior mutability bypasses the borrow checker, so these use RefCell on purpose.
+
+use std::cell::RefCell;
+
+// Builds a circuit where `a` (behind a RefCell) is read by compute, then runs `misuse` in apply.
+fn misuse_in_apply(misuse: impl FnOnce(&mut Circuit, &RefCell<Option<qxide::Qubit>>)) -> Circuit {
+    let mut c = Circuit::new();
+    let a = RefCell::new(Some(c.qubit()));
+    c.h(a.borrow_mut().as_mut().unwrap());
+    c.with_ancilla(
+        |u, anc| u.cx(a.borrow().as_ref().unwrap(), anc),
+        |c, _| misuse(c, &a),
+    );
+    c
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_h_on_compute_input() {
+    misuse_in_apply(|c, a| c.h(a.borrow_mut().as_mut().unwrap()));
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_x_on_compute_input() {
+    misuse_in_apply(|c, a| c.x(a.borrow_mut().as_mut().unwrap()));
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_rotation_on_compute_input() {
+    misuse_in_apply(|c, a| c.ry(a.borrow_mut().as_mut().unwrap(), 0.3));
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_compute_input_as_cx_target() {
+    misuse_in_apply(|c, a| {
+        let mut other = c.qubit();
+        c.cx(&mut other, a.borrow_mut().as_mut().unwrap());
+    });
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_compute_input_as_ccx_target() {
+    misuse_in_apply(|c, a| {
+        let mut o1 = c.qubit();
+        let mut o2 = c.qubit();
+        c.ccx(&mut o1, &mut o2, a.borrow_mut().as_mut().unwrap());
+    });
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_measuring_compute_input() {
+    misuse_in_apply(|c, a| {
+        let q = a.borrow_mut().take().unwrap();
+        c.measure(q);
+    });
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_reset_of_compute_input() {
+    misuse_in_apply(|c, a| c.reset(a.borrow_mut().as_mut().unwrap()));
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_misuse_inside_a_branch_of_apply() {
+    misuse_in_apply(|c, a| {
+        let mut f = c.qubit();
+        c.h(&mut f);
+        let m = c.measure(f);
+        c.if_one(m, |c| c.h(a.borrow_mut().as_mut().unwrap()));
+    });
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_rejects_inner_compute_writing_outer_input() {
+    misuse_in_apply(|c, a| {
+        c.with_ancilla(|u, _| u.x(a.borrow_mut().as_mut().unwrap()), |_, _| ());
+    });
+}
+
+#[test]
+#[should_panic(expected = "with_ancilla")]
+fn guard_keeps_outer_lock_after_inner_scope_sharing_the_input() {
+    misuse_in_apply(|c, a| {
+        let mut t = c.qubit();
+        c.with_ancilla(
+            |u, anc| u.cx(a.borrow().as_ref().unwrap(), anc),
+            |c, anc| c.cx_ctrl(anc, &mut t),
+        );
+        // The inner scope released its lock, but the outer scope still holds one.
+        c.h(a.borrow_mut().as_mut().unwrap());
+    });
+}
+
+#[test]
+fn guard_allows_control_and_diagonal_use_of_compute_input() {
+    misuse_in_apply(|c, a| {
+        let mut t = c.qubit();
+        let mut u = c.qubit();
+        let mut q = a.borrow_mut();
+        let q = q.as_mut().unwrap();
+        c.z(q);
+        c.s(q);
+        c.sdg(q);
+        c.t(q);
+        c.tdg(q);
+        c.rz(q, 0.7);
+        c.cx(q, &mut t);
+        c.cx_ctrl(q, &mut t);
+        c.ccx(q, &mut u, &mut t);
+        c.ccx_ctrl(q, &u, &mut t);
+    });
+}
+
+#[test]
+fn guard_allows_nested_scope_reading_outer_ancilla() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut t = c.qubit();
+    c.x(&mut a);
+    c.with_ancilla(
+        |u, anc| u.cx(&a, anc),
+        |c, outer| {
+            c.with_ancilla(
+                |u, inner| u.cx(outer, inner),
+                |c, inner| c.cx_ctrl(inner, &mut t),
+            );
+        },
+    );
+    let mt = c.measure(t);
+    assert!((0..20).all(|seed| c.simulate(seed).get(mt)));
+}
+
+#[test]
+fn guard_releases_the_lock_when_the_scope_ends() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut t = c.qubit();
+    c.with_ancilla(|u, anc| u.cx(&a, anc), |c, anc| c.cx_ctrl(anc, &mut t));
+    c.h(&mut a);
+    c.measure(a);
+}

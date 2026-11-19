@@ -328,6 +328,8 @@ pub struct Circuit {
     depth: usize,
     memory_limit: u64,
     groups: groups::Groups,
+    // Per slot: how many open `with_ancilla` scopes restrict it to control/diagonal use.
+    locked: Vec<u32>,
 }
 
 impl Default for Circuit {
@@ -347,6 +349,7 @@ impl Circuit {
             depth: 0,
             memory_limit: DEFAULT_MEMORY_LIMIT,
             groups: groups::Groups::default(),
+            locked: Vec::new(),
         }
     }
 
@@ -366,6 +369,7 @@ impl Circuit {
             None => {
                 self.n_qubits += 1;
                 self.groups.add_slot();
+                self.locked.push(0);
                 self.n_qubits - 1
             }
         };
@@ -383,7 +387,23 @@ impl Circuit {
 
     fn gate(&mut self, g: Gate, q: &mut Qubit) {
         let i = self.own(q);
+        self.push_gate(g, i);
+    }
+
+    fn push_gate(&mut self, g: Gate, i: usize) {
+        // Diagonal gates keep the computational-basis value, so they are fine on locked slots.
+        if !matches!(
+            g,
+            Gate::Z | Gate::S | Gate::Sdg | Gate::T | Gate::Tdg | Gate::Rz(_)
+        ) {
+            self.check_unlocked(i);
+        }
         self.ops.push(Op::Gate(g, i));
+    }
+
+    // Runtime half of the `with_ancilla` contract; catches what interior mutability lets past the borrow checker.
+    fn check_unlocked(&self, slot: usize) {
+        assert!(self.locked[slot] == 0, "with_ancilla의 apply 단계에서는 compute가 사용한 큐비트를 제어 또는 대각 위상 게이트 외의 연산에 사용할 수 없습니다");
     }
 
     /// 아다마르 게이트: |0⟩을 |0⟩과 |1⟩의 중첩으로 만든다.
@@ -444,6 +464,7 @@ impl Circuit {
     }
 
     fn push_cx(&mut self, c: usize, t: usize) {
+        self.check_unlocked(t);
         self.groups.union(c, t);
         self.ops.push(Op::Cx(c, t));
     }
@@ -463,6 +484,7 @@ impl Circuit {
     }
 
     fn push_ccx(&mut self, a: usize, b: usize, t: usize) {
+        self.check_unlocked(t);
         self.groups.union(a, t);
         self.groups.union(b, t);
         self.ops.push(Op::Ccx(a, b, t));
@@ -479,6 +501,7 @@ impl Circuit {
     /// 큐비트를 측정한다. 큐비트는 여기서 소비되어 사라지고, 결과 자리를 가리키는 비트가 남는다.
     pub fn measure(&mut self, q: Qubit) -> Bit {
         let i = self.own(&q);
+        self.check_unlocked(i);
         // A conditional measurement would leave its bit undefined on the untaken path.
         assert!(
             self.depth == 0,
@@ -520,6 +543,7 @@ impl Circuit {
     /// 회로 도중 큐비트를 `measure`와 달리 소비 없이 |0⟩으로 되돌려 재사용한다. `qubit()`도 측정된 자리를 초기화해 자동 재사용한다.
     pub fn reset(&mut self, q: &mut Qubit) {
         let i = self.own(q);
+        self.check_unlocked(i);
         self.ops.push(Op::Reset(i));
         // A reset inside a branch body may not run, so it cannot break any correlation.
         if self.depth == 0 {

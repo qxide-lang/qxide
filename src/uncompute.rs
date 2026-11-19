@@ -8,6 +8,8 @@
 // Basis-changing gates (`h`, `rx`, `ry`) are deliberately absent: compute `h(anc)`,
 // apply `cx_ctrl(anc, t)`, uncompute `h(anc)` leaves the ancilla entangled with `t`.
 // Diagonal gates are absent too: they commute with the apply step and cancel exactly.
+// Interior mutability (RefCell, Mutex) gets past the borrow checker, so `Circuit::locked`
+// enforces the same apply-step rule at run time.
 
 use crate::{Circuit, Op, Qubit};
 
@@ -62,7 +64,7 @@ impl Circuit {
     /// `compute(&mut ReversibleCircuit, &mut Qubit)`으로 가역 게이트를 기록해 내보낸 뒤 `apply(&mut Circuit, &Qubit) -> R`을 실행하며, 적용 단계에서는 보조 큐비트를 `cx_ctrl` 같은 제어로만 쓸 수 있다.
     /// 이어서 계산 단계 게이트를 역순으로 다시 내보내(되돌림) 보조 큐비트를 `|0⟩`으로 복원하고, 슬롯을 재사용하도록 해제하며 얽힘 그룹에서 제거한 뒤 `apply`의 값을 반환한다.
     /// 계산 단계에서 읽은 큐비트는 범위가 끝날 때까지 빌려져 있으므로 적용 단계에서 읽기만 가능하고 바꾸거나 측정할 수 없으며, 이는 빌림 검사기가 강제한다.
-    /// 다만 이 보장은 일반 빌림에만 적용되며, `RefCell`, `Mutex` 등의 내부 가변성 뒤에 있는 큐비트는 적용 단계에서도 여전히 바꿀 수 있어 보조 큐비트가 `|0⟩`으로 복원되지 않고 범위가 끝난 뒤 `may_be_entangled`가 얽히지 않았다고 잘못 보고할 수 있으므로 이러한 큐비트는 두 단계에 걸쳐 사용해서는 안 된다.
+    /// 다만 `RefCell`·`Mutex` 같은 내부 가변성 뒤의 큐비트는 빌림 검사기를 통과할 수 있으므로 같은 규칙을 런타임에도 검사하며, 적용 단계에서 계산 단계가 건드린 큐비트(입력·보조 큐비트)를 제어나 대각 위상 게이트(`z`, `s`, `sdg`, `t`, `tdg`, `rz`) 외의 용도(예: `h`/`x`/`rx`/`ry`, `cx`/`ccx`의 타깃, `measure`, `reset`, 중첩된 범위의 계산 단계가 쓰는 경우)로 사용하면 패닉한다.
     /// 여러 보조 큐비트가 필요하면 `with_ancillas`를 사용한다.
     pub fn with_ancilla<R>(
         &mut self,
@@ -91,7 +93,25 @@ impl Circuit {
         for op in &rev.ops {
             self.push_reversible(op);
         }
+        // Everything compute touched stays control/diagonal-only until uncompute.
+        let mut touched: Vec<usize> = anc.iter().map(|q| q.index).collect();
+        for op in &rev.ops {
+            match *op {
+                Op::Gate(_, q) => touched.push(q),
+                Op::Cx(c, t) => touched.extend([c, t]),
+                Op::Ccx(a, b, t) => touched.extend([a, b, t]),
+                Op::Measure { .. } | Op::Reset(_) | Op::If { .. } => unreachable!(),
+            }
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        for &q in &touched {
+            self.locked[q] += 1;
+        }
         let result = apply(self, &anc);
+        for &q in &touched {
+            self.locked[q] -= 1;
+        }
         // `x`, `cx` and `ccx` are self-inverse, so the inverse is the same ops in reverse order.
         for op in rev.ops.iter().rev() {
             self.push_reversible(op);
@@ -106,7 +126,7 @@ impl Circuit {
         match *op {
             Op::Cx(c, t) => self.push_cx(c, t),
             Op::Ccx(a, b, t) => self.push_ccx(a, b, t),
-            Op::Gate(g, q) => self.ops.push(Op::Gate(g, q)),
+            Op::Gate(g, q) => self.push_gate(g, q),
             // ReversibleCircuit only records `x`, `cx` and `ccx`.
             Op::Measure { .. } | Op::Reset(_) | Op::If { .. } => unreachable!(),
         }
@@ -149,6 +169,40 @@ mod tests {
             Op::Gate(Gate::H, anc),
         ];
         assert!((weight_on_one(&ops, 2, anc) - 0.5).abs() < 1e-12);
+    }
+
+    // Allowed apply-step uses (nested scope reading the outer ancilla, diagonal gates and
+    // controls on a compute input) must still leave both ancillas exactly |0>.
+    #[test]
+    fn nested_scope_and_diagonal_use_keep_ancillas_clean() {
+        let mut c = Circuit::new();
+        let mut a = c.qubit();
+        let mut b = c.qubit();
+        let mut t = c.qubit();
+        c.h(&mut a);
+        c.ry(&mut b, 1.1);
+        c.h(&mut t);
+        let mut slots = [0usize; 2];
+        let a_cell = std::cell::RefCell::new(a);
+        c.with_ancilla(
+            |u, anc| u.ccx(&a_cell.borrow(), &b, anc),
+            |c, outer| {
+                slots[0] = outer.index;
+                c.t(&mut a_cell.borrow_mut());
+                c.rz(&mut a_cell.borrow_mut(), 0.4);
+                c.with_ancilla(
+                    |u, inner| u.cx(outer, inner),
+                    |c, inner| {
+                        slots[1] = inner.index;
+                        c.ccx_ctrl(inner, &a_cell.borrow(), &mut t);
+                    },
+                );
+            },
+        );
+        for q in slots {
+            let w = weight_on_one(&c.ops, c.n_qubits, q);
+            assert!(w < 1e-12, "ancilla slot {q} has weight {w} on |1>");
+        }
     }
 
     // Random reversible compute on inputs in superposition, random control-only apply step:
