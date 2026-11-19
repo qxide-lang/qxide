@@ -1,6 +1,6 @@
 # 자동 역연산(Automatic Uncomputation) 설계 검토
 
-> **상태**: 설계 검토 문서(미구현) — 구현 착수 전 메인테이너 승인 필요
+> **상태**: 구현 완료 (2026-11-19) — 권장안(대안 2)이 설계 정정 사항을 반영해 구현됨 (세부 내용은 9절 참조)
 
 ## 1. 배경 및 목표
 
@@ -102,10 +102,10 @@ c.with_ancilla(
 ```rust
 // a, b의 패리티를 anc에 계산한 뒤 target을 제어 반전하고 anc를 자동 역연산한다.
 c.with_ancilla(
-    |u, anc, (a, b)| {
-        // compute: UnitaryCircuit에서 가역 게이트만 허용
-        u.cx(a, anc);
-        u.cx(b, anc);
+    |u, anc| {
+        // compute: ReversibleCircuit에서 가역 게이트만 허용
+        u.cx(&a, anc);
+        u.cx(&b, anc);
     },
     |c, anc| {
         // use: anc는 &Qubit(제어 전용)으로만 접근 가능
@@ -149,3 +149,51 @@ c.with_ancilla(
 1. **API 네이밍**: 스코프 진입 메서드 이름을 `with_ancilla`로 할지, Q# 스타일에 맞춰 `within`으로 할지 여부.
 2. **다중 보조 큐비트 지원**: 단일 보조 큐비트 외에 `[Qubit; N]` 또는 `QReg` 단위의 다중 보조 큐비트 스코프를 함께 지원할지 여부.
 3. **고전 오라클 측정 규칙 완화**: 제어 전용 입력에 대한 계산 기저 측정은 역연산 유효성을 유지하므로, 향후 고전 오라클 사례에 한해 `use` 단계에서의 데이터 큐비트 측정 제한을 완화할지 여부.
+
+---
+
+## 9. 구현 결과와 설계 정정
+
+커밋 `2610c09`에서 권장안(대안 2)을 구현하면서, 보조 큐비트(ancilla)가 |0⟩으로 복귀하는 이유를 설명하는 건전성 논증(soundness argument)과 Rust 대여 검사기 구조에 맞춰 다음과 같이 설계를 구체화하고 정정하였다.
+
+### 구현된 API 및 미결 과제 해결
+
+- **단일/다중 보조 큐비트 스코프**:
+  - `Circuit::with_ancilla(compute, apply) -> R`: 단일 보조 큐비트를 할당한다(`compute`: `FnOnce(&mut ReversibleCircuit, &mut Qubit)`, `apply`: `FnOnce(&mut Circuit, &Qubit) -> R`).
+  - `Circuit::with_ancillas::<N>`: const generic을 사용해 `N`개의 보조 큐비트를 `compute`에는 `&mut [Qubit; N]`, `apply`에는 `&[Qubit; N]`으로 전달한다.
+- **제어 전용 및 위상 게이트**:
+  - `Circuit::cx_ctrl(&Qubit, &mut Qubit)`를 추가해 `apply` 단계에서 `&Qubit`을 제어로 사용할 수 있게 하였다.
+  - `sdg`, `tdg` 게이트도 `Circuit`에 추가하였다.
+- **미결 과제 처리 결과**:
+  - 미결 과제 1(API 네이밍): 메인테이너 선택에 따라 `with_ancilla`로 확정되었다.
+  - 미결 과제 2(다중 보조 큐비트 지원): `with_ancillas::<N>`을 함께 제공함으로써 해결되었다.
+  - 미결 과제 3(고전 오라클 측정 규칙 완화): 아직 미결 상태로 남아 있다.
+
+### 설계 정정 사항
+
+- **정정 1(중요) — `compute` 빌더를 `x`와 `cx`로만 제한**:
+  2절과 4절에서는 `compute` 단계에 `h`/`rx`/`ry`/위상 게이트를 허용하는 것으로 기술하였으나, 실제 구현의 `compute` 빌더는 `x`와 `cx(&Qubit, &mut Qubit)`만 제공한다. 보조 큐비트가 반드시 $|0\rangle$으로 복귀하려면 `compute`가 계산 기저 상태만을 치환($|x\rangle|0\rangle \rightarrow |x\rangle|f(x)\rangle$)해야 하며, `apply`는 보조 큐비트와 `compute`가 읽은 큐비트에 대해 블록 대각(block-diagonal) 연산(제어 위치로만 사용)만 수행해야 하기 때문이다.
+  - **반례**: `compute`에서 `h(anc)`를 적용하고 `apply`에서 $|0\rangle$ 상태의 `t`에 `cx_ctrl(anc, t)`를 적용한 뒤 `h(anc)`로 역연산하면, 보조 큐비트는 `t`와 얽혀 확률 $1/2$로 $|1\rangle$ 상태에 남는다.
+  - **대각 위상 게이트 생략**: `z`, `s`, `t`, `rz` 같은 대각 위상 게이트는 역연산 안전성 자체는 해치지 않으나 `apply` 단계와 가환(commute)하여 역연산 시 정확히 상쇄되므로 빌더에서 제외되었다. 따라서 `sdg`와 `tdg`는 역연산 자체에는 필요하지 않으며, 일반 게이트로서만 `Circuit`에 추가되었다.
+- **정정 2 — 타입명 변경 (`UnitaryCircuit` $\rightarrow$ `ReversibleCircuit`)**:
+  임의의 유니터리 연산이 아니라 고전 가역 회로(classical reversible circuit)만을 표현하므로, 빌더 타입의 이름을 `UnitaryCircuit`에서 `ReversibleCircuit`으로 변경하였다.
+- **정정 3 — 클로저 캡처 기반 입력 전달과 대여 규칙**:
+  `compute` 클로저는 5절 기존 예시의 `(a, b)`와 같은 별도 입력 튜플 인자를 받지 않으며, 입력 큐비트는 클로저가 직접 캡처한다. `compute`와 `apply` 두 클로저가 스코프 호출 시점에 동시에 존재하므로, `compute`에서 `&`로 캡처해 읽은 큐비트는 `apply`에서도 `&Qubit`으로만 사용할 수 있고 `apply`에서 `&mut`로 수정하려 하면 대여 검사기 오류(`E0502`)가 발생한다. 마찬가지로 `compute`에서 `&mut`로 변경한 큐비트는 `apply`에서 전혀 사용할 수 없다.
+
+### 역연산 실행, 슬롯 해제 및 미구현 항목
+
+- **역연산 및 슬롯 반환**: 스코프 종료 시 `compute` 단계에 기록된 연산을 역순으로 다시 방출(`x`와 `cx`는 자기 역원)하여 보조 큐비트를 $|0\rangle$으로 복원한 뒤, 보조 큐비트 슬롯을 재사용 풀로 반환하고(재사용되는 슬롯에는 여전히 `reset`이 수행됨) 런타임 얽힘 그룹(entanglement groups)에서 제거한다.
+- **미구현 항목**:
+  - `Drop` 기반 누수 감지기 가드: 보조 큐비트가 스코프 내부에서만 소유되므로 누수가 원천적으로 불가능해 구현하지 않았다.
+  - 7절의 새로운 `SimError` 배리언트: 런타임 실패 경로가 존재하지 않으므로 추가하지 않았다.
+  - `ccx` 게이트는 여전히 부재하므로 AND 형태의 보조 큐비트 패턴은 향후 과제로 남는다.
+
+### 검증
+
+- **무작위 상태 벡터 검증**: 무작위 입력 상태 벡터 테스트를 통해 스코프 종료 직후 모든 보조 큐비트의 $|1\rangle$ 진폭 가중치가 0임을 확인하였다.
+- **컴파일 타임 차단(`compile_fail` doctest) 검증**:
+  - `compute` 내부에서 `h` 호출 시 `E0599`
+  - `apply` 내부에서 `c.x(anc)` 호출 시 `E0308`
+  - `compute`가 읽은 입력 큐비트에 대해 `apply` 내부에서 `c.h(&mut a)` 호출 시 `E0502`
+  - 위 실패 사례 각각과 단 한 줄만 다른 단일 정상 컴파일 예제를 함께 검증하였다.
+- **OpenQASM 3 호환성**: 생성된 OpenQASM 3 출력을 Qiskit에서 정상적으로 로드함을 확인하였다.

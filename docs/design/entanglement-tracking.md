@@ -1,6 +1,6 @@
 # 얽힘 추적(Entanglement Tracking) 설계 검토
 
-> **상태**: 설계 검토 문서(미구현) — 구현 착수 전 메인테이너 승인 필요
+> **상태**: 권장 접근 방식 1단계(대안 E, 런타임 Union-Find) 구현 완료(2026-11-19) — 대안 D(Typestate) 및 Open Questions는 미정(8절 참고)
 
 ## 1. 배경 및 목표
 
@@ -114,7 +114,7 @@ c.h(&mut a);
 c.cx(&mut a, &mut b);
 assert!(c.may_be_entangled(&a, &b));   // 런타임 union-find (대안 E)
 assert!(!c.may_be_entangled(&a, &d));
-let ma = c.measure(a);                 // b는 다시 그룹에서 분리됨
+let ma = c.measure(a);                 // a가 그룹에서 분리됨
 ```
 
 ### Opt-in Coarse Typestate 스케치 (대안 D)
@@ -142,3 +142,18 @@ let f: Qubit<Any> = c.h_owned(f);      // 소유권 소비 및 반환으로 타�
 
 1. **Opt-in 소비-반환(consume-and-return) API 수용 여부**: 대안 D를 기존 `&mut` API 위의 선택적 계층으로 추가할 때, `h_owned`와 같은 consume-and-return 형태의 API 형태를 허용할 것인가?
 2. **클리포드 회로 대상 안정자 태블로 정제 여부**: `may_be_entangled` 질의 시 회로가 클리포드 연산으로만 구성된 경우, 안정자 태블로를 참조해 과대근사가 아닌 정확한 얽힘 판별 결과를 반환하도록 할 것인가?
+
+---
+
+## 8. 구현 결과 (대안 E)
+
+- **공개 API**: `Circuit::may_be_entangled(&self, a: &Qubit, b: &Qubit) -> bool`이 구현되었다. `false` 반환은 두 큐비트가 곱 상태(product state)임을 보장하며, `true` 반환은 단지 '얽혀 있을 수 있음(may be entangled)'을 뜻한다. 동일한 큐비트를 두 번 전달하면 `true`를 반환하고, 다른 회로에 속한 큐비트를 전달하면 패닉(panic)이 발생한다.
+- **구현 구조**: 비공개 union-find 자료구조(`src/groups.rs`)로 구현하였다. 각 물리 슬롯은 하나의 노드를 가리키며, union-find는 원소 삭제를 지원하지 않으므로 분리(detach) 시 해당 슬롯을 새로운 단일 원소(singleton) 노드로 이동시키고 기존 노드는 나머지 멤버 간의 연결을 유지한다(따라서 GHZ 그룹의 한 멤버를 측정하더라도 나머지 멤버들은 계속 같은 그룹으로 묶여 있다).
+- **추적 규칙**:
+  - 모든 `cx` 및 `cx_ctrl` 연산은 두 큐비트의 그룹을 병합한다(`if_one`/`if_zero` 분기 본문 내부와 `with_ancilla`의 compute/uncompute 게이트 포함).
+  - `measure`와 최상위 수준(top-level)의 `reset`은 해당 큐비트를 그룹에서 분리한다.
+  - 분기 본문 내부의 `reset`은 실행되지 않을 수 있으므로 그룹에서 분리하지 않는다.
+  - 보조 큐비트(ancilla)는 `with_ancilla` 스코프가 종료될 때 정확히 $|0\rangle$ 상태로 복귀하므로 그룹에서 분리된다.
+  - 측정된 슬롯을 `qubit()`으로 재사용할 때는 비얽힘 상태로 시작한다.
+- **미구현 항목**: 독립된 그룹 단위의 시뮬레이터 분할, 안정자 태블로(stabilizer tableau) 기반의 정확한 정제(Open Question 2), 그리고 선택적(opt-in) Typestate 계층(대안 D, Open Question 1)은 아직 구현되지 않았다.
+- **검증**: `tests/entanglement.rs`의 통합 테스트와 더불어, `h`, `t`, `rx`, `ry`, `cx`로 구성된 무작위 회로에 대해 비얽힘으로 보고된 모든 큐비트 쌍의 축소 밀도 행렬(reduced density matrix)이 각 단일 큐비트 축소 밀도 행렬의 텐서곱(tensor product)과 일치하는지 확인하는 무작위 테스트를 통과하였다(그룹 병합을 비활성화하는 변이를 가하면 해당 테스트는 실패한다).
