@@ -60,6 +60,34 @@ fn cx(re: &mut [f32], im: &mut [f32], lo: u32, hi: u32, c: u32, quads: u32) {
     }
 }
 
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+fn ccx(
+    re: &mut [f32],
+    im: &mut [f32],
+    p0: u32,
+    p1: u32,
+    p2: u32,
+    controls: u32,
+    target: u32,
+    octs: u32,
+) {
+    let k = ABSOLUTE_POS as u32;
+    if k < octs {
+        // Insert 0s at the sorted bit positions p0 < p1 < p2, then set both control bits.
+        let a = ((k >> p0) << (p0 + 1)) | (k & ((1u32 << p0) - 1));
+        let b = ((a >> p1) << (p1 + 1)) | (a & ((1u32 << p1) - 1));
+        let c = ((b >> p2) << (p2 + 1)) | (b & ((1u32 << p2) - 1));
+        let i = (c | controls) as usize;
+        let j = (c | controls | target) as usize;
+        let (tr, ti) = (re[i], im[i]);
+        re[i] = re[j];
+        im[i] = im[j];
+        re[j] = tr;
+        im[j] = ti;
+    }
+}
+
 fn client() -> &'static cubecl::client::Client {
     static CLIENT: OnceLock<cubecl::client::Client> = OnceLock::new();
     CLIENT.get_or_init(|| Device::default().client())
@@ -119,6 +147,24 @@ pub(crate) fn run_prefix(ops: &[Op], n_qubits: usize) -> (Vec<C>, usize) {
                     quads,
                 );
             }
+            Op::Ccx(a, b, t) => {
+                let mut p = [a as u32, b as u32, t as u32];
+                p.sort_unstable();
+                let octs = (dim / 8) as u32;
+                ccx::launch(
+                    client,
+                    grid(octs),
+                    CubeDim::new_1d(BLOCK),
+                    arg(&re),
+                    arg(&im),
+                    p[0],
+                    p[1],
+                    p[2],
+                    (1u32 << a) | (1u32 << b),
+                    1u32 << t,
+                    octs,
+                );
+            }
             Op::Measure { .. } | Op::Reset(_) | Op::If { .. } => break,
         }
         done += 1;
@@ -169,7 +215,16 @@ mod tests {
             for _ in 0..rng.below(200) {
                 let i = rng.below(n as u64) as usize;
                 let theta = rng.below(10_000) as f64 / 1000.0 - 5.0;
-                match rng.below(9) {
+                match rng.below(10) {
+                    9 if n > 2 => {
+                        let j = (i + 1 + rng.below(n as u64 - 1) as usize) % n;
+                        let mut k = rng.below(n as u64) as usize;
+                        while k == i || k == j {
+                            k = (k + 1) % n;
+                        }
+                        let [a, b, t] = qs.get_disjoint_mut([i, j, k]).unwrap();
+                        c.ccx(a, b, t);
+                    }
                     0 => c.h(&mut qs[i]),
                     1 => c.s(&mut qs[i]),
                     2 => c.t(&mut qs[i]),

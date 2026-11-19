@@ -73,3 +73,32 @@ fn gpu_respects_memory_limit() {
         Err(SimError::OutOfMemory { qubits: 12, .. })
     ));
 }
+
+#[test]
+fn gpu_ccx_truth_table_matches_cpu() {
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for order in orders {
+        for input in 0..8u8 {
+            let mut c = Circuit::new();
+            let mut r = c.qreg(3);
+            for (k, q) in r.iter_mut().enumerate() {
+                if input >> k & 1 == 1 {
+                    c.x(q);
+                }
+            }
+            let [c1, c2, t] = r.get_disjoint_mut(order).unwrap();
+            c.ccx(c1, c2, t);
+            let m = c.measure_reg(r);
+            let gpu = c.simulate_with(Backend::Gpu, 0).unwrap().value(&m);
+            let cpu = c.simulate(0).value(&m);
+            assert_eq!(gpu, cpu, "order {order:?} input {input}");
+        }
+    }
+}

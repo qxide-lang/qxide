@@ -479,3 +479,92 @@ fn register_value_wider_than_64_bits_is_rejected() {
     let reg = BitReg::from(bits);
     c.simulate(0).value(&reg);
 }
+
+// ---- ccx (Toffoli) ----
+
+const ROLE_ORDERS: [[usize; 3]; 6] = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+];
+
+// Runs ccx with qubit roles (c1, c2, target) = slots `order`, on basis input `bits`.
+fn ccx_truth(order: [usize; 3], bits: [bool; 3], shared_controls: bool) -> [bool; 3] {
+    let mut c = Circuit::new();
+    let mut r = c.qreg(3);
+    for (q, &b) in r.iter_mut().zip(&bits) {
+        if b {
+            c.x(q);
+        }
+    }
+    let [c1, c2, t] = r.get_disjoint_mut(order).unwrap();
+    if shared_controls {
+        c.ccx_ctrl(c1, c2, t);
+    } else {
+        c.ccx(c1, c2, t);
+    }
+    let m = c.measure_reg(r);
+    let s = c.simulate(0);
+    [s.get(m[0]), s.get(m[1]), s.get(m[2])]
+}
+
+#[test]
+fn ccx_flips_target_only_when_both_controls_are_one() {
+    for order in ROLE_ORDERS {
+        for input in 0..8u8 {
+            let bits = [input & 1 != 0, input & 2 != 0, input & 4 != 0];
+            let mut expected = bits;
+            expected[order[2]] ^= bits[order[0]] && bits[order[1]];
+            for shared in [false, true] {
+                assert_eq!(
+                    ccx_truth(order, bits, shared),
+                    expected,
+                    "order {order:?} input {bits:?} shared {shared}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ccx_keeps_superposition_coherent() {
+    // H on target, Toffoli with both controls 1 acts as X, and X|+> = |+>: H brings it back to 0.
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    let mut t = c.qubit();
+    c.x(&mut a);
+    c.x(&mut b);
+    c.h(&mut t);
+    c.ccx(&mut a, &mut b, &mut t);
+    c.h(&mut t);
+    let m = c.measure(t);
+    assert_eq!(count_ones(&c, m, 50), 0);
+}
+
+#[test]
+fn ccx_qasm_output() {
+    let mut c = Circuit::new();
+    let mut a = c.qubit();
+    let mut b = c.qubit();
+    let mut t = c.qubit();
+    c.ccx(&mut t, &mut a, &mut b);
+    c.ccx_ctrl(&a, &b, &mut t);
+    assert_eq!(
+        c.to_qasm(),
+        "OPENQASM 3.0;\ninclude \"stdgates.inc\";\nqubit[3] q;\n\
+         ccx q[2], q[0], q[1];\nccx q[0], q[1], q[2];\n"
+    );
+}
+
+#[test]
+#[should_panic(expected = "ccx")]
+fn ccx_ctrl_rejects_the_same_control_twice() {
+    let mut c = Circuit::new();
+    let a = c.qubit();
+    let mut t = c.qubit();
+    c.ccx_ctrl(&a, &a, &mut t);
+}

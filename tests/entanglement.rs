@@ -120,3 +120,14 @@ fn qubit_from_another_circuit_is_rejected() {
     let b = c2.qubit();
     c1.may_be_entangled(&a, &b);
 }
+
+#[test]
+fn ccx_groups_all_three_qubits() {
+    let mut c = Circuit::new();
+    let mut r = c.qreg(4);
+    let [a, b, t] = r.get_disjoint_mut([0, 1, 2]).unwrap();
+    c.ccx(a, b, t);
+    assert!(c.may_be_entangled(&r[0], &r[1]));
+    assert!(c.may_be_entangled(&r[1], &r[2]));
+    assert!(!c.may_be_entangled(&r[0], &r[3]));
+}

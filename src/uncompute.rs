@@ -1,7 +1,7 @@
 // Scoped uncomputation (docs/design/uncomputation.md).
 //
 // Soundness argument: the compute step may only permute computational basis states
-// (`x`, `cx`), so it maps |x>|0> to |x>|f(x)>. The apply step sees the ancillas and every
+// (`x`, `cx`, `ccx`), so it maps |x>|0> to |x>|f(x)>. The apply step sees the ancillas and every
 // qubit the compute step read only through `&Qubit`, and every `Circuit` method that takes
 // a `&Qubit` acts block-diagonally in that qubit's computational basis. Hence applying the
 // recorded compute ops in reverse restores every ancilla to exactly |0>.
@@ -12,7 +12,7 @@
 use crate::{Circuit, Op, Qubit};
 
 /// `Circuit::with_ancilla`와 `Circuit::with_ancillas`의 계산 단계에 전달되는 제한된 회로 빌더다.
-/// 계산 기저 상태만 치환하는 `x`와 `cx`만 제공하므로 계산 단계는 |x⟩|0⟩을 |x⟩|f(x)⟩로 옮기고, 이를 역순으로 다시 실행하면 모든 보조 큐비트가 정확히 |0⟩으로 돌아온다.
+/// 계산 기저 상태만 치환하는 `x`, `cx`, `ccx`만 제공하므로 계산 단계는 |x⟩|0⟩을 |x⟩|f(x)⟩로 옮기고, 이를 역순으로 다시 실행하면 모든 보조 큐비트가 정확히 |0⟩으로 돌아온다.
 /// `measure`, `reset`, 분기, 기저를 바꾸는 게이트(`h`, `rx`, `ry` 등)는 보조 큐비트가 `t`와 얽힌 채 남을 수 있어(예: `h(anc)` 후 `cx_ctrl(anc, t)` 뒤 `h(anc)`) 제공하지 않고 대각 위상 게이트도 정확히 상쇄되므로 빠져 있어, 이런 실수는 컴파일 오류로 차단된다.
 #[derive(Debug)]
 pub struct ReversibleCircuit {
@@ -39,6 +39,14 @@ impl ReversibleCircuit {
     pub fn cx(&mut self, control: &Qubit, target: &mut Qubit) {
         let (c, t) = (self.own(control), self.own(target));
         self.ops.push(Op::Cx(c, t));
+    }
+
+    /// 계산 단계에 기록되는 자기 역원(self-inverse) Toffoli 게이트로, 계산 단계가 AND형(비선형) 불 함수를 보조 큐비트에 계산할 수 있게 한다.
+    /// 두 제어 큐비트가 같으면 패닉한다.
+    pub fn ccx(&mut self, control1: &Qubit, control2: &Qubit, target: &mut Qubit) {
+        let (a, b, t) = (self.own(control1), self.own(control2), self.own(target));
+        crate::check_distinct_controls(a, b);
+        self.ops.push(Op::Ccx(a, b, t));
     }
 }
 
@@ -84,7 +92,7 @@ impl Circuit {
             self.push_reversible(op);
         }
         let result = apply(self, &anc);
-        // `x` and `cx` are self-inverse, so the inverse is the same ops in reverse order.
+        // `x`, `cx` and `ccx` are self-inverse, so the inverse is the same ops in reverse order.
         for op in rev.ops.iter().rev() {
             self.push_reversible(op);
         }
@@ -97,8 +105,9 @@ impl Circuit {
     fn push_reversible(&mut self, op: &Op) {
         match *op {
             Op::Cx(c, t) => self.push_cx(c, t),
+            Op::Ccx(a, b, t) => self.push_ccx(a, b, t),
             Op::Gate(g, q) => self.ops.push(Op::Gate(g, q)),
-            // ReversibleCircuit only records `x` and `cx`.
+            // ReversibleCircuit only records `x`, `cx` and `ccx`.
             Op::Measure { .. } | Op::Reset(_) | Op::If { .. } => unreachable!(),
         }
     }
@@ -164,10 +173,10 @@ mod tests {
                 }
             }
             let compute_plan: Vec<(u64, u64, u64)> = (0..1 + rng.below(8))
-                .map(|_| (rng.below(3), rng.below(8), rng.below(8)))
+                .map(|_| (rng.below(4), rng.below(8), rng.below(8)))
                 .collect();
             let apply_plan: Vec<(u64, u64, u64)> = (0..1 + rng.below(6))
-                .map(|_| (rng.below(3), rng.below(8), rng.below(8)))
+                .map(|_| (rng.below(4), rng.below(8), rng.below(8)))
                 .collect();
             let mut anc_slots = [0usize; 3];
             let inputs_ref = &inputs;
@@ -178,6 +187,12 @@ mod tests {
                         match kind {
                             0 => u.x(&mut anc[a]),
                             1 => u.cx(&inputs_ref[i as usize % n_in], &mut anc[a]),
+                            3 => {
+                                // Two distinct controls: another ancilla and an input.
+                                let b = (a + 1 + i as usize % 2) % 3;
+                                let [x, y] = anc.get_disjoint_mut([b, a]).unwrap();
+                                u.ccx(x, &inputs_ref[j as usize % n_in], y);
+                            }
                             _ => {
                                 let b = (a + 1 + i as usize % 2) % 3;
                                 let [x, y] = anc.get_disjoint_mut([b, a]).unwrap();
@@ -193,6 +208,9 @@ mod tests {
                         match kind {
                             0 => c.cx_ctrl(&anc[i as usize % 3], t),
                             1 => c.cx_ctrl(&inputs_ref[i as usize % n_in], t),
+                            3 => {
+                                c.ccx_ctrl(&anc[i as usize % 3], &inputs_ref[j as usize % n_in], t)
+                            }
                             _ => {
                                 c.h(t);
                                 c.t(t);

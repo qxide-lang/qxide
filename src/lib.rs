@@ -234,7 +234,7 @@ pub enum Backend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SimError {
-    /// 스태빌라이저 백엔드로 비Clifford 게이트(`t`, `tdg`, `rx`, `ry`, `rz`)를 실행하려 했다. 미실행 분기 안이나 Clifford 각도 회전도 거부한다.
+    /// 스태빌라이저 백엔드로 비Clifford 게이트(`t`, `tdg`, `rx`, `ry`, `rz`, `ccx`)를 실행하려 했다. 미실행 분기 안이나 Clifford 각도 회전도 거부한다.
     NotClifford {
         /// 문제가 된 첫 게이트의 OpenQASM 이름(예: `t`, `rx`)을 담는다.
         gate: &'static str,
@@ -302,6 +302,7 @@ impl std::error::Error for SimError {}
 pub(crate) enum Op {
     Gate(Gate, usize),
     Cx(usize, usize),
+    Ccx(usize, usize, usize),
     Measure {
         qubit: usize,
         bit: usize,
@@ -445,6 +446,26 @@ impl Circuit {
     fn push_cx(&mut self, c: usize, t: usize) {
         self.groups.union(c, t);
         self.ops.push(Op::Cx(c, t));
+    }
+
+    /// Toffoli(CCX, OpenQASM 3 `ccx`): 두 제어 큐비트가 모두 |1⟩일 때만 `target`을 뒤집는다. 세 인자 모두 `&mut`이므로 같은 큐비트를 중복 전달할 수 없으며(컴파일 오류), 비Clifford 게이트라 스태빌라이저 백엔드에서는 거부된다.
+    pub fn ccx(&mut self, control1: &mut Qubit, control2: &mut Qubit, target: &mut Qubit) {
+        let (a, b, t) = (self.own(control1), self.own(control2), self.own(target));
+        self.push_ccx(a, b, t);
+    }
+
+    /// `ccx`와 같은 게이트지만 제어 큐비트를 공유 참조(`&Qubit`)로 받아 `with_ancilla`의 적용 단계 등에서 `&Qubit`인 보조·입력 큐비트에도 사용할 수 있다.
+    /// 공유 참조는 별칭(aliasing)이 가능하므로 두 제어 큐비트에 같은 큐비트를 전달하면 패닉한다.
+    pub fn ccx_ctrl(&mut self, control1: &Qubit, control2: &Qubit, target: &mut Qubit) {
+        let (a, b, t) = (self.own(control1), self.own(control2), self.own(target));
+        check_distinct_controls(a, b);
+        self.push_ccx(a, b, t);
+    }
+
+    fn push_ccx(&mut self, a: usize, b: usize, t: usize) {
+        self.groups.union(a, t);
+        self.groups.union(b, t);
+        self.ops.push(Op::Ccx(a, b, t));
     }
 
     /// 런타임 유니온 파인드로 추적한 얽힘 그룹을 기준으로 두 큐비트의 얽힘 가능성을 반환한다.
@@ -613,6 +634,11 @@ impl Circuit {
     }
 }
 
+// Shared-reference controls can alias; OpenQASM rejects a gate with a repeated qubit.
+fn check_distinct_controls(a: usize, b: usize) {
+    assert_ne!(a, b, "ccx의 두 제어 큐비트는 서로 달라야 합니다");
+}
+
 fn check_bit(circuit: usize, b: Bit) {
     assert_eq!(b.circuit, circuit, "다른 회로의 비트입니다");
 }
@@ -624,6 +650,7 @@ fn write_qasm(ops: &[Op], depth: usize, s: &mut String) {
         match op {
             Op::Gate(g, i) => *s += &format!("{} q[{i}];\n", g.qasm()),
             Op::Cx(a, b) => *s += &format!("cx q[{a}], q[{b}];\n"),
+            Op::Ccx(a, b, t) => *s += &format!("ccx q[{a}], q[{b}], q[{t}];\n"),
             Op::Measure { qubit, bit } => *s += &format!("c[{bit}] = measure q[{qubit}];\n"),
             Op::Reset(i) => *s += &format!("reset q[{i}];\n"),
             Op::If { bit, value, body } => {

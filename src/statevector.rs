@@ -90,6 +90,14 @@ fn exec(ops: &[Op], state: &mut [C], bits: &mut [bool], rng: &mut SplitMix64) {
                     }
                 }
             }
+            &Op::Ccx(a, b, t) => {
+                let (mc, mt) = ((1 << a) | (1 << b), 1 << t);
+                for i in 0..dim {
+                    if i & mc == mc && i & mt == 0 {
+                        state.swap(i, i | mt);
+                    }
+                }
+            }
             &Op::Measure { qubit, bit } => {
                 bits[bit] = collapse(state, qubit, rng);
             }

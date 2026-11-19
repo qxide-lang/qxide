@@ -100,7 +100,16 @@ mod tests {
             let mut qs: Vec<_> = (0..n).map(|_| c.qubit()).collect();
             for _ in 0..rng.below(25) {
                 let i = rng.below(n as u64) as usize;
-                match rng.below(6) {
+                match rng.below(7) {
+                    6 if n > 2 => {
+                        let j = (i + 1 + rng.below(n as u64 - 1) as usize) % n;
+                        let mut k = rng.below(n as u64) as usize;
+                        while k == i || k == j {
+                            k = (k + 1) % n;
+                        }
+                        let [a, b, t] = qs.get_disjoint_mut([i, j, k]).unwrap();
+                        c.ccx(a, b, t);
+                    }
                     0 => c.h(&mut qs[i]),
                     1 => c.t(&mut qs[i]),
                     2 => c.rx(&mut qs[i], 0.1 + rng.below(30) as f64 / 10.0),

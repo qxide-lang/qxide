@@ -10,6 +10,7 @@ pub(crate) fn first_non_clifford(ops: &[Op]) -> Option<&'static str> {
         Op::Gate(g @ (Gate::T | Gate::Tdg | Gate::Rx(_) | Gate::Ry(_) | Gate::Rz(_)), _) => {
             Some(g.name())
         }
+        Op::Ccx(..) => Some("ccx"),
         Op::If { body, .. } => first_non_clifford(body),
         _ => None,
     })
@@ -29,6 +30,8 @@ fn exec(ops: &[Op], t: &mut Tableau, bits: &mut [bool], rng: &mut SplitMix64) {
         match op {
             &Op::Gate(g, q) => t.gate(g, q),
             &Op::Cx(c, x) => t.cx(c, x),
+            // Rejected by `first_non_clifford` before simulation.
+            Op::Ccx(..) => unreachable!(),
             &Op::Measure { qubit, bit } => {
                 bits[bit] = t.measure(qubit, || rng.next_u64() & 1 == 1).0;
             }

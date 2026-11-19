@@ -424,3 +424,32 @@ fn forcing_state_vector_on_large_clifford_circuit_still_checks_memory() {
 fn simulate_panics_with_memory_error_instead_of_allocating() {
     big_non_clifford(40).simulate(0);
 }
+
+#[test]
+fn ccx_is_not_clifford() {
+    let mut c = Circuit::new();
+    let mut r = c.qreg(3);
+    let [a, b, t] = r.get_disjoint_mut([0, 1, 2]).unwrap();
+    c.ccx(a, b, t);
+    assert!(!c.is_clifford());
+    assert_eq!(c.select_backend(), Backend::StateVector);
+    assert_eq!(
+        c.simulate_with(Backend::Stabilizer, 0).unwrap_err(),
+        SimError::NotClifford { gate: "ccx" }
+    );
+
+    let mut c = Circuit::new();
+    let mut flag = c.qubit();
+    let mut r = c.qreg(3);
+    c.h(&mut flag);
+    let m = c.measure(flag);
+    c.if_one(m, |c| {
+        let [a, b, t] = r.get_disjoint_mut([0, 1, 2]).unwrap();
+        c.ccx(a, b, t);
+    });
+    assert!(!c.is_clifford());
+    assert_eq!(
+        c.simulate_with(Backend::Stabilizer, 0).unwrap_err(),
+        SimError::NotClifford { gate: "ccx" }
+    );
+}

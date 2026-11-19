@@ -112,13 +112,14 @@ fn ancilla_parity() -> Circuit {
         |u, [x, y]: &mut [_; 2]| {
             u.cx(&a, x);
             u.cx(&b, x);
-            u.x(y);
+            u.ccx(&a, &b, y);
         },
         |c, [x, y]| {
             c.cx_ctrl(x, &mut target);
             c.cx_ctrl(y, &mut target);
         },
     );
+    c.ccx(&mut a, &mut b, &mut target);
     c.measure(a);
     c.measure(b);
     c.measure(target);
