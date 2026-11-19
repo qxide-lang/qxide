@@ -77,6 +77,7 @@
 
 #[cfg(feature = "gpu")]
 mod gpu;
+mod groups;
 mod rng;
 mod stabilizer;
 mod statevector;
@@ -248,6 +249,7 @@ pub struct Circuit {
     // Nesting level of `if_one`/`if_zero` bodies currently being recorded.
     depth: usize,
     memory_limit: u64,
+    groups: groups::Groups,
 }
 
 impl Default for Circuit {
@@ -266,6 +268,7 @@ impl Circuit {
             free: std::collections::VecDeque::new(),
             depth: 0,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            groups: groups::Groups::default(),
         }
     }
 
@@ -284,6 +287,7 @@ impl Circuit {
             }
             None => {
                 self.n_qubits += 1;
+                self.groups.add_slot();
                 self.n_qubits - 1
             }
         };
@@ -358,7 +362,20 @@ impl Circuit {
     /// 두 인자가 모두 `&mut`이라 같은 큐비트를 동시에 넣을 수 없다.
     pub fn cx(&mut self, control: &mut Qubit, target: &mut Qubit) {
         let (c, t) = (self.own(control), self.own(target));
+        self.push_cx(c, t);
+    }
+
+    fn push_cx(&mut self, c: usize, t: usize) {
+        self.groups.union(c, t);
         self.ops.push(Op::Cx(c, t));
+    }
+
+    /// 런타임 유니온 파인드로 추적한 얽힘 그룹을 기준으로 두 큐비트의 얽힘 가능성을 반환한다.
+    /// `if_one`이나 `if_zero` 본문을 포함한 모든 `cx`는 두 큐비트의 그룹을 전이적으로 병합하며, 측정과 최상위 `reset`은 해당 큐비트만 그룹에서 제거하고 나머지는 유지하지만 분기 본문 안의 `reset`은 실행되지 않을 수 있어 제거하지 않는다.
+    /// 결과는 보수적인 과근사이므로 `false`는 얽히지 않은 곱 상태임을 보장하고 `true`는 제어 큐비트가 `|0⟩`인 `cx` 등을 포함해 얽혔을 수 있음만 뜻하며, 같은 큐비트를 두 번 전달하면 `true`를 반환한다.
+    /// 큐비트가 다른 회로에 속해 있으면 패닉한다.
+    pub fn may_be_entangled(&self, a: &Qubit, b: &Qubit) -> bool {
+        self.groups.same(self.own(a), self.own(b))
     }
 
     /// 큐비트를 측정한다. 큐비트는 여기서 소비되어 사라지고, 결과 자리를 가리키는 비트가 남는다.
@@ -379,6 +396,7 @@ impl Circuit {
             bit: b.index,
         });
         self.free.push_back(i);
+        self.groups.detach(i);
         b
     }
 
@@ -400,6 +418,10 @@ impl Circuit {
     pub fn reset(&mut self, q: &mut Qubit) {
         let i = self.own(q);
         self.ops.push(Op::Reset(i));
+        // A reset inside a branch body may not run, so it cannot break any correlation.
+        if self.depth == 0 {
+            self.groups.detach(i);
+        }
     }
 
     /// 측정 비트가 1일 때만 `body` 연산을 실행하는 고전 피드포워드다(양자·고전 결합). 안에서는 `measure`를 쓸 수 없다.
