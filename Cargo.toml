@@ -1,6 +1,6 @@
 [package]
 name = "qxide"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Early Qxide experiment, a Rust-like quantum/classical language: qubit ownership as Rust types, OpenQASM 3 output, auto-selected state-vector/stabilizer simulators, optional GPU backend (prototype)"
 license = "MIT OR Apache-2.0"
