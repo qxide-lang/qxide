@@ -219,7 +219,7 @@ fn qx_blocks(entry: &str) -> Vec<String> {
 #[test]
 fn explain_examples_trigger_their_code_and_fixes_run() {
     // Safety-net and retired codes cannot be triggered by any program.
-    let untriggerable = ["Q0219", "Q0407"];
+    let untriggerable = ["Q0219", "Q0407", "Q0412"];
     // Import errors need a project with several files; their examples are `java` blocks and the
     // same cases are tested in module_tests.rs. Q0508 (import in a lone file) stays a `qx` example.
     let needs_project = [

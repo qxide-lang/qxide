@@ -158,6 +158,8 @@ struct Checker {
     scopes: Vec<Vec<usize>>,
     // Condition spans of the enclosing `if`-on-`Bit` statements.
     bit_ifs: Vec<Span>,
+    // Qubits lent to calls whose arguments are still being checked, as (variable, use site).
+    held: Vec<(usize, Span)>,
     ret: Ty,
     errors: Vec<Diagnostic>,
 }
@@ -170,6 +172,7 @@ pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
         vars: Vec::new(),
         scopes: Vec::new(),
         bit_ifs: Vec::new(),
+        held: Vec::new(),
         ret: Ty::Void,
         errors: Vec::new(),
     };
@@ -719,6 +722,32 @@ impl Checker {
         }
     }
 
+    // A gate or call operand stays in use until every argument has been evaluated.
+    fn hold(&mut self, id: usize, at: Span) {
+        if self.vars[id].state == State::Live {
+            self.held.push((id, at));
+        }
+    }
+
+    // Ends the holds taken since `mark`; an operand consumed meanwhile (by a later argument or
+    // its own index) would reach the gate already measured.
+    fn release(&mut self, mark: usize) {
+        let held: Vec<(usize, Span)> = self.held.drain(mark..).collect();
+        let mut reported = Vec::new();
+        for (id, at) in held {
+            if let State::Consumed(where_) = self.vars[id].state {
+                if reported.contains(&id) {
+                    continue;
+                }
+                reported.push(id);
+                let name = self.vars[id].name.clone();
+                self.err(Code::UseAfterConsume, at, msg::use_after_consume(&name))
+                    .notes
+                    .push(note(where_, msg::note_consumed_here()));
+            }
+        }
+    }
+
     fn expect_ty(&mut self, at: Span, want: Ty, found: Ty) {
         // Java-style widening: an `int` is accepted where a `double` is expected.
         if want == found
@@ -866,7 +895,12 @@ impl Checker {
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                let (l, r) = (self.expr(lhs), self.expr(rhs));
+                let l = self.expr(lhs);
+                let r = if matches!(op, BinOp::And | BinOp::Or) {
+                    self.short_circuit_rhs(*op, rhs)
+                } else {
+                    self.expr(rhs)
+                };
                 use BinOp::*;
                 match op {
                     Add | Sub | Mul | Div | Rem | Lt | Le | Gt | Ge => {
@@ -897,6 +931,26 @@ impl Checker {
                 }
             }
         }
+    }
+
+    // The right operand of `&&`/`||` may be skipped at run time, like a one-armed `if`.
+    fn short_circuit_rhs(&mut self, op: BinOp, rhs: &Expr) -> Ty {
+        let before = self.states();
+        let t = self.expr(rhs);
+        for (id, was) in before.into_iter().enumerate() {
+            if let (State::Live, State::Consumed(at)) = (was, self.vars[id].state) {
+                if self.vars[id].ty.is_quantum() {
+                    let name = self.vars[id].name.clone();
+                    let op = if op == BinOp::And { "&&" } else { "||" };
+                    self.err(
+                        Code::ShortCircuitConsume,
+                        at,
+                        msg::short_circuit_consume(&name, op),
+                    );
+                }
+            }
+        }
+        t
     }
 
     fn arity(&mut self, name: &Ident, args: &[Expr], want: usize, span: Span) -> bool {
@@ -934,6 +988,7 @@ impl Checker {
                 }
             }
         }
+        let mark = self.held.len();
         if self.arity(name, args, params.len(), span) {
             // Quantum arguments already passed, as (argument index, place).
             let mut passed: Vec<(usize, (usize, Idx))> = Vec::new();
@@ -952,6 +1007,7 @@ impl Checker {
                         // also leak.
                         if consume && key.1 == Idx::Whole && self.vars[key.0].borrowed.is_none() {
                             self.vars[key.0].state = State::Consumed(span);
+                            self.held.retain(|&(h, _)| h != key.0);
                         }
                         continue;
                     }
@@ -965,6 +1021,7 @@ impl Checker {
                 }
             }
         }
+        self.release(mark);
         ret
     }
 
@@ -986,6 +1043,7 @@ impl Checker {
             }
             "cx" | "ccx" => {
                 let want = if n == "cx" { 2 } else { 3 };
+                let mark = self.held.len();
                 if self.arity(name, args, want, span) {
                     let places: Vec<_> = args.iter().map(|a| self.place(a)).collect();
                     for j in 0..places.len() {
@@ -1004,6 +1062,7 @@ impl Checker {
                         }
                     }
                 }
+                self.release(mark);
                 Ty::Void
             }
             "measure" | "discard" => {
@@ -1073,18 +1132,22 @@ impl Checker {
                 Ty::Void
             }
             _ if ROTATIONS.contains(&n) => {
+                let mark = self.held.len();
                 if self.arity(name, args, 2, span) {
                     self.place(&args[0]);
                     let t = self.expr(&args[1]);
                     self.numeric(args[1].span, t);
                 }
+                self.release(mark);
                 Ty::Void
             }
             _ => {
                 debug_assert!(ONE_QUBIT_OPS.contains(&n));
+                let mark = self.held.len();
                 if self.arity(name, args, 1, span) {
                     self.place(&args[0]);
                 }
+                self.release(mark);
                 Ty::Void
             }
         }
@@ -1097,6 +1160,7 @@ impl Checker {
                 if let Some(id) = self.lookup(name) {
                     if self.vars[id].ty == Ty::Qubit {
                         self.use_var(id, e.span);
+                        self.hold(id, e.span);
                         return Some((id, Idx::Whole));
                     }
                 }
@@ -1107,6 +1171,7 @@ impl Checker {
                 };
                 let id = self.lookup(name)?;
                 self.use_var(id, base.span);
+                self.hold(id, base.span);
                 let t = self.expr(index);
                 self.expect_ty(index.span, Ty::Int, t);
                 let idx = match index.kind {
@@ -1134,6 +1199,7 @@ impl Checker {
                     let t = self.vars[id].ty;
                     if t.is_quantum() {
                         self.use_var(id, e.span);
+                        self.hold(id, e.span);
                         self.expect_ty(e.span, want, t);
                         return;
                     }

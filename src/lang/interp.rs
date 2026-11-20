@@ -140,7 +140,7 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
 
 fn internal(at: Span) -> Diagnostic {
     // Only reachable if the checker and interpreter disagree.
-    Diagnostic::new(Code::PlaceRequired, at, msg::place_required())
+    Diagnostic::new(Code::Internal, at, msg::internal_error())
 }
 
 impl<'p> Interp<'p> {
@@ -631,4 +631,17 @@ fn double_op(op: BinOp, a: f64, b: f64, at: Span) -> R<Value> {
         Ge => Value::Bool(a >= b),
         And | Or => return Err(internal(at)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A checker/interpreter mismatch must not masquerade as a user error such as Q0311.
+    #[test]
+    fn internal_errors_have_their_own_code() {
+        let d = internal(Span::default());
+        assert_eq!(d.code, Code::Internal);
+        assert_eq!(d.code.as_str(), "Q0412");
+    }
 }

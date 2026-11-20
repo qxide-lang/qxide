@@ -985,3 +985,61 @@ fn run_limits_cap_state_vector_qubits_and_tableaus() {
         run("t.qx", &rotated, 5, 9).ok()
     );
 }
+
+const EAT: &str = "double eat(consume Qubit q) {\n    Bit m = measure(q);\n    return 1.0;\n}\n\
+                   int eatInt(consume Qubit q) {\n    discard(q);\n    return 0;\n}\n\
+                   int eatReg(consume QReg r) {\n    discard(r);\n    return 0;\n}\n\
+                   int peek(Qubit q) {\n    h(q);\n    return 0;\n}\n\
+                   void g(Qubit a, int k) {\n    h(a);\n}\n";
+
+// A qubit lent to a call stays borrowed until the call runs: a later argument (or the index of
+// the same operand) must not consume it, or the gate would act on a measured qubit.
+#[test]
+fn borrowed_operand_cannot_be_consumed_by_a_later_argument() {
+    let rejected = [
+        "Qubit q = qubit();\nrx(q, eat(q));",
+        "QReg r = qreg(2);\nh(r[eatReg(r)]);",
+        "Qubit q = qubit();\ng(q, eatInt(q));",
+        "Qubit q = qubit();\nQReg r = qreg(2);\ncx(q, r[eatInt(q)]);\ndiscard(r);",
+        "QReg r = qreg(3);\nccx(r[0], r[1], r[eatReg(r)]);",
+    ];
+    for body in rejected {
+        let src = format!("{EAT}{}", main_body(body));
+        let c = codes(&src);
+        assert!(c.contains(&"Q0301"), "{body}: {c:?}");
+        assert!(build(&src).is_err(), "{body}");
+    }
+    // Consuming a different qubit, or borrowing in both places, is fine.
+    for body in [
+        "Qubit q = qubit();\nQubit p = qubit();\nrx(q, eat(p));\ndiscard(q);",
+        "Qubit q = qubit();\ng(q, peek(q));\ndiscard(q);",
+        "QReg r = qreg(2);\nh(r[peek(r[0])]);\ndiscard(r);",
+        "Qubit q = qubit();\nint k = eatInt(q);\nQubit p = qubit();\ng(p, k);\ndiscard(p);",
+    ] {
+        let src = format!("{EAT}{}", main_body(body));
+        ok(&src);
+        assert!(build(&src).is_ok(), "{body}");
+    }
+}
+
+// `&&`/`||` skip their right operand at run time, so consuming a qubit there is conditional.
+#[test]
+fn short_circuit_right_operand_cannot_consume() {
+    for body in [
+        "Qubit q = qubit();\nboolean b = true || eatInt(q) == 0;\nprintln(\"{}\", b);",
+        "Qubit q = qubit();\nboolean b = false && eatInt(q) == 0;\ndiscard(q);",
+        "Qubit q = qubit();\nboolean b = 1 < 2 && 0 < eatInt(q);\ndiscard(q);",
+    ] {
+        // Like a one-armed `if`, the qubit then counts as consumed (as in Q0304).
+        let c = codes(&format!("{EAT}{}", main_body(body)));
+        assert_eq!(c.first(), Some(&"Q0315"), "{body}: {c:?}");
+        assert!(!c.contains(&"Q0302"), "{body}: {c:?}");
+    }
+    // The left operand always runs; borrowing on the right is fine.
+    for body in [
+        "Qubit q = qubit();\nboolean b = eatInt(q) == 0 || true;\nprintln(\"{}\", b);",
+        "Qubit q = qubit();\nboolean b = true || peek(q) == 0;\ndiscard(q);",
+    ] {
+        ok(&format!("{EAT}{}", main_body(body)));
+    }
+}

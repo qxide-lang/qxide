@@ -1166,6 +1166,43 @@ void main() {
 }
 ```
 
+## Q0315: qubit consumed in short-circuit operand
+
+Q0315 occurs at compile time when a qubit is consumed (by `measure`, `discard`, or a `consume` parameter) inside the right operand of `&&` or `||`. Because `&&` and `||` use short-circuit evaluation, the right operand is skipped at run time when the left operand already decides the result, leaving the qubit consumed on some runs and not others—like consuming a qubit in only one branch of an `if` (Q0304). Consuming a qubit in the left operand is fine because it always runs, and borrowing a qubit on the right (such as applying gates via a non-`consume` parameter) is also fine. After this error is reported, the qubit counts as consumed.
+
+Erroneous code example:
+
+```qx
+int check(consume Qubit q) {
+    Bit m = measure(q);
+    return 1;
+}
+
+void main() {
+    Qubit q = qubit();
+    boolean ready = true;
+    boolean go = ready || check(q) == 1;  // error[Q0315]
+    println("{}", go);
+}
+```
+
+To fix this error, consume the qubit in its own statement before the condition and use the stored result:
+
+```qx
+int check(consume Qubit q) {
+    Bit m = measure(q);
+    return 1;
+}
+
+void main() {
+    Qubit q = qubit();
+    boolean ready = true;
+    int result = check(q);
+    boolean go = ready || result == 1;
+    println("{}", go);
+}
+```
+
 ## Q0401: integer arithmetic overflow on `int`
 
 This error occurs when an arithmetic operation produces a result outside the representable range of `int`, which is a 64-bit signed integer (`i64`). Instead of silently wrapping around to an unintended value, `.qx` reports an overflow error when a calculation exceeds the type's bounds.
@@ -1396,6 +1433,12 @@ void main() {
     println("{}", m);
 }
 ```
+
+## Q0412: internal error between the checker and the interpreter
+
+The interpreter raises Q0412 as an internal safety net when a program that passed static checks cannot be executed because the checker and the interpreter disagree—for example, when an operand that the checker considered alive turns out to already be consumed at run time. It exists so the interpreter fails explicitly on such mismatches rather than continuing in an invalid state, and replaces the misleading Q0311 error that older versions printed in this situation.
+
+Because static checking should catch invalid programs before execution, seeing Q0412 always indicates a bug in qxide. Report the issue along with the program that triggered it.
 
 ## Q0501: unknown package in an import
 

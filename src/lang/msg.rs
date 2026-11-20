@@ -166,6 +166,10 @@ pub fn note_first_use() -> String {
     "first passed here".into()
 }
 
+pub fn short_circuit_consume(name: &str, op: &str) -> String {
+    format!("qubit `{name}` is consumed on the right of `{op}`, which is skipped when the left operand decides the result")
+}
+
 pub fn branch_mismatch(name: &str) -> String {
     format!("qubit `{name}` is consumed in only one branch of this `if`")
 }
@@ -196,6 +200,10 @@ pub fn outer_assign_in_bit_if(name: &str) -> String {
 
 pub fn shadow_live(name: &str) -> String {
     format!("declaration shadows qubit `{name}`, which is still alive")
+}
+
+pub fn internal_error() -> String {
+    "internal error in qxide: checked program failed to run; please report this bug".into()
 }
 
 pub fn place_required() -> String {
@@ -293,6 +301,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::BuiltinRedefined => "rename the function to avoid conflicting with a built-in".into(),
         Code::BitAtBuildTime => "a `Bit` can be used as an `if` condition or printed with `println`".into(),
         Code::NeverConsumed => "call `measure` or `discard` on it before the end of its scope".into(),
+        Code::ShortCircuitConsume => "consume the qubit in a separate statement before the condition and store the result in a variable".into(),
         Code::BranchMismatch => "consume the qubit in both branches or in neither".into(),
         Code::ConsumedInLoop => "allocate the qubit inside the loop body instead".into(),
         Code::PartialMove => "measure or discard the whole register; gates may still use `r[i]`".into(),
