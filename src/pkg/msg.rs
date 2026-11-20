@@ -82,6 +82,10 @@ pub fn reason_bad_path(path: &str) -> String {
     format!("unsafe or invalid archive entry path `{path}`")
 }
 
+pub fn reason_duplicate_entry(path: &str) -> String {
+    format!("archive entry `{path}` conflicts with another entry (case-insensitive)")
+}
+
 pub fn reason_too_large(limit: u64) -> String {
     let mib = limit >> 20;
     format!("archive exceeds size limit of {mib} MiB")

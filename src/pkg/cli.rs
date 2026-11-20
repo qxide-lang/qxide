@@ -342,6 +342,7 @@ fn publish(o: &Opts) -> Result<()> {
     validate_for_publish(&m)?;
     check_library(&m)?;
     let (bytes, files) = archive::pack(&m)?;
+    archive::check_paths(files.iter().map(String::as_str)).map_err(reject)?;
     if bytes.len() as u64 > archive::MAX_ARCHIVE {
         return Err(reject(msg::reason_too_large(archive::MAX_ARCHIVE)));
     }

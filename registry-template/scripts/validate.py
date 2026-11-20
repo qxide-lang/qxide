@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+import unicodedata
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,8 +32,29 @@ MAX_ARCHIVE = 10 << 20
 MAX_UNPACKED = 50 << 20
 MAX_FILES = 2000
 
+# Windows device names, reserved with or without an extension (mirrors src/pkg/archive.rs).
+RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    f"{dev}{n}" for dev in ("COM", "LPT") for n in "123456789¹²³"
+}
+WINDOWS_INVALID = set('<>:"/\\|?*')
+ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
 errors: list[str] = []
 summary: list[str] = []
+
+
+def portable(part: str) -> bool:
+    """Same rule as `portable_component` in the client: a name every OS stores unchanged."""
+    if not part or part.endswith((".", " ")):
+        return False
+    if any(c in WINDOWS_INVALID or unicodedata.category(c) == "Cc" for c in part):
+        return False
+    return part.split(".")[0].rstrip(" ").translate(ASCII_UPPER) not in RESERVED
+
+
+def fold(part: str) -> str:
+    """Case folding used to find entries that collide on case-insensitive file systems."""
+    return part.lower().upper()
 
 
 def error(where: str, what: str) -> None:
@@ -114,14 +136,26 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
         return []
     root = f"{entry['name']}-{entry['vers']}"
     files, total, manifest = [], 0, None
+    shipped: set[str] = set()
+    folded_files: set[tuple[str, ...]] = set()
+    folded_dirs: set[tuple[str, ...]] = set()
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            members = tar.getmembers()
-            if len(members) > MAX_FILES:
-                error(where, f"more than {MAX_FILES} files")
-            for m in members:
+            count = 0
+            # Iterate lazily: a huge member list is refused without being read in full.
+            for m in tar:
+                count += 1
+                if count > MAX_FILES:
+                    error(where, f"more than {MAX_FILES} files")
+                    break
                 p = PurePosixPath(m.name)
-                if p.is_absolute() or ".." in p.parts or p.parts[:1] != (root,) or any(":" in s or "\\" in s for s in p.parts):
+                if (
+                    p.is_absolute()
+                    or ".." in p.parts
+                    or p.parts[:1] != (root,)
+                    or any(":" in s or "\\" in s for s in p.parts)
+                    or not all(portable(s) for s in p.parts[1:])
+                ):
                     error(where, f"unsafe path `{m.name}`")
                     continue
                 if m.isdir():
@@ -129,8 +163,19 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
                 if not m.isfile():
                     error(where, f"`{m.name}` is not a regular file")
                     continue
-                total += m.size
                 rel = "/".join(p.parts[1:])
+                if not rel:
+                    error(where, f"unsafe path `{m.name}`")
+                    continue
+                folded = tuple(fold(s) for s in p.parts[1:])
+                prefixes = [folded[:k] for k in range(1, len(folded))]
+                if folded in folded_files or folded in folded_dirs or any(d in folded_files for d in prefixes):
+                    error(where, "entry `{path}` collides case-insensitively with another entry".format(path=m.name))
+                    continue
+                folded_files.add(folded)
+                folded_dirs.update(prefixes)
+                shipped.add(rel)
+                total += m.size
                 files.append(f"{rel} ({m.size} B)")
                 if rel == "qxide.toml":
                     manifest = tar.extractfile(m).read().decode("utf-8")
@@ -152,7 +197,7 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
     for key in ("description", "license", "qxide"):
         if not pkg.get(key):
             error(where, f"qxide.toml has no `{key}`")
-    if not any(f.startswith("src/lib.qx ") for f in files):
+    if "src/lib.qx" not in shipped:
         error(where, "archive has no src/lib.qx")
     return files
 

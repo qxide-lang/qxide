@@ -362,6 +362,109 @@ fn unsafe_archive_entries_are_rejected() {
     );
 }
 
+// A gzip tarball of regular files with raw header paths, in the given order.
+fn raw_archive(files: &[&str]) -> Vec<u8> {
+    let mut raw = Vec::new();
+    for path in files {
+        let mut h = tar::Header::new_gnu();
+        {
+            let name = &mut h.as_old_mut().name;
+            name[..path.len()].copy_from_slice(path.as_bytes());
+        }
+        h.set_size(4);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_cksum();
+        raw.extend_from_slice(h.as_bytes());
+        raw.extend_from_slice(b"evil");
+        raw.resize(raw.len() + 508, 0);
+    }
+    raw.resize(raw.len() + 1024, 0);
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, &raw).unwrap();
+    gz.finish().unwrap()
+}
+
+#[test]
+fn archive_paths_must_be_portable_and_unique() {
+    let dir = tmp_dir("portable");
+    let ok = raw_archive(&[
+        "demo-1.0.0/qxide.toml",
+        "demo-1.0.0/src/lib.qx",
+        "demo-1.0.0/src/console.qx",
+        "demo-1.0.0/src/com10.qx",
+        "demo-1.0.0/src/lib/x.qx",
+    ]);
+    archive::unpack(&ok, "demo-1.0.0", &dir.join("ok")).unwrap();
+    // Each of these would overwrite `src/lib.qx` (or another entry) on Windows or macOS, or
+    // cannot be created there at all.
+    for second in [
+        "src/lib.qx.",
+        "src/lib.qx ",
+        "src/LIB.qx",
+        "src/lib.qx",
+        "SRC/lib.qx",
+        "src/lib.qx/x.qx",
+        "src/nul.qx",
+        "src/CON",
+        "src/aux.tar.gz",
+        "src/Com1.qx",
+        "src/lpt9",
+        "src/conin$.qx",
+        "src/com\u{b9}.qx",
+        "src/nul .qx",
+        "src/a<b.qx",
+        "src/a>b.qx",
+        "src/a\"b.qx",
+        "src/a|b.qx",
+        "src/a?b.qx",
+        "src/a*b.qx",
+        "src/a\u{1}b.qx",
+        "src/a\u{7f}b.qx",
+        "src./x.qx",
+    ] {
+        let bytes = raw_archive(&[
+            "demo-1.0.0/qxide.toml",
+            "demo-1.0.0/src/lib.qx",
+            &format!("demo-1.0.0/{second}"),
+        ]);
+        let out = dir.join("out");
+        let err = archive::unpack(&bytes, "demo-1.0.0", &out).unwrap_err();
+        assert_eq!(err.code, Code::BadArchive, "{second:?}");
+        assert!(!out.exists(), "nothing written for {second:?}");
+        assert!(
+            archive::check_paths(["qxide.toml", "src/lib.qx", second]).is_err(),
+            "{second:?}"
+        );
+    }
+    // A directory first, then a file of the same (case-folded) name.
+    let bytes = raw_archive(&[
+        "demo-1.0.0/qxide.toml",
+        "demo-1.0.0/src/a/x.qx",
+        "demo-1.0.0/src/A",
+    ]);
+    let err = archive::unpack(&bytes, "demo-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+    assert!(!dir.join("out").exists());
+    assert!(archive::check_paths(["qxide.toml", "src/lib.qx", "src/lib/x.qx"]).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn publishing_skips_symlinked_top_level_files() {
+    let dir = tmp_dir("symlink");
+    let m = write_package(&dir.join("pkg"));
+    std::fs::write(dir.join("secret"), "do not ship").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret"), m.dir.join("LICENSE")).unwrap();
+    let files: Vec<String> = archive::package_files(&m)
+        .unwrap()
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect();
+    assert!(!files.contains(&"LICENSE".to_string()), "{files:?}");
+    assert!(files.contains(&"README.md".to_string()), "{files:?}");
+}
+
 #[test]
 fn installs_verify_the_checksum_first() {
     let dir = tmp_dir("install");
