@@ -16,7 +16,10 @@ export function SiteHeader() {
     <header className="topbar">
       <div className="wrap">
         <Link className="brand" to="/" aria-label="qxide.dev home">
-          qxide<span className="dot">.</span>dev
+          <img className="brand-mark" src="/qxide-mark.svg" alt="" width="26" height="26" />
+          <span>
+            qxide<span className="dot">.</span>dev
+          </span>
         </Link>
         <nav aria-label="Main">
           <ul className="nav">
