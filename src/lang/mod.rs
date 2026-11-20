@@ -4,13 +4,18 @@
 mod ast;
 mod check;
 mod diag;
+mod explain;
+mod fmt;
 mod interp;
 mod lexer;
 mod msg;
 mod parser;
+pub mod repl;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tools_tests;
 
 use std::collections::HashMap;
 
@@ -92,6 +97,21 @@ fn strip_bom(src: &str) -> &str {
 pub fn check(name: &str, src: &str) -> Result<(), Failure> {
     let src = strip_bom(src);
     front(src).map(|_| ()).map_err(|e| render(name, src, &e))
+}
+
+/// `qxide fmt`: the formatted source. Refuses sources that do not parse, and double-checks that
+/// formatting kept every token and comment before anything is written.
+pub fn format(name: &str, src: &str) -> Result<String, Failure> {
+    let out = fmt::format(src).map_err(|e| render(name, strip_bom(src), &e))?;
+    if fmt::fingerprint(&out) != fmt::fingerprint(src) {
+        return Err(Failure(msg::fmt_changed_tokens(name)));
+    }
+    Ok(out)
+}
+
+/// `qxide explain`: the catalog entry for an error code such as `Q0302` (case-insensitive).
+pub fn explain(arg: &str) -> Option<String> {
+    explain::explain(&explain::normalize(arg)?)
 }
 
 /// `qxide qasm`: elaborate once and print the OpenQASM 3 of the resulting circuit.

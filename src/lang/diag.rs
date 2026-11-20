@@ -19,127 +19,84 @@ impl Span {
     }
 }
 
-/// Stable error codes; tests match on these, never on message text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Code {
-    UnexpectedChar,
-    UnterminatedString,
-    InvalidEscape,
-    IntTooLarge,
-    RemovedSyntax,
-    VarNotAllowed,
-    TypeNameAsIdent,
-    UnknownMethod,
-    ConsumeNonQuantum,
-    VarInfer,
-    InvalidCast,
-    BorrowedConsume,
-    ConditionalCall,
-    AsIntTooWide,
-    UnexpectedToken,
-    TooDeep,
-    ReservedKeyword,
-    UnknownType,
-    BadFormat,
-    UnknownVar,
-    UnknownFn,
-    Arity,
-    TypeMismatch,
-    Duplicate,
-    BadMain,
-    ImmutableAssign,
-    NotIndexable,
-    FormatArgCount,
-    PrintlnFormat,
-    NotPrintable,
-    MissingReturn,
-    StringNotAllowed,
-    BadCondition,
-    BuiltinRedefined,
-    BitAtBuildTime,
-    UseAfterConsume,
-    NeverConsumed,
-    DuplicateQubit,
-    BranchMismatch,
-    ConsumedInLoop,
-    PartialMove,
-    QuantumAssign,
-    ForbiddenInBitIf,
-    OuterAssignInBitIf,
-    ShadowLive,
-    PlaceRequired,
-    TempDropped,
-    Overflow,
-    DivByZero,
-    IndexOutOfBounds,
-    RecursionLimit,
-    Simulation,
-    NoReturn,
-    NegativeSize,
-    TooManyQubits,
+macro_rules! codes {
+    ($($name:ident => $code:literal,)*) => {
+        /// Stable error codes; tests match on these, never on message text.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Code {
+            $($name,)*
+        }
+
+        impl Code {
+            /// Every code the compiler can report, in numeric order.
+            #[allow(dead_code)]
+            pub const ALL: &'static [Code] = &[$(Code::$name,)*];
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Code::$name => $code,)*
+                }
+            }
+        }
+    };
 }
 
-impl Code {
-    pub fn as_str(self) -> &'static str {
-        use Code::*;
-        match self {
-            UnexpectedChar => "Q0101",
-            UnterminatedString => "Q0102",
-            InvalidEscape => "Q0103",
-            IntTooLarge => "Q0104",
-            RemovedSyntax => "Q0110",
-            VarNotAllowed => "Q0111",
-            TypeNameAsIdent => "Q0112",
-            UnknownMethod => "Q0220",
-            ConsumeNonQuantum => "Q0221",
-            VarInfer => "Q0222",
-            InvalidCast => "Q0223",
-            BorrowedConsume => "Q0313",
-            ConditionalCall => "Q0314",
-            AsIntTooWide => "Q0410",
-            UnexpectedToken => "Q0105",
-            TooDeep => "Q0106",
-            ReservedKeyword => "Q0107",
-            UnknownType => "Q0108",
-            BadFormat => "Q0109",
-            UnknownVar => "Q0201",
-            UnknownFn => "Q0202",
-            Arity => "Q0203",
-            TypeMismatch => "Q0204",
-            Duplicate => "Q0205",
-            BadMain => "Q0206",
-            ImmutableAssign => "Q0207",
-            NotIndexable => "Q0209",
-            FormatArgCount => "Q0210",
-            PrintlnFormat => "Q0211",
-            NotPrintable => "Q0212",
-            MissingReturn => "Q0213",
-            StringNotAllowed => "Q0214",
-            BadCondition => "Q0215",
-            BuiltinRedefined => "Q0217",
-            BitAtBuildTime => "Q0218",
-            UseAfterConsume => "Q0301",
-            NeverConsumed => "Q0302",
-            DuplicateQubit => "Q0303",
-            BranchMismatch => "Q0304",
-            ConsumedInLoop => "Q0305",
-            PartialMove => "Q0306",
-            QuantumAssign => "Q0307",
-            ForbiddenInBitIf => "Q0308",
-            OuterAssignInBitIf => "Q0309",
-            ShadowLive => "Q0310",
-            PlaceRequired => "Q0311",
-            TempDropped => "Q0312",
-            Overflow => "Q0401",
-            DivByZero => "Q0402",
-            IndexOutOfBounds => "Q0403",
-            RecursionLimit => "Q0405",
-            Simulation => "Q0406",
-            NoReturn => "Q0407",
-            NegativeSize => "Q0408",
-            TooManyQubits => "Q0409",
-        }
-    }
+codes! {
+    UnexpectedChar => "Q0101",
+    UnterminatedString => "Q0102",
+    InvalidEscape => "Q0103",
+    IntTooLarge => "Q0104",
+    UnexpectedToken => "Q0105",
+    TooDeep => "Q0106",
+    ReservedKeyword => "Q0107",
+    UnknownType => "Q0108",
+    BadFormat => "Q0109",
+    RemovedSyntax => "Q0110",
+    VarNotAllowed => "Q0111",
+    TypeNameAsIdent => "Q0112",
+    UnknownVar => "Q0201",
+    UnknownFn => "Q0202",
+    Arity => "Q0203",
+    TypeMismatch => "Q0204",
+    Duplicate => "Q0205",
+    BadMain => "Q0206",
+    ImmutableAssign => "Q0207",
+    NotIndexable => "Q0209",
+    FormatArgCount => "Q0210",
+    PrintlnFormat => "Q0211",
+    NotPrintable => "Q0212",
+    MissingReturn => "Q0213",
+    StringNotAllowed => "Q0214",
+    BadCondition => "Q0215",
+    BuiltinRedefined => "Q0217",
+    BitAtBuildTime => "Q0218",
+    UnknownMethod => "Q0220",
+    ConsumeNonQuantum => "Q0221",
+    VarInfer => "Q0222",
+    InvalidCast => "Q0223",
+    UseAfterConsume => "Q0301",
+    NeverConsumed => "Q0302",
+    DuplicateQubit => "Q0303",
+    BranchMismatch => "Q0304",
+    ConsumedInLoop => "Q0305",
+    PartialMove => "Q0306",
+    QuantumAssign => "Q0307",
+    ForbiddenInBitIf => "Q0308",
+    OuterAssignInBitIf => "Q0309",
+    ShadowLive => "Q0310",
+    PlaceRequired => "Q0311",
+    TempDropped => "Q0312",
+    BorrowedConsume => "Q0313",
+    ConditionalCall => "Q0314",
+    Overflow => "Q0401",
+    DivByZero => "Q0402",
+    IndexOutOfBounds => "Q0403",
+    RecursionLimit => "Q0405",
+    Simulation => "Q0406",
+    NoReturn => "Q0407",
+    NegativeSize => "Q0408",
+    TooManyQubits => "Q0409",
+    AsIntTooWide => "Q0410",
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +136,8 @@ pub struct SourceMap<'a> {
     pub name: &'a str,
     pub text: &'a str,
     line_starts: Vec<usize>,
+    // Line numbers to display instead of 1, 2, 3, ... (the REPL numbers lines as they were typed).
+    labels: Option<Vec<usize>>,
 }
 
 impl<'a> SourceMap<'a> {
@@ -189,7 +148,15 @@ impl<'a> SourceMap<'a> {
             name,
             text,
             line_starts,
+            labels: None,
         }
+    }
+
+    /// Displays line `i + 1` of the text as `labels[i]`; needs one label per line.
+    pub fn with_labels(mut self, labels: Vec<usize>) -> Self {
+        assert_eq!(labels.len(), self.line_starts.len(), "one label per line");
+        self.labels = Some(labels);
+        self
     }
 
     /// 1-based line and column; columns count chars, not bytes.
@@ -219,6 +186,7 @@ impl<'a> SourceMap<'a> {
         } else {
             (text.chars().count() + 1).saturating_sub(col).max(1)
         };
+        let line = self.labels.as_ref().map_or(line, |l| l[line - 1]);
         let gutter = line.to_string().len();
         let pad = " ".repeat(gutter);
         let _ = writeln!(out, "{pad}--> {}:{line}:{col}", self.name);

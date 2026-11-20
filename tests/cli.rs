@@ -138,3 +138,150 @@ fn lang_command_usage_errors_exit_with_two() {
     );
     assert_eq!(qxide(&["check", "no/such/file.qx"]).status.code(), Some(1));
 }
+
+fn fresh_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&dir);
+    dir
+}
+
+#[test]
+fn new_creates_a_project_that_checks_and_is_formatted() {
+    let dir = fresh_dir("new_project_demo");
+    let dir_arg = dir.to_string_lossy().into_owned();
+    let out = qxide(&["new", &dir_arg]);
+    assert!(out.status.success(), "{out:?}");
+    let main = dir.join("main.qx");
+    let main_arg = main.to_string_lossy().into_owned();
+    assert!(String::from_utf8(out.stdout).unwrap().contains(&main_arg));
+    let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
+    assert!(readme.starts_with("# new_project_demo\n"), "{readme}");
+    assert!(qxide(&["check", &main_arg]).status.success());
+    assert!(qxide(&["fmt", "--check", &main_arg]).status.success());
+    let run = qxide(&["run", &main_arg, "--shots", "50"]);
+    assert!(run.status.success());
+    let table = String::from_utf8(run.stdout).unwrap();
+    assert!(
+        table.contains("a=0 b=0") || table.contains("a=1 b=1"),
+        "{table}"
+    );
+    assert!(
+        !table.contains("a=0 b=1") && !table.contains("a=1 b=0"),
+        "{table}"
+    );
+}
+
+#[test]
+fn new_never_overwrites_an_existing_path() {
+    let dir = fresh_dir("new_project_exists");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.qx"), "keep me").unwrap();
+    let out = qxide(&["new", &dir.to_string_lossy()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("main.qx")).unwrap(),
+        "keep me"
+    );
+    assert!(!dir.join("README.md").exists());
+    // A file in the way is refused too.
+    let file = fresh_dir("new_project_file");
+    std::fs::write(&file, "x").unwrap();
+    assert_eq!(
+        qxide(&["new", &file.to_string_lossy()]).status.code(),
+        Some(1)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "x");
+    assert_eq!(qxide(&["new"]).status.code(), Some(2));
+}
+
+#[test]
+fn fmt_rewrites_in_place_and_check_reports_changes() {
+    let messy = "void main(){\nint x=1;println(\"{}\",x);}\n";
+    let path = tmp_qx("fmt_me.qx", messy);
+    let check = qxide(&["fmt", "--check", &path]);
+    assert_eq!(check.status.code(), Some(1));
+    assert!(!check.stderr.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        messy,
+        "--check must not write"
+    );
+    assert!(qxide(&["fmt", &path]).status.success());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "void main() {\n    int x = 1;\n    println(\"{}\", x);\n}\n"
+    );
+    assert!(qxide(&["fmt", "--check", &path]).status.success());
+    for name in ["bell.qx", "teleport_fn.qx", "conditional_fn.qx"] {
+        let out = qxide(&["fmt", "--check", &example(name)]);
+        assert!(out.status.success(), "{name}");
+    }
+}
+
+#[test]
+fn fmt_refuses_unparsable_files_without_writing() {
+    let src = "void main() {\n    int x = ;\n}\n";
+    let path = tmp_qx("fmt_broken.qx", src);
+    let out = qxide(&["fmt", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains("error[Q0105]"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), src);
+    assert_eq!(qxide(&["fmt"]).status.code(), Some(2));
+    assert_eq!(qxide(&["fmt", &path, "--shots"]).status.code(), Some(2));
+}
+
+#[test]
+fn explain_prints_the_catalog_entry() {
+    let out = qxide(&["explain", "q0301"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("Q0301: "), "{text}");
+    assert!(
+        text.contains("```qx") && text.contains("error[Q0301]"),
+        "{text}"
+    );
+    assert_eq!(qxide(&["explain", "Q9999"]).status.code(), Some(2));
+    assert_eq!(qxide(&["explain"]).status.code(), Some(2));
+}
+
+fn repl_with(input: &str) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_qxide"))
+        .arg("repl")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run qxide repl");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn repl_runs_piped_input() {
+    let out = repl_with("Qubit q = qubit();\nx(q);\nBit m = measure(q);\nh(q);\nm\n:qasm\n:quit\n");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.starts_with("1\nOPENQASM 3.0;\n"), "{stdout}");
+    // No banner or prompts when input is piped.
+    assert!(!stdout.contains("qx> "), "{stdout}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("error[Q0301]") && stderr.contains("<repl>:4:3"),
+        "{stderr}"
+    );
+    let leak = repl_with("Qubit q = qubit();\n");
+    assert_eq!(leak.status.code(), Some(1));
+    assert!(String::from_utf8(leak.stderr)
+        .unwrap()
+        .contains("error[Q0302]"));
+}

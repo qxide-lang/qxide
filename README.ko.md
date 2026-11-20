@@ -110,12 +110,17 @@ c[1] = measure q[1];
 - `qxide run <FILE> [--shots N] [--seed S]`: 1회 실행 시 프로그램 출력을 그대로 보여 주며, `N > 1`이면 측정 기록별로 한 줄씩 배열(`c[0]`이 먼저), 이진수(상위 비트가 먼저), 정수(`c[0]`이 최하위 비트)와 횟수를 출력하고 그 아래에 해당 결과의 프로그램 출력을 이어서 표시합니다.
 - `qxide check <FILE>`: 실행하지 않고 이미 측정한 큐비트를 다시 쓰거나 측정하지 않은 큐비트 같은 오류를 줄·열 번호와 함께 보고합니다.
 - `qxide qasm <FILE>`: OpenQASM 3 회로를 출력합니다.
+- `qxide fmt <FILE> [--check]`: 소스 파일을 서식에 맞춰 제자리에서 다시 씁니다. `--check`를 지정하면 파일을 수정하지 않고 변경 필요 여부만 확인합니다.
+- `qxide repl [--seed S]`: 변수, 함수, 큐비트 상태를 유지하는 대화형 세션을 시작합니다. 측정에는 시드 `S`(기본값 `0`)를 사용합니다.
+- `qxide explain <CODE>`: 영문 카탈로그 [docs/error-codes.md](docs/error-codes.md)에서 해당 오류 코드의 발생 원인, 잘못된 예시, 수정 방법을 찾아 출력합니다.
+- `qxide new <NAME>`: `NAME` 디렉터리를 만들고 벨 쌍 예제 `main.qx`와 짧은 `README.md`를 생성합니다.
 
 언어 사양과 문법의 자세한 내용은 [docs/design/qx-language.md](docs/design/qx-language.md)에서 확인할 수 있습니다.
 
 ## 지금 지원하는 것
 
 - `.qx` 언어: Java식 선언(`int`, `double`, `boolean`, `Qubit`, `QReg`, `Bit`, `BitReg`, `final`, `var`), `(int)` 캐스트, `PI` 상수, 큐비트 함수(기본 대여·`consume` 매개변수, `Qubit`/`QReg` 반환, 측정 결과 `Bit` 조건 `if` 안의 게이트 전용 함수 호출), 선형 큐비트 검사, `qxide run`/`check`/`qasm`
+- 명령줄 도구: `qxide run`/`check`/`qasm` 및 `fmt`(서식 정리), `repl`(대화형 세션), `explain`(오류 코드 설명), `new`(새 프로젝트 생성)
 - 게이트: `h`, `x`, `z`, `s`, `t`, `rx`, `ry`, `rz`, `cx`, `measure`, `reset`
 - 분기: `c.if_one`·`c.if_zero`로 측정 비트별 실행, OpenQASM 3 `if` 출력, 분기 내 측정 불가
 - 재사용: `c.reset`으로 활성 큐비트 |0⟩ 복귀, `measure` 후 `c.qubit()`가 물리 슬롯 초기화·재사용

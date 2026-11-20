@@ -250,6 +250,30 @@ pub fn too_many_qubits(limit: usize) -> String {
     format!("program allocates more than {limit} qubits in total")
 }
 
+pub fn fmt_changed_tokens(name: &str) -> String {
+    format!("qxide: internal error: formatting `{name}` would change tokens or comments; nothing was written; please report this bug in qxide\n")
+}
+
+pub fn repl_banner(version: &str) -> String {
+    format!("qxide {version} interactive .qx session; type :help for commands and :quit to exit.\n")
+}
+
+pub fn repl_help() -> String {
+    "Type statements in main, function definitions, or expressions to print; missing\nsemicolons are added. Variables, functions, and qubits stay until :reset, with\nqxide run rules (measured qubits cannot be reused) and state-vector simulation.\n\n  :help   Show this help\n  :qasm   Print the OpenQASM 3 circuit built so far\n  :reset  Forget all variables, functions, and qubits\n  :quit   Exit; any qubit never measured or discarded is reported (exit code 1)\n".into()
+}
+
+pub fn repl_reset() -> String {
+    "Session reset; all variables, functions, and qubits cleared\n".into()
+}
+
+pub fn repl_unknown_command(cmd: &str) -> String {
+    format!("error: unknown command `:{cmd}`; type `:help` for a list of commands\n")
+}
+
+pub fn repl_return() -> String {
+    "error: top-level `return` is not allowed in the REPL because it would end the session's `main` function and skip later input\n".into()
+}
+
 /// Generic advice for an error code, shown as a `help:` line.
 pub fn help(code: Code) -> Option<String> {
     Some(match code {

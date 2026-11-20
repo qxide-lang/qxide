@@ -125,6 +125,79 @@ note: qubit consumed here
 
 See [docs/design/qx-language.md](docs/design/qx-language.md) for the full language design document.
 
+## More `qxide` commands
+
+Besides `run`, `check`, and `qasm`, the `qxide` command can start a project with `qxide new`, format code with `qxide fmt`, run an interactive session with `qxide repl`, and explain error codes with `qxide explain`.
+
+`qxide new <NAME>` creates a new folder containing a Bell-pair `main.qx` and a short `README.md`, and fails with exit code 1 without creating or overwriting anything if the path already exists. `qxide fmt <FILE>` rewrites a file in place to use standard 4-space indentation, brace placement, spacing, and blank-line rules while preserving comments and exact literal spelling; if the file does not parse, it prints the diagnostic and leaves the file untouched (type and ownership errors do not block formatting). Passing `--check` never writes to the file, exiting with 1 if the file would change and 0 if it is already formatted.
+
+```text
+$ qxide new hello
+Created project `hello` in `hello` with `main.qx` and `README.md`
+Next:
+  qxide run hello/main.qx
+  qxide fmt hello/main.qx
+$ cat messy.qx
+void main(){
+Qubit q=qubit();h( q );
+Bit m=measure(q);println("{}",m);}
+$ qxide fmt --check messy.qx
+qxide: `messy.qx` is not formatted; run `qxide fmt messy.qx` to format it
+$ qxide fmt messy.qx
+$ cat messy.qx
+void main() {
+    Qubit q = qubit();
+    h(q);
+    Bit m = measure(q);
+    println("{}", m);
+}
+```
+
+`qxide repl` starts an interactive session where you can enter statements, function definitions, or bare expressions whose values are printed, with variables, functions, and qubits persisting across inputs. Each entry is checked under the same rules as `qxide run`, so errors such as reusing a measured qubit (`Q0301`) are reported and the rejected input is not kept; qubits may stay live while you work, and any left unmeasured or undiscarded when the session ends are reported as `Q0302` with exit code 1. Built-in commands include `:help` for a summary, `:qasm` to print the OpenQASM 3 circuit built so far, `:reset` to clear the session, and `:quit` to exit.
+
+```text
+$ qxide repl
+qxide 0.6.0 interactive .qx session; type :help for commands and :quit to exit.
+qx> Qubit q = qubit();
+qx> h(q);
+qx> Bit m = measure(q);
+qx> m
+0
+qx> h(q);
+error[Q0301]: use of consumed qubit `q`
+ --> <repl>:5:3
+  |
+5 | h(q);
+  |   ^
+note: qubit consumed here
+ --> <repl>:3:9
+  |
+3 | Bit m = measure(q);
+  |         ^^^^^^^^^^
+qx> :quit
+```
+
+`qxide explain <CODE>` prints what triggers an error code and why the rule exists, along with an erroneous example, how to fix it, and the corrected program (codes are case-insensitive). The text comes from [docs/error-codes.md](docs/error-codes.md), which lists every error code and can also be read directly on GitHub.
+
+````text
+$ qxide explain Q0301
+Q0301: use of a consumed qubit
+
+A `Qubit` was used after it had already been consumed by being measured, discarded, or moved. In `.qx`, qubits have linear types checked at compile time, so once a qubit is consumed it is no longer available for further operations. This prevents a program from applying gates or other operations to a qubit whose quantum state has already been measured, discarded, or transferred.
+
+Erroneous code example:
+
+```qx
+void main() {
+    Qubit q = qubit();
+    Bit b = measure(q);
+    h(q);  // error[Q0301]
+    println("{}", b);
+}
+```
+...
+````
+
 ## Rust library
 
 The same linear-qubit rules are available in the `qxide` Rust library, where the Rust compiler enforces ownership directly. `Qubit` does not implement `Clone`, `measure` consumes the qubit by value, and `cx(&mut a, &mut b)` prevents passing the same qubit twice.

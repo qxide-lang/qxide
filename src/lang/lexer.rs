@@ -137,6 +137,12 @@ pub struct Token {
 }
 
 pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
+    lex_with_comments(src).map(|(toks, _)| toks)
+}
+
+/// Like `lex`, but also returns the span of every `//` comment (up to the line break).
+pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnostic> {
+    let mut comments = Vec::new();
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -147,9 +153,11 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
         if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let start = i;
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
+            comments.push(Span::new(start, i));
             continue;
         }
         let start = i;
@@ -331,7 +339,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
         tok: Tok::Eof,
         span: Span::new(src.len(), src.len()),
     });
-    Ok(out)
+    Ok((out, comments))
 }
 
 #[cfg(test)]
