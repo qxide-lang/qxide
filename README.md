@@ -66,6 +66,35 @@ cargo run --example bell   # 벨 상태: QASM 출력 + 1000번 시뮬레이션
 cargo test                 # 시뮬레이터 테스트 + 컴파일 오류가 나야 하는 예제
 ```
 
+## `.qx` 언어 빠른 시작
+
+`.qx` 파일에서는 Rust와 비슷한 고전 코드와 양자 코드를 함께 작성할 수 있으며, `examples/qx/` 디렉터리에 예제 프로그램(`bell.qx`, `ghz.qx`, `teleport.qx`)이 포함되어 있습니다. `qxide run`, `qxide check`, `qxide qasm` 명령은 `main` 브랜치에 있으며 아직 배포된 0.4.1 바이너리에는 포함되어 있지 않으므로, `cargo install --git https://github.com/qxide-lang/qxide`로 소스에서 설치하거나 저장소 안에서 `cargo run -- <command>`로 실행합니다.
+
+```text
+$ qxide run examples/qx/bell.qx --shots 100
+== 52/100 ==
+a=1 b=1
+== 48/100 ==
+a=0 b=0
+$ qxide check examples/qx/ghz.qx
+examples/qx/ghz.qx: ok
+$ qxide qasm examples/qx/bell.qx
+OPENQASM 3.0;
+include "stdgates.inc";
+qubit[2] q;
+bit[2] c;
+h q[0];
+cx q[0], q[1];
+c[0] = measure q[0];
+c[1] = measure q[1];
+```
+
+- `qxide run <FILE> [--shots N] [--seed S]`: 회로를 구성하고 N회(기본값 1) 시뮬레이션한 뒤 동일한 출력을 횟수별로 묶어 표시합니다.
+- `qxide check <FILE>`: 실행 없이 이미 측정한 큐비트의 재사용이나 측정되지 않은 큐비트 등의 오류를 줄·열 위치와 함께 보고합니다.
+- `qxide qasm <FILE>`: OpenQASM 3 회로를 출력합니다.
+
+언어 설계의 자세한 내용은 [docs/design/qx-language.md](docs/design/qx-language.md)에서 확인할 수 있습니다.
+
 ## 지금 지원하는 것
 
 - 게이트: `h`, `x`, `z`, `s`, `t`, `rx`, `ry`, `rz`, `cx`, `measure`, `reset`
@@ -105,7 +134,7 @@ cargo test                 # 시뮬레이터 테스트 + 컴파일 오류가 나
 | **Q#** | 독립 고수준 오픈소스 언어 | 불투명 식별자(비선형); 해제 시 \|0⟩ 복귀 규칙은 컴파일러 미강제 (시뮬레이터에서 런타임 강제 가능) | 명시적 범위 기반 자동 역연산 (`within { U } apply { V }`) | 타깃 프로파일에 따라 다름 | QIR; Azure Quantum 타깃, QDK 시뮬레이터 |
 | **Qiskit** | Python SDK (라이브러리 + 호스트) | 선형/아핀 큐비트 개념 문서화되지 않음 | 없음 | 동적 회로 지원 (`if_test`, `switch`, `for_loop`, `while_loop`) | OpenQASM 3 (`qiskit.qasm3`); runtime primitives를 통한 IBM 하드웨어 |
 | **Cirq** | Python 라이브러리 (라이브러리 + 호스트) | 선형 큐비트 개념 없음; 단일 연산 내 큐비트 중복만 런타임 검사 | 문서에서 확인되지 않음 | 측정 키 조건부 고전 제어 (`with_classical_controls`) | OpenQASM 2.0/3.0; 내장 시뮬레이터, `qsim` |
-| **qxide** | Rust 라이브러리(크레이트) (독립 `.qx` 문법은 ROADMAP 1단계 계획) | 복사·측정 후 재사용·`cx(&mut a, &mut b)` 중복 컴파일 타임 거부; 묵시적 drop 허용(아핀, 선형 아님) | 지원 (`with_ancilla` 범위 기반, 계산 단계 `x`/`cx`/`ccx`, 제어 큐비트 전용 컴파일·런타임(`RefCell` 등) 검증) | 중간 측정 및 `if_one`/`if_zero` 고전 분기(분기 내부 측정 미지원), `reset` | OpenQASM 3; CPU 상태벡터·안정화 시뮬레이터, GPU 프로토타입 |
+| **qxide** | Rust 라이브러리(크레이트) (독립 `.qx` MVP `main` 반영: `qxide run`/`check`/`qasm`, 자체 선형 큐비트 검사) | 복사·측정 후 재사용·`cx(&mut a, &mut b)` 중복 컴파일 타임 거부; 묵시적 drop 허용(아핀, 선형 아님) | 지원 (`with_ancilla` 범위 기반, 계산 단계 `x`/`cx`/`ccx`, 제어 큐비트 전용 컴파일·런타임(`RefCell` 등) 검증) | 중간 측정 및 `if_one`/`if_zero` 고전 분기(분기 내부 측정 미지원), `reset` | OpenQASM 3; CPU 상태벡터·안정화 시뮬레이터, GPU 프로토타입 |
 
 큐비트를 복사할 수 없는 값으로 다루는 접근(선형/아핀 타입)은 qxide가 새로 만든 개념이 아니라 Guppy와 Silq에 이미 존재하는 아이디어입니다. 정확히 구분하면 Rust의 소유권 모델은 **아핀(affine) 타입**을 제공합니다. 따라서 qxide의 `Qubit`은 복사할 수 없고 `measure`로 소비된 뒤 재사용할 수 없지만, 측정 없이 스코프를 벗어나 조용히 drop되는 것은 막지 않습니다. 반면 Guppy는 컴파일 타임에 큐비트의 복제와 삭제를 모두 금지하는 선형성 제약을 강제하므로, 이 점에서는 Guppy가 더 엄격합니다.
 

@@ -25,7 +25,7 @@ Rust 안에서 큐비트 소유권 규칙이 실제로 쓸 만한지 시험합�
 
 - [x] 문법 초안 문서
 - [x] `.qx` 파일을 읽는 파서
-- [ ] `qxide build hello.qx`로 OpenQASM 3를 만드는 명령어
+- [x] `qxide qasm hello.qx`로 OpenQASM 3를 만드는 명령어(메인테이너 결정으로 이름을 정했으며 `qxide run`, `qxide check`를 함께 추가했습니다)
 - [ ] 에디터 문법 강조 (VS Code)
 
 ## 2단계: 컴파일러
