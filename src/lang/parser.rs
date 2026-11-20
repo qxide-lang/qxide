@@ -1,0 +1,526 @@
+// Recursive-descent parser; stops at the first syntax error.
+
+use super::ast::*;
+use super::diag::{Code, Diagnostic, Span};
+use super::lexer::{Tok, Token};
+use super::msg;
+
+// Bounds recursion on hostile input (deeply nested parentheses or blocks).
+pub const MAX_DEPTH: usize = 128;
+
+pub struct Parser {
+    toks: Vec<Token>,
+    pos: usize,
+    depth: usize,
+}
+
+type PResult<T> = Result<T, Diagnostic>;
+
+pub fn parse(toks: Vec<Token>) -> PResult<Program> {
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
+    let mut fns = Vec::new();
+    while p.peek() != &Tok::Eof {
+        fns.push(p.fn_decl()?);
+    }
+    Ok(Program { fns })
+}
+
+impl Parser {
+    fn peek(&self) -> &Tok {
+        &self.toks[self.pos].tok
+    }
+
+    fn peek_at(&self, n: usize) -> &Tok {
+        let i = (self.pos + n).min(self.toks.len() - 1);
+        &self.toks[i].tok
+    }
+
+    fn span(&self) -> Span {
+        self.toks[self.pos].span
+    }
+
+    fn prev_span(&self) -> Span {
+        self.toks[self.pos.saturating_sub(1)].span
+    }
+
+    fn bump(&mut self) -> Token {
+        let t = self.toks[self.pos].clone();
+        if self.pos + 1 < self.toks.len() {
+            self.pos += 1;
+        }
+        t
+    }
+
+    fn eat(&mut self, t: &Tok) -> bool {
+        if self.peek() == t {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn unexpected(&self, message: String) -> Diagnostic {
+        Diagnostic::new(Code::UnexpectedToken, self.span(), message)
+    }
+
+    fn expect(&mut self, t: Tok) -> PResult<Span> {
+        if self.peek() == &t {
+            Ok(self.bump().span)
+        } else {
+            let want = format!("`{}`", t.symbol().unwrap_or_default());
+            Err(self.unexpected(msg::expected_token(&want, &self.peek().describe())))
+        }
+    }
+
+    fn ident(&mut self) -> PResult<Ident> {
+        match self.peek().clone() {
+            Tok::Ident(name) => {
+                let span = self.bump().span;
+                Ok(Ident { name, span })
+            }
+            t => Err(self.unexpected(msg::expected_ident(&t.describe()))),
+        }
+    }
+
+    fn ty(&mut self) -> PResult<(Ty, Span)> {
+        match self.peek().clone() {
+            Tok::Ident(name) => {
+                let span = self.bump().span;
+                match Ty::from_name(&name) {
+                    Some(t) => Ok((t, span)),
+                    None => Err(Diagnostic::new(
+                        Code::UnknownType,
+                        span,
+                        msg::unknown_type(&name),
+                    )),
+                }
+            }
+            t => Err(self.unexpected(msg::expected_type(&t.describe()))),
+        }
+    }
+
+    fn enter(&mut self) -> PResult<()> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(Diagnostic::new(
+                Code::TooDeep,
+                self.span(),
+                msg::too_deep(MAX_DEPTH),
+            ));
+        }
+        Ok(())
+    }
+
+    fn fn_decl(&mut self) -> PResult<FnDecl> {
+        if self.peek() != &Tok::Fn {
+            return Err(self.unexpected(msg::expected_token("`fn`", &self.peek().describe())));
+        }
+        self.bump();
+        let name = self.ident()?;
+        self.expect(Tok::LParen)?;
+        let mut params = Vec::new();
+        while self.peek() != &Tok::RParen {
+            let pname = self.ident()?;
+            self.expect(Tok::Colon)?;
+            let (ty, ty_span) = self.ty()?;
+            params.push(Param {
+                name: pname,
+                ty,
+                ty_span,
+            });
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(Tok::RParen)?;
+        let (ret, ret_span) = if self.eat(&Tok::Arrow) {
+            self.ty()?
+        } else {
+            (Ty::Unit, name.span)
+        };
+        let body = self.block(true)?;
+        Ok(FnDecl {
+            name,
+            params,
+            ret,
+            ret_span,
+            body,
+        })
+    }
+
+    fn block(&mut self, fn_body: bool) -> PResult<Block> {
+        self.enter()?;
+        self.expect(Tok::LBrace)?;
+        let mut stmts = Vec::new();
+        let mut tail = None;
+        loop {
+            match self.peek() {
+                Tok::RBrace => break,
+                Tok::Let => stmts.push(self.let_stmt()?),
+                Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
+                Tok::For => stmts.push(self.for_stmt()?),
+                Tok::Return => {
+                    let start = self.bump().span;
+                    let value = if self.peek() == &Tok::Semi {
+                        None
+                    } else {
+                        Some(self.expr()?)
+                    };
+                    let end = self.expect(Tok::Semi)?;
+                    stmts.push(Stmt::Return {
+                        value,
+                        span: start.to(end),
+                    });
+                }
+                Tok::Ident(_) if self.peek_at(1) == &Tok::Eq => {
+                    let name = self.ident()?;
+                    self.bump();
+                    let value = self.expr()?;
+                    self.expect(Tok::Semi)?;
+                    stmts.push(Stmt::Assign { name, value });
+                }
+                _ => {
+                    let e = self.expr()?;
+                    if fn_body && self.peek() == &Tok::RBrace {
+                        tail = Some(e);
+                        break;
+                    }
+                    self.expect(Tok::Semi)?;
+                    stmts.push(Stmt::Expr(e));
+                }
+            }
+        }
+        let close = self.expect(Tok::RBrace)?;
+        self.depth -= 1;
+        Ok(Block { stmts, tail, close })
+    }
+
+    fn let_stmt(&mut self) -> PResult<Stmt> {
+        self.bump();
+        let mutable = self.eat(&Tok::Mut);
+        let name = self.ident()?;
+        let ty = if self.eat(&Tok::Colon) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        self.expect(Tok::Eq)?;
+        let init = self.expr()?;
+        self.expect(Tok::Semi)?;
+        Ok(Stmt::Let {
+            mutable,
+            name,
+            ty,
+            init,
+        })
+    }
+
+    fn if_stmt(&mut self) -> PResult<IfStmt> {
+        self.enter()?;
+        self.bump();
+        let cond = self.expr()?;
+        let then = self.block(false)?;
+        let els = if self.eat(&Tok::Else) {
+            if self.peek() == &Tok::If {
+                Some(Else::If(Box::new(self.if_stmt()?)))
+            } else {
+                Some(Else::Block(self.block(false)?))
+            }
+        } else {
+            None
+        };
+        self.depth -= 1;
+        Ok(IfStmt { cond, then, els })
+    }
+
+    fn for_stmt(&mut self) -> PResult<Stmt> {
+        self.bump();
+        let var = self.ident()?;
+        self.expect(Tok::In)?;
+        let start = self.expr()?;
+        self.expect(Tok::DotDot)?;
+        let end = self.expr()?;
+        let body = self.block(false)?;
+        Ok(Stmt::For {
+            var,
+            start,
+            end,
+            body,
+        })
+    }
+
+    pub fn expr(&mut self) -> PResult<Expr> {
+        self.enter()?;
+        let e = self.binary(0);
+        self.depth -= 1;
+        e
+    }
+
+    // Precedence climbing; level 0 is `||`, the highest binary level is `* / %`.
+    fn binary(&mut self, level: usize) -> PResult<Expr> {
+        const LEVELS: usize = 5;
+        if level == LEVELS {
+            return self.unary();
+        }
+        let mut lhs = self.binary(level + 1)?;
+        loop {
+            let op = match (level, self.peek()) {
+                (0, Tok::OrOr) => BinOp::Or,
+                (1, Tok::AndAnd) => BinOp::And,
+                (2, Tok::EqEq) => BinOp::Eq,
+                (2, Tok::NotEq) => BinOp::Ne,
+                (2, Tok::Lt) => BinOp::Lt,
+                (2, Tok::Le) => BinOp::Le,
+                (2, Tok::Gt) => BinOp::Gt,
+                (2, Tok::Ge) => BinOp::Ge,
+                (3, Tok::Plus) => BinOp::Add,
+                (3, Tok::Minus) => BinOp::Sub,
+                (4, Tok::Star) => BinOp::Mul,
+                (4, Tok::Slash) => BinOp::Div,
+                (4, Tok::Percent) => BinOp::Rem,
+                _ => return Ok(lhs),
+            };
+            self.bump();
+            let rhs = self.binary(level + 1)?;
+            let span = lhs.span.to(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            };
+            // Comparisons are non-associative: `a < b < c` is a syntax error.
+            if level == 2 {
+                if let Some(sym) = self.peek().symbol() {
+                    if matches!(sym, "==" | "!=" | "<" | "<=" | ">" | ">=") {
+                        return Err(self.unexpected(msg::chained_comparison()));
+                    }
+                }
+                return Ok(lhs);
+            }
+        }
+    }
+
+    fn unary(&mut self) -> PResult<Expr> {
+        let op = match self.peek() {
+            Tok::Minus => UnOp::Neg,
+            Tok::Bang => UnOp::Not,
+            _ => return self.postfix(),
+        };
+        self.enter()?;
+        let start = self.bump().span;
+        let expr = self.unary()?;
+        self.depth -= 1;
+        let span = start.to(expr.span);
+        Ok(Expr {
+            kind: ExprKind::Unary {
+                op,
+                expr: Box::new(expr),
+            },
+            span,
+        })
+    }
+
+    fn postfix(&mut self) -> PResult<Expr> {
+        let mut e = self.primary()?;
+        while self.peek() == &Tok::LBracket {
+            self.bump();
+            let index = self.expr()?;
+            let end = self.expect(Tok::RBracket)?;
+            let span = e.span.to(end);
+            e = Expr {
+                kind: ExprKind::Index {
+                    base: Box::new(e),
+                    index: Box::new(index),
+                },
+                span,
+            };
+        }
+        Ok(e)
+    }
+
+    fn primary(&mut self) -> PResult<Expr> {
+        let span = self.span();
+        let kind = match self.peek().clone() {
+            Tok::Int(n) => {
+                self.bump();
+                ExprKind::Int(n)
+            }
+            Tok::True => {
+                self.bump();
+                ExprKind::Bool(true)
+            }
+            Tok::False => {
+                self.bump();
+                ExprKind::Bool(false)
+            }
+            Tok::Str(s) => {
+                self.bump();
+                ExprKind::Str(
+                    parse_format(&s)
+                        .ok_or_else(|| Diagnostic::new(Code::BadFormat, span, msg::bad_format()))?,
+                )
+            }
+            Tok::LParen => {
+                self.bump();
+                let e = self.expr()?;
+                let end = self.expect(Tok::RParen)?;
+                return Ok(Expr {
+                    kind: e.kind,
+                    span: span.to(end),
+                });
+            }
+            Tok::Ident(name) => {
+                let name = Ident {
+                    name,
+                    span: self.bump().span,
+                };
+                if self.peek() != &Tok::LParen {
+                    return Ok(Expr {
+                        kind: ExprKind::Var(name.name),
+                        span,
+                    });
+                }
+                self.bump();
+                let mut args = Vec::new();
+                while self.peek() != &Tok::RParen {
+                    args.push(self.expr()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                let end = self.expect(Tok::RParen)?;
+                return Ok(Expr {
+                    kind: ExprKind::Call { name, args },
+                    span: span.to(end),
+                });
+            }
+            t => return Err(self.unexpected(msg::expected_expr(&t.describe()))),
+        };
+        Ok(Expr {
+            kind,
+            span: span.to(self.prev_span()),
+        })
+    }
+}
+
+/// Splits a decoded string literal into text and `{}` holes; `{{`/`}}` are literal braces.
+pub fn parse_format(s: &str) -> Option<Vec<FmtPiece>> {
+    let mut out = Vec::new();
+    let mut lit = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                lit.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                lit.push('}');
+            }
+            '{' if chars.peek() == Some(&'}') => {
+                chars.next();
+                if !lit.is_empty() {
+                    out.push(FmtPiece::Lit(std::mem::take(&mut lit)));
+                }
+                out.push(FmtPiece::Hole);
+            }
+            '{' | '}' => return None,
+            _ => lit.push(c),
+        }
+    }
+    if !lit.is_empty() {
+        out.push(FmtPiece::Lit(lit));
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lang::lexer::lex;
+
+    fn parse_src(src: &str) -> PResult<Program> {
+        parse(lex(src)?)
+    }
+
+    #[test]
+    fn parses_precedence_and_statements() {
+        let p = parse_src(
+            "fn f(n: i64) -> bool { let mut x = 1 + 2 * 3; x = -x; for i in 0..n { if x < 0 || i == 1 && true { x = x % 2; } else if false {} else {} } return n != x; }",
+        )
+        .unwrap();
+        let f = &p.fns[0];
+        assert_eq!(f.ret, Ty::Bool);
+        assert_eq!(f.body.stmts.len(), 4);
+        let Stmt::Let { init, mutable, .. } = &f.body.stmts[0] else {
+            panic!()
+        };
+        assert!(mutable);
+        let ExprKind::Binary { op, rhs, .. } = &init.kind else {
+            panic!()
+        };
+        assert_eq!(*op, BinOp::Add);
+        assert!(matches!(rhs.kind, ExprKind::Binary { op: BinOp::Mul, .. }));
+    }
+
+    #[test]
+    fn tail_expression_only_in_function_body() {
+        let p = parse_src("fn f() -> i64 { 1 + 2 }").unwrap();
+        assert!(p.fns[0].body.tail.is_some());
+        let e = parse_src("fn f() { if true { 1 } }").unwrap_err();
+        assert_eq!(e.code, Code::UnexpectedToken);
+    }
+
+    #[test]
+    fn syntax_errors_have_codes() {
+        assert_eq!(
+            parse_src("fn main() { let x = ; }").unwrap_err().code,
+            Code::UnexpectedToken
+        );
+        assert_eq!(
+            parse_src("fn main() { let x: int = 1; }").unwrap_err().code,
+            Code::UnknownType
+        );
+        assert_eq!(
+            parse_src("fn main() { a < b < c; }").unwrap_err().code,
+            Code::UnexpectedToken
+        );
+        assert_eq!(
+            parse_src(r#"fn main() { println("{x}"); }"#)
+                .unwrap_err()
+                .code,
+            Code::BadFormat
+        );
+        let deep = format!(
+            "fn main() {{ let x = {}1{}; }}",
+            "(".repeat(500),
+            ")".repeat(500)
+        );
+        assert_eq!(parse_src(&deep).unwrap_err().code, Code::TooDeep);
+        let neg = format!("fn main() {{ let x = {}1; }}", "-".repeat(500));
+        assert_eq!(parse_src(&neg).unwrap_err().code, Code::TooDeep);
+    }
+
+    #[test]
+    fn format_strings() {
+        assert_eq!(
+            parse_format("a={} {{b}}").unwrap(),
+            vec![
+                FmtPiece::Lit("a=".into()),
+                FmtPiece::Hole,
+                FmtPiece::Lit(" {b}".into())
+            ]
+        );
+        assert!(parse_format("{").is_none());
+        assert!(parse_format("}").is_none());
+    }
+}

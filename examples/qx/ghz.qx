@@ -1,0 +1,11 @@
+// 5-qubit GHZ state: the register always reads 00000 or 11111.
+fn main() {
+    let n = 5;
+    let r = qreg(n);
+    h(r[0]);
+    for i in 1..n {
+        cx(r[0], r[i]);
+    }
+    let m = measure(r);
+    println("{}", m);
+}
