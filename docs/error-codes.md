@@ -112,7 +112,7 @@ void main() {
 
 ## Q0106: nesting depth exceeds 128 levels
 
-Error `Q0106` occurs when syntax nesting exceeds the compiler's maximum depth of 128 levels. The parser enforces this limit to keep recursion bounded and prevent excessive stack usage on deeply nested input.
+Error `Q0106` occurs when syntax nesting exceeds the compiler's maximum depth of 128 levels. Long left-associative chains also count toward this limit, because each binary operator in a chain like `a + b + c` and each index or method call in a chain like `r[0][0]` nests the syntax tree one level deeper. The parser enforces this limit to keep recursion bounded and prevent excessive stack usage and interpreter stack overflows on deeply nested input.
 
 Erroneous code example:
 

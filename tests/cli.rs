@@ -123,6 +123,47 @@ fn deep_recursion_is_a_diagnostic_not_a_crash() {
         .contains("error[Q0405]"));
 }
 
+// Left-associative chains (`a + b + ...`, `r[0][0]...`) build trees as deep as they are long;
+// they count against the nesting limit, so even the deepest accepted chain inside the deepest
+// allowed recursion must run without overflowing the stack.
+#[test]
+fn long_operator_and_index_chains_are_diagnostics_not_crashes() {
+    let chain = |n: usize, op: &str| vec!["0"; n].join(op);
+    for (name, src) in [
+        (
+            "chain_recursion.qx",
+            format!(
+                "int f(int k) {{\n    if k > 0 {{\n        return f(k - 1) + {};\n    }}\n    return 0;\n}}\n\nvoid main() {{\n    println(\"{{}}\", f(198));\n}}\n",
+                chain(1000, " + ")
+            ),
+        ),
+        ("chain_or.qx", format!("void main() {{\n    boolean b = {};\n}}\n", vec!["false"; 200_000].join(" || "))),
+        ("chain_add.qx", format!("void main() {{\n    int x = {};\n}}\n", chain(200_000, " + "))),
+        ("chain_index.qx", format!("void main() {{\n    QReg r = qreg(1);\n    h(r{});\n    discard(r);\n}}\n", "[0]".repeat(200_000))),
+    ] {
+        let path = tmp_qx(name, &src);
+        for cmd in ["check", "run", "qasm"] {
+            let out = qxide(&[cmd, &path]);
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(1), "{name} {cmd}: {err}");
+            assert!(err.contains("error[Q0106]"), "{name} {cmd}: {err}");
+        }
+    }
+    // The longest chain that still parses, recursing as deep as allowed, runs to completion.
+    let deepest = format!(
+        "int f(int k) {{\n    if k > 0 {{\n        return f(k - 1) + {};\n    }}\n    return 0;\n}}\n\nvoid main() {{\n    println(\"{{}}\", f(198));\n}}\n",
+        chain(100, " + ")
+    );
+    let path = tmp_qx("chain_deepest_ok.qx", &deepest);
+    let out = qxide(&["run", &path]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+}
+
 #[test]
 fn lang_command_usage_errors_exit_with_two() {
     assert_eq!(qxide(&["run"]).status.code(), Some(2));

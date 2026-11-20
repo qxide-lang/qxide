@@ -332,6 +332,9 @@ impl Parser {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
+        // Every operator in a chain nests the tree one level deeper, which the checker and the
+        // interpreter recurse through, so it counts against the nesting limit too.
+        let mut grown = 0;
         loop {
             let op = match (level, self.peek()) {
                 (0, Tok::OrOr) => BinOp::Or,
@@ -347,8 +350,13 @@ impl Parser {
                 (4, Tok::Star) => BinOp::Mul,
                 (4, Tok::Slash) => BinOp::Div,
                 (4, Tok::Percent) => BinOp::Rem,
-                _ => return Ok(lhs),
+                _ => {
+                    self.depth -= grown;
+                    return Ok(lhs);
+                }
             };
+            self.enter()?;
+            grown += 1;
             self.bump();
             let rhs = self.binary(level + 1)?;
             let span = lhs.span.to(rhs.span);
@@ -369,6 +377,7 @@ impl Parser {
                             .with_help(msg::help_chained_comparison()));
                     }
                 }
+                self.depth -= grown;
                 return Ok(lhs);
             }
         }
@@ -419,7 +428,13 @@ impl Parser {
 
     fn postfix(&mut self) -> PResult<Expr> {
         let mut e = self.primary()?;
+        // Like operator chains, each `[i]` or `.m()` nests the tree one level deeper.
+        let mut grown = 0;
         loop {
+            if matches!(self.peek(), Tok::LBracket | Tok::Dot) {
+                self.enter()?;
+                grown += 1;
+            }
             if self.eat(&Tok::LBracket) {
                 let index = self.expr()?;
                 let end = self.expect(Tok::RBracket)?;
@@ -445,6 +460,7 @@ impl Parser {
                     span,
                 };
             } else {
+                self.depth -= grown;
                 return Ok(e);
             }
         }
