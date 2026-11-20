@@ -41,4 +41,5 @@ jobs:
           python-version: "3.12"
       - run: pip install "qiskit==2.6.2" qiskit-qasm3-import
       - run: cargo run --example qasm_dump -- qasm-out
+      - run: for f in examples/qx/*.qx; do cargo run -q -- qasm "$f" > "qasm-out/qx_$(basename "$f" .qx).qasm"; done
       - run: python ci/check_qasm.py qasm-out
