@@ -16,9 +16,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+          targets: wasm32-unknown-unknown
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p qxide-wasm --target wasm32-unknown-unknown -- -D warnings
+      # Includes crates/qxide-wasm, whose tests compare the playground binding with the CLI binary.
+      - run: cargo test --workspace
+
+  # The built playground module must print exactly what the CLI prints. Both scripts use only Node
+  # built-ins, so no npm install is needed.
+  wasm-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/build-wasm.mjs
+        working-directory: site
+      - run: node scripts/parity.mjs
+        working-directory: site
 
   # CI runners have no GPU, so the `gpu` feature is only built and linted here; its tests run locally.
   gpu-build:
