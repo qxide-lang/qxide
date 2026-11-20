@@ -266,9 +266,130 @@ fn resolution_picks_newest_and_respects_the_lock() {
     }
     let again = resolve_with(&m, Some(&pinned), &mut reg).unwrap();
     assert_eq!(versions(&again), [pair("a", "0.1.3"), pair("b", "1.0.0")]);
-    assert!(resolve::is_fresh(&m, &lock, URL));
-    assert!(!resolve::is_fresh(&root("a = \"0.2\"\n"), &lock, URL));
-    assert!(!resolve::is_fresh(&m, &lock, "file:///elsewhere/"));
+    assert!(fresh(&m, &lock, URL, &reg));
+    assert!(!fresh(&root("a = \"0.2\"\n"), &lock, URL, &reg));
+    assert!(!fresh(&m, &lock, "file:///elsewhere/", &reg));
+}
+
+// `is_fresh` with the requirements of registry packages taken from the in-memory index.
+fn fresh(m: &Manifest, lock: &Lock, url: &str, reg: &Mem) -> bool {
+    resolve::is_fresh(m, lock, url, &mut |p| {
+        let e = reg.0.get(&p.name)?.iter().find(|e| e.vers == p.version)?;
+        Some(
+            e.deps
+                .iter()
+                .map(|d| (d.name.clone(), d.req.clone()))
+                .collect(),
+        )
+    })
+}
+
+fn pkg<'a>(lock: &'a mut Lock, name: &str) -> &'a mut LockedPackage {
+    lock.packages.iter_mut().find(|p| p.name == name).unwrap()
+}
+
+#[test]
+fn freshness_checks_the_whole_graph() {
+    let mut reg = registry(vec![
+        entry("a", "1.0.0", &[("b", "^1.2")]),
+        entry("b", "1.0.0", &[]),
+        entry("b", "1.2.0", &[]),
+        entry("c", "1.0.0", &[]),
+    ]);
+    let m = root("a = \"1\"\n");
+    let lock = resolve_with(&m, None, &mut reg).unwrap();
+    assert!(fresh(&m, &lock, URL, &reg));
+    let edit = |f: &dyn Fn(&mut Lock)| {
+        let mut l = lock.clone();
+        f(&mut l);
+        l.sort();
+        l
+    };
+    // A hand-edited downgrade of a transitive dependency breaks `a`'s `^1.2` on it.
+    let downgraded = edit(&|l| {
+        let b = pkg(l, "b");
+        b.version = Version::new(1, 0, 0);
+        b.checksum = Some(entry("b", "1.0.0", &[]).cksum);
+    });
+    assert!(!fresh(&m, &downgraded, URL, &reg));
+    // A new resolution moves it back up.
+    let again = resolve_with(&m, Some(&downgraded), &mut reg).unwrap();
+    assert_eq!(versions(&again), [pair("a", "1.0.0"), pair("b", "1.2.0")]);
+    // A locked package nothing depends on would still be fetched by `install`.
+    let extra = edit(&|l| {
+        l.packages.push(LockedPackage {
+            name: "c".into(),
+            version: Version::new(1, 0, 0),
+            source: Source::Registry(URL.into()),
+            checksum: Some(entry("c", "1.0.0", &[]).cksum),
+            dependencies: vec![],
+        })
+    });
+    assert!(!fresh(&m, &extra, URL, &reg));
+    // A registry package locked as a path package.
+    let moved = edit(&|l| {
+        let b = pkg(l, "b");
+        b.source = Source::Path("../b".into());
+        b.checksum = None;
+    });
+    assert!(!fresh(&m, &moved, URL, &reg));
+    // Dependency names that differ from the index entry.
+    let renamed = edit(&|l| {
+        let a = pkg(l, "a");
+        a.dependencies.push("app".into());
+    });
+    assert!(!fresh(&m, &renamed, URL, &reg));
+}
+
+#[test]
+fn freshness_rereads_path_packages() {
+    let dir = tmp_dir("pathfresh");
+    let mid = dir.join("mid");
+    std::fs::create_dir_all(&mid).unwrap();
+    let write_mid = |req: &str| {
+        std::fs::write(
+            mid.join("qxide.toml"),
+            format!(
+                "[package]\nname = \"mid\"\nversion = \"0.1.0\"\n\n[dependencies]\nb = \"{req}\"\n"
+            ),
+        )
+        .unwrap()
+    };
+    write_mid("^1");
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n";
+    let m = manifest::parse(text, &dir.join("app")).unwrap();
+    let mut reg = registry(vec![entry("b", "1.0.0", &[]), entry("b", "2.0.0", &[])]);
+    let lock = resolve_with(&m, None, &mut reg).unwrap();
+    assert_eq!(versions(&lock), [pair("b", "1.0.0"), pair("mid", "0.1.0")]);
+    assert!(fresh(&m, &lock, URL, &reg));
+    // The path package now needs `b` 2, which the lock does not have.
+    write_mid("^2");
+    assert!(!fresh(&m, &lock, URL, &reg));
+    let again = resolve_with(&m, Some(&lock), &mut reg).unwrap();
+    assert_eq!(versions(&again), [pair("b", "2.0.0"), pair("mid", "0.1.0")]);
+}
+
+#[test]
+fn lock_names_are_validated() {
+    let path = Path::new("qxide.lock");
+    let ok = "version = 1\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = []\n";
+    assert!(lock::parse(ok, path).is_ok());
+    // Names end up in cache paths, so a traversal must be refused when the lock is read.
+    let cksum = sha256_hex(b"x");
+    for bad in [
+        ok.replace("name = \"app\"", "name = \"../../../../outside/x\""),
+        ok.replace("dependencies = []", "dependencies = [\"../x\"]"),
+        format!(
+            "{ok}\n[[package]]\nname = \"..\\\\x\"\nversion = \"1.0.0\"\nsource = \"registry+{URL}\"\nchecksum = \"sha256:{cksum}\"\ndependencies = []\n"
+        ),
+    ] {
+        assert_eq!(
+            lock::parse(&bad, path).unwrap_err().code,
+            Code::InvalidLock,
+            "{bad}"
+        );
+    }
 }
 
 #[test]

@@ -374,9 +374,15 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// Whether `lock` still matches `root` without consulting the registry: same direct
-/// dependencies, each pinned version satisfies its requirement, path packages unchanged.
-pub fn is_fresh(root: &Manifest, lock: &Lock, registry_url: &str) -> bool {
+/// Requirements a locked registry package puts on its dependencies (from its unpacked manifest
+/// or its index entry), or `None` when they are not known locally.
+pub type DepsOf<'a> = dyn FnMut(&LockedPackage) -> Option<Vec<(String, VersionReq)>> + 'a;
+
+/// Whether `lock` still matches `root` without resolving again: same direct dependencies, every
+/// locked version satisfies every requirement on it (from the root, path packages as they are on
+/// disk now, and registry packages through `deps_of`), sources are the ones a resolution would
+/// pick, and every locked package is reachable from the root.
+pub fn is_fresh(root: &Manifest, lock: &Lock, registry_url: &str, deps_of: &mut DepsOf) -> bool {
     let Some(r) = lock.root() else { return false };
     let names: Vec<String> = root.dependencies.keys().cloned().collect();
     if r.name != root.name || r.dependencies != names {
@@ -395,24 +401,98 @@ pub fn is_fresh(root: &Manifest, lock: &Lock, registry_url: &str) -> bool {
             return false;
         }
     }
-    // Every package's dependencies must be locked too; path packages may have been edited.
-    for p in &lock.packages {
-        if p.dependencies.iter().any(|d| lock.get(d).is_none()) {
+    // Every package's dependencies must be locked too, and nothing may be locked that the root
+    // does not reach: `install` would fetch it.
+    let mut reachable = vec![r.name.clone()];
+    let mut i = 0;
+    while i < reachable.len() {
+        let Some(p) = lock.get(&reachable[i]) else {
             return false;
+        };
+        for d in &p.dependencies {
+            if !reachable.contains(d) {
+                reachable.push(d.clone());
+            }
         }
-        if let Source::Path(rel) = &p.source {
-            match manifest::load(&root.dir.join(rel)) {
-                Ok(m) => {
-                    let deps: Vec<String> = m.dependencies.keys().cloned().collect();
-                    if m.version != p.version || deps != p.dependencies {
-                        return false;
-                    }
+        i += 1;
+    }
+    if lock.packages.iter().any(|p| !reachable.contains(&p.name)) {
+        return false;
+    }
+    // Every requirement edge, as (dependency, requirement, path relative to the project root).
+    let mut edges: Vec<DepEdge> = root
+        .dependencies
+        .iter()
+        .map(|(n, d)| {
+            (
+                n.clone(),
+                d.req.clone(),
+                d.path.as_ref().map(|p| join_rel("", p)),
+            )
+        })
+        .collect();
+    for p in &lock.packages {
+        match &p.source {
+            Source::Root => {}
+            // Path packages may have been edited since the lock was written.
+            Source::Path(rel) => {
+                let Ok(m) = manifest::load(&root.dir.join(rel)) else {
+                    return false;
+                };
+                let deps: Vec<String> = m.dependencies.keys().cloned().collect();
+                if m.name != p.name || m.version != p.version || deps != p.dependencies {
+                    return false;
                 }
-                Err(_) => return false,
+                edges.extend(m.dependencies.iter().map(|(n, d)| {
+                    (
+                        n.clone(),
+                        d.req.clone(),
+                        d.path.as_ref().map(|q| join_rel(rel, q)),
+                    )
+                }));
+            }
+            Source::Registry(url) => {
+                if url != registry_url {
+                    return false;
+                }
+                let Some(reqs) = deps_of(p) else { continue };
+                let mut deps: Vec<String> = reqs.iter().map(|(n, _)| n.clone()).collect();
+                deps.sort();
+                deps.dedup();
+                if deps != p.dependencies {
+                    return false;
+                }
+                edges.extend(reqs.into_iter().map(|(n, r)| (n, Some(r), None)));
             }
         }
     }
-    true
+    let mut paths: HashMap<&str, &str> = HashMap::new();
+    for (name, req, path) in &edges {
+        let Some(d) = lock.get(name) else {
+            return false;
+        };
+        if req.as_ref().is_some_and(|r| !r.matches(&d.version)) {
+            return false;
+        }
+        if let Some(path) = path {
+            // Two different paths for one package do not resolve at all (`path_conflict`).
+            if paths
+                .insert(name.as_str(), path.as_str())
+                .is_some_and(|q| q != path)
+            {
+                return false;
+            }
+        }
+    }
+    // A package is a path package exactly when something asks for it by path.
+    lock.packages
+        .iter()
+        .all(|p| match (&p.source, paths.get(p.name.as_str())) {
+            (Source::Root, _) => true,
+            (Source::Path(q), Some(path)) => q == path,
+            (Source::Registry(_), None) => true,
+            _ => false,
+        })
 }
 
 /// Drops packages no longer reachable from the root (after `qxide remove`), without the

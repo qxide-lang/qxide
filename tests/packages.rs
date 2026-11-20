@@ -90,6 +90,38 @@ impl Env {
         std::fs::write(dir.join("src/main.qx"), main).unwrap();
         dir
     }
+
+    /// A library package with an empty public function and these `[dependencies]` lines.
+    fn lib(&self, name: &str, version: &str, deps: &str) -> PathBuf {
+        let dir = self.root.join(format!("{name}-{version}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("qxide.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"{version}\"\ndescription = \"d\"\n\
+                 license = \"MIT\"\nqxide = \">=0.6\"\n\n[dependencies]\n{deps}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.qx"), "public void noop() {}\n").unwrap();
+        dir
+    }
+
+    /// Edits `qxide.lock` of `dir` with `f`.
+    fn edit_lock(&self, dir: &Path, f: impl FnOnce(String) -> String) {
+        let path = dir.join("qxide.lock");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, f(text)).unwrap();
+    }
+}
+
+const PLAIN_MAIN: &str = "void main() {\n    println(\"ok\");\n}\n";
+
+// The `[[package]]` block of `name` in a lock file.
+fn lock_block<'a>(lock: &'a str, name: &str) -> &'a str {
+    let start = lock.find(&format!("name = \"{name}\"\n")).unwrap();
+    let end = lock[start..].find("\n\n").map_or(lock.len(), |e| start + e);
+    &lock[start..end]
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -210,6 +242,91 @@ fn lock_must_match_the_manifest() {
     std::fs::remove_dir_all(env.home.join("registry/src")).unwrap();
     env.fails(&app, &["run"], "Q0611");
     env.ok(&app, &["install"]);
+    env.ok(&app, &["run"]);
+}
+
+#[test]
+fn transitive_requirements_keep_the_lock_honest() {
+    let env = Env::new("transitive");
+    for v in [None, Some("0.1.1"), Some("0.2.0")] {
+        let lib = env.package("bell-utils", v);
+        env.ok(&lib, &["publish"]);
+    }
+    let index = read(&env.registry.join("index/be/ll/bell-utils"));
+    let cksum = |v: &str| {
+        let line = index
+            .lines()
+            .find(|l| l.contains(&format!("\"vers\":\"{v}\"")))
+            .unwrap();
+        line.split("\"cksum\":\"").nth(1).unwrap()[..64].to_string()
+    };
+    // A registry package that needs bell-utils ^0.1.1.
+    let top = env.lib("top", "1.0.0", "bell-utils = \"^0.1.1\"\n");
+    env.ok(&top, &["install"]);
+    env.ok(&top, &["publish"]);
+    let app = env.app("demo", PLAIN_MAIN);
+    env.ok(&app, &["add", "top"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.1.1\""));
+    // Hand-edited to 0.1.0 with its real checksum, which breaks top's requirement.
+    let (old, new) = (cksum("0.1.1"), cksum("0.1.0"));
+    env.edit_lock(&app, |t| {
+        t.replace("version = \"0.1.1\"", "version = \"0.1.0\"")
+            .replace(&old, &new)
+    });
+    env.fails(&app, &["install", "--locked"], "Q0612");
+    env.fails(&app, &["run"], "Q0612");
+    // With an empty cache the requirements come from the index, before any download.
+    let out = env.qx_home(&app, &env.root.join("home2"), &["install", "--locked"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("error[Q0612]"), "{err}");
+    env.ok(&app, &["install"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.1.1\""));
+    env.ok(&app, &["run"]);
+
+    // A path package whose own requirement changed after locking.
+    let mid = env.lib("mid", "0.1.0", "bell-utils = \"^0.1\"\n");
+    let app = env.app("demo2", PLAIN_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nmid = { path = \"../mid-0.1.0\" }\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    env.ok(&app, &["install"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.1.1\""));
+    let manifest = read(&mid.join("qxide.toml")).replace("\"^0.1\"", "\"^0.2\"");
+    std::fs::write(mid.join("qxide.toml"), manifest).unwrap();
+    env.fails(&app, &["install", "--locked"], "Q0612");
+    env.fails(&app, &["run"], "Q0612");
+    env.ok(&app, &["install"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.2.0\""));
+    env.ok(&app, &["run"]);
+}
+
+#[test]
+fn lock_entries_cannot_escape_the_cache() {
+    let env = Env::new("lockname");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils"]);
+    let lock = read(&app.join("qxide.lock"));
+    let block = lock_block(&lock, "bell-utils").to_string();
+    let with_copy = |name: &str| {
+        let copy = block.replace("name = \"bell-utils\"", &format!("name = \"{name}\""));
+        format!("{lock}\n[[package]]\n{copy}\n")
+    };
+    // Lock names become cache paths: a traversal is refused as soon as the lock is read.
+    env.edit_lock(&app, |_| with_copy("../../../../outside/x"));
+    env.fails(&app, &["install", "--locked"], "Q0603");
+    env.fails(&app, &["run"], "Q0603");
+    assert!(!env.root.join("outside").exists());
+    // A locked package nothing depends on is stale, not fetched.
+    env.edit_lock(&app, |_| with_copy("zz-unused"));
+    env.fails(&app, &["install", "--locked"], "Q0612");
+    env.fails(&app, &["run"], "Q0612");
+    env.ok(&app, &["install"]);
+    assert_eq!(read(&app.join("qxide.lock")), lock);
     env.ok(&app, &["run"]);
 }
 

@@ -7,7 +7,7 @@ use std::path::Path;
 use semver::Version;
 use toml_edit::{DocumentMut, Item};
 
-use super::{msg, Code, Error, Result};
+use super::{msg, valid_name, Code, Error, Result};
 
 pub const FILE: &str = "qxide.lock";
 const FORMAT: i64 = 1;
@@ -139,6 +139,10 @@ pub fn parse(text: &str, path: &Path) -> Result<Lock> {
     for t in tables.iter() {
         let field = |k: &str| t.get(k).and_then(Item::as_str).map(str::to_string);
         let name = field("name").ok_or_else(|| bad(msg::reason_missing("name")))?;
+        // Names become cache paths (`<name>-<version>`), so `../x` must never get that far.
+        if !valid_name(&name) {
+            return Err(bad(msg::reason_bad_name(&name)));
+        }
         let vtext = field("version").ok_or_else(|| bad(msg::reason_missing("version")))?;
         let version = Version::parse(&vtext).map_err(|_| bad(msg::reason_bad_version(&vtext)))?;
         let source = match field("source") {
@@ -170,6 +174,9 @@ pub fn parse(text: &str, path: &Path) -> Result<Lock> {
                 })
                 .ok_or_else(|| bad(msg::reason_not_string_array("dependencies")))?,
         };
+        if let Some(d) = dependencies.iter().find(|d| !valid_name(d)) {
+            return Err(bad(msg::reason_bad_name(d)));
+        }
         if lock.get(&name).is_some() {
             return Err(bad(msg::reason_duplicate_package(&name)));
         }
