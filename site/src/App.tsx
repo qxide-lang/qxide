@@ -85,9 +85,9 @@ function Install() {
       <p className="sr-only" role="status">
         {copied ? 'Install command copied to clipboard' : ''}
       </p>
-      {/* PyPI package is not published yet; /install.sh and /install.ps1 redirect via public/_redirects. */}
+      {/* /install.sh and /install.ps1 redirect via public/_redirects. */}
       <p className="install-alt">
-        Or <code>cargo install qxide</code> · <code>pip install qxide</code> (coming soon)
+        Or <code>cargo install qxide</code> · <code>pip install qxide</code>
       </p>
     </section>
   );
@@ -312,7 +312,11 @@ export function App() {
                 crates.io
               </a>
             </li>
-            <li>PyPI (coming soon)</li>
+            <li>
+              <a href="https://pypi.org/project/qxide/" target="_blank" rel="noreferrer">
+                PyPI
+              </a>
+            </li>
           </ul>
         </div>
       </footer>
