@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "qxide"
-# Intentionally independent of Cargo.toml (0.4.0): first PyPI release is 0.0.1. See docs/release.md.
-version = "0.0.1"
+# Version comes from Cargo.toml so the wheel and `qxide --version` always match.
+dynamic = ["version"]
 description = "Early Qxide experiment: Rust-like quantum/classical language CLI (OpenQASM 3 output, state-vector/stabilizer simulators)"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }

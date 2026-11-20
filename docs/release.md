@@ -116,12 +116,11 @@ curl -sIL https://qxide.dev/install.sh
 ### Current State
 
 - Package name: `qxide`
-- `pyproject.toml` currently sets version `0.0.1` statically, independent of `Cargo.toml`.
-  - As a result, `qxide --version` reports the Cargo version (`0.4.0`), while `pip` reports `0.0.1`.
-  - To keep versions synchronized, switch `pyproject.toml` to `dynamic = ["version"]`.
+- `pyproject.toml` uses `dynamic = ["version"]`, so the wheel version always follows `Cargo.toml` (currently `0.4.0`).
+  - Both `pip show qxide` and `qxide --version` report `0.4.0`.
 - Local verification completed on Windows:
-  - `maturin build --release` produced `qxide-0.0.1-py3-none-win_amd64.whl`.
-  - Installing the wheel into a fresh virtual environment and running `qxide --version` succeeded.
+  - `maturin build --release` produced `qxide-0.4.0-py3-none-win_amd64.whl`.
+  - After installing the wheel into a fresh virtual environment, `pip show qxide` reported `0.4.0` and `qxide --version` printed `qxide 0.4.0`.
 - A locally built wheel only targets the host platform (Windows in the check above). For a real release, build wheels for Linux (`manylinux`), macOS, and Windows using `maturin-action` in CI, along with a source distribution via `maturin sdist`.
 
 ### Manual Publishing Steps
