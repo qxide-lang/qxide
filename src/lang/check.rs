@@ -8,11 +8,13 @@ use super::diag::{Code, Diagnostic, Span};
 use super::msg;
 
 pub const BUILTINS: &[&str] = &[
-    "qubit", "qreg", "h", "x", "z", "s", "sdg", "t", "tdg", "reset", "cx", "ccx", "measure",
-    "discard", "len", "println",
+    "qubit", "qreg", "h", "x", "z", "s", "sdg", "t", "tdg", "reset", "rx", "ry", "rz", "cx", "ccx",
+    "measure", "discard", "len", "println",
 ];
 
 pub const ONE_QUBIT_OPS: &[&str] = &["h", "x", "z", "s", "sdg", "t", "tdg", "reset"];
+
+pub const ROTATIONS: &[&str] = &["rx", "ry", "rz"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -58,7 +60,7 @@ pub fn check(p: &Program) -> Vec<Diagnostic> {
         vars: Vec::new(),
         scopes: Vec::new(),
         bit_ifs: Vec::new(),
-        ret: Ty::Unit,
+        ret: Ty::Void,
         errors: Vec::new(),
     };
     c.signatures(p);
@@ -115,7 +117,7 @@ impl Checker {
                 let at = p.fns.first().map_or(Span::default(), |f| f.name.span);
                 self.err(Code::BadMain, at, msg::missing_main());
             }
-            Some(f) if !f.params.is_empty() || f.ret != Ty::Unit => {
+            Some(f) if !f.params.is_empty() || f.ret != Ty::Void => {
                 self.err(Code::BadMain, f.name.span, msg::main_signature());
             }
             Some(_) => {}
@@ -137,11 +139,18 @@ impl Checker {
                     msg::duplicate_def(&p.name.name),
                 );
             }
-            let ty = if p.ty.is_quantum() { Ty::Error } else { p.ty };
-            self.declare(&p.name, ty, false);
+            if p.ty == Ty::Void {
+                self.err(Code::TypeMismatch, p.ty_span, msg::void_variable());
+            }
+            let ty = if p.ty.is_quantum() || p.ty == Ty::Void {
+                Ty::Error
+            } else {
+                p.ty
+            };
+            self.declare(&p.name, ty, true);
         }
         let diverges = self.block(&f.body);
-        if !diverges && f.body.tail.is_none() && !matches!(f.ret, Ty::Unit | Ty::Error) {
+        if !diverges && !matches!(f.ret, Ty::Void | Ty::Error) {
             self.err(
                 Code::MissingReturn,
                 f.body.close,
@@ -189,11 +198,6 @@ impl Checker {
         for s in &b.stmts {
             diverges |= self.stmt(s);
         }
-        if let Some(tail) = &b.tail {
-            let ty = self.expr(tail);
-            let want = self.ret;
-            self.expect_ty(tail.span, want, ty);
-        }
         let scope = self.scopes.pop().unwrap();
         if !diverges {
             for id in scope {
@@ -211,26 +215,30 @@ impl Checker {
 
     fn stmt(&mut self, s: &Stmt) -> bool {
         match s {
-            Stmt::Let {
-                mutable,
-                name,
+            Stmt::Decl {
+                is_final,
                 ty,
+                ty_span,
+                name,
                 init,
             } => {
                 let found = self.let_init(init);
-                let var_ty = match ty {
-                    Some((want, span)) => {
-                        self.expect_ty(*span, *want, found);
-                        *want
-                    }
-                    None => found,
+                let var_ty = if *ty == Ty::Void {
+                    self.err(Code::TypeMismatch, *ty_span, msg::void_variable());
+                    Ty::Error
+                } else if ty.is_quantum() && found == Ty::Error {
+                    // The initializer was already rejected; do not also report a leak.
+                    Ty::Error
+                } else {
+                    self.expect_ty(init.span, *ty, found);
+                    *ty
                 };
                 if var_ty.is_quantum() && !self.bit_ifs.is_empty() {
                     let at = *self.bit_ifs.last().unwrap();
                     self.err(
                         Code::ForbiddenInBitIf,
                         name.span,
-                        msg::forbidden_in_bit_if("let"),
+                        msg::forbidden_in_bit_if(var_ty.name()),
                     )
                     .notes
                     .push(note(at, msg::note_bit_if_here()));
@@ -247,7 +255,7 @@ impl Checker {
                     // Already reported; do not report the leak again at scope end.
                     self.vars[id].state = State::Consumed(name.span);
                 }
-                self.declare(name, var_ty, *mutable);
+                self.declare(name, var_ty, !is_final);
                 false
             }
             Stmt::Assign { name, value } => {
@@ -298,11 +306,11 @@ impl Checker {
             } => {
                 for e in [start, end] {
                     let t = self.expr(e);
-                    self.expect_ty(e.span, Ty::I64, t);
+                    self.expect_ty(e.span, Ty::Int, t);
                 }
                 let before = self.states();
                 self.scopes.push(Vec::new());
-                self.declare(var, Ty::I64, false);
+                self.declare(var, Ty::Int, false);
                 let diverges = self.block(body);
                 self.scopes.pop();
                 if !diverges {
@@ -339,7 +347,7 @@ impl Checker {
                 }
                 let found = match value {
                     Some(e) => self.expr(e),
-                    None => Ty::Unit,
+                    None => Ty::Void,
                 };
                 let want = self.ret;
                 self.expect_ty(value.as_ref().map_or(*span, |e| e.span), want, found);
@@ -390,7 +398,7 @@ impl Checker {
                 false
             }
             _ => {
-                if !matches!(cond, Ty::Bool | Ty::Error) {
+                if !matches!(cond, Ty::Boolean | Ty::Error) {
                     self.err(
                         Code::BadCondition,
                         i.cond.span,
@@ -436,7 +444,7 @@ impl Checker {
         }
     }
 
-    // `let x = q;` moves a qubit; `let q = r[i];` would move a register element out.
+    // `Qubit p = q;` moves a qubit; `Qubit q = r[i];` would move a register element out.
     fn let_init(&mut self, init: &Expr) -> Ty {
         match &init.kind {
             ExprKind::Var(name) => {
@@ -477,7 +485,12 @@ impl Checker {
     }
 
     fn expect_ty(&mut self, at: Span, want: Ty, found: Ty) {
-        if want == found || want == Ty::Error || found == Ty::Error {
+        // Java-style widening: an `int` is accepted where a `double` is expected.
+        if want == found
+            || want == Ty::Error
+            || found == Ty::Error
+            || (want == Ty::Double && found == Ty::Int)
+        {
             return;
         }
         if found.is_shot_time() && !want.is_shot_time() {
@@ -502,6 +515,15 @@ impl Checker {
         }
     }
 
+    // Operand of arithmetic or an ordering comparison; reports and returns false otherwise.
+    fn numeric(&mut self, at: Span, t: Ty) -> bool {
+        if t.is_numeric() || t == Ty::Error {
+            return true;
+        }
+        self.expect_ty(at, Ty::Int, t);
+        false
+    }
+
     fn forbid_in_bit_if(&mut self, at: Span, op: &str) {
         if let Some(&cond) = self.bit_ifs.last() {
             self.err(Code::ForbiddenInBitIf, at, msg::forbidden_in_bit_if(op))
@@ -512,8 +534,9 @@ impl Checker {
 
     fn expr(&mut self, e: &Expr) -> Ty {
         match &e.kind {
-            ExprKind::Int(_) => Ty::I64,
-            ExprKind::Bool(_) => Ty::Bool,
+            ExprKind::Int(_) => Ty::Int,
+            ExprKind::Double(_) => Ty::Double,
+            ExprKind::Bool(_) => Ty::Boolean,
             ExprKind::Str(_) => {
                 self.err(Code::StringNotAllowed, e.span, msg::string_not_allowed());
                 Ty::Error
@@ -535,7 +558,7 @@ impl Checker {
                 let b = self.expr(base);
                 self.forbid_temp(base, b);
                 let i = self.expr(index);
-                self.expect_ty(index.span, Ty::I64, i);
+                self.expect_ty(index.span, Ty::Int, i);
                 match b {
                     Ty::QReg => Ty::Qubit,
                     Ty::BitReg => Ty::Bit,
@@ -550,42 +573,67 @@ impl Checker {
                     }
                 }
             }
+            ExprKind::Method { recv, name } => {
+                let t = self.expr(recv);
+                match (t, name.name.as_str()) {
+                    (Ty::BitReg, "as_int") => Ty::ShotInt,
+                    (Ty::BitReg, "to_binary") => Ty::ShotBinary,
+                    (Ty::Error, _) => Ty::Error,
+                    _ => {
+                        self.err(
+                            Code::UnknownMethod,
+                            name.span,
+                            msg::unknown_method(&name.name, t.name()),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
             ExprKind::Unary { op, expr } => {
                 let t = self.expr(expr);
-                let want = match op {
-                    UnOp::Neg => Ty::I64,
-                    UnOp::Not => Ty::Bool,
-                };
-                self.expect_ty(expr.span, want, t);
-                want
+                match op {
+                    UnOp::Neg => {
+                        self.numeric(expr.span, t);
+                        if t == Ty::Double {
+                            Ty::Double
+                        } else {
+                            Ty::Int
+                        }
+                    }
+                    UnOp::Not => {
+                        self.expect_ty(expr.span, Ty::Boolean, t);
+                        Ty::Boolean
+                    }
+                }
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (l, r) = (self.expr(lhs), self.expr(rhs));
                 use BinOp::*;
                 match op {
                     Add | Sub | Mul | Div | Rem | Lt | Le | Gt | Ge => {
-                        self.expect_ty(lhs.span, Ty::I64, l);
-                        self.expect_ty(rhs.span, Ty::I64, r);
+                        self.numeric(lhs.span, l);
+                        self.numeric(rhs.span, r);
                         if matches!(op, Lt | Le | Gt | Ge) {
-                            Ty::Bool
+                            Ty::Boolean
+                        } else if l == Ty::Double || r == Ty::Double {
+                            Ty::Double
                         } else {
-                            Ty::I64
+                            Ty::Int
                         }
                     }
                     And | Or => {
-                        self.expect_ty(lhs.span, Ty::Bool, l);
-                        self.expect_ty(rhs.span, Ty::Bool, r);
-                        Ty::Bool
+                        self.expect_ty(lhs.span, Ty::Boolean, l);
+                        self.expect_ty(rhs.span, Ty::Boolean, r);
+                        Ty::Boolean
                     }
                     Eq | Ne => {
-                        let want = if matches!(l, Ty::I64 | Ty::Bool) {
-                            l
+                        if l == Ty::Boolean {
+                            self.expect_ty(rhs.span, Ty::Boolean, r);
                         } else {
-                            Ty::I64
-                        };
-                        self.expect_ty(lhs.span, want, l);
-                        self.expect_ty(rhs.span, want, r);
-                        Ty::Bool
+                            self.numeric(lhs.span, l);
+                            self.numeric(rhs.span, r);
+                        }
+                        Ty::Boolean
                     }
                 }
             }
@@ -643,7 +691,7 @@ impl Checker {
                 self.forbid_in_bit_if(span, "qreg()");
                 if self.arity(name, args, 1, span) {
                     let t = self.expr(&args[0]);
-                    self.expect_ty(args[0].span, Ty::I64, t);
+                    self.expect_ty(args[0].span, Ty::Int, t);
                 }
                 Ty::QReg
             }
@@ -667,16 +715,16 @@ impl Checker {
                         }
                     }
                 }
-                Ty::Unit
+                Ty::Void
             }
             "measure" | "discard" => {
                 self.forbid_in_bit_if(span, n);
                 if !self.arity(name, args, 1, span) {
-                    return if n == "measure" { Ty::Error } else { Ty::Unit };
+                    return if n == "measure" { Ty::Error } else { Ty::Void };
                 }
                 let t = self.consume(&args[0], span);
                 match (n, t) {
-                    ("discard", _) => Ty::Unit,
+                    ("discard", _) => Ty::Void,
                     (_, Ty::Qubit) => Ty::Bit,
                     (_, Ty::QReg) => Ty::BitReg,
                     _ => Ty::Error,
@@ -694,20 +742,20 @@ impl Checker {
                         );
                     }
                 }
-                Ty::I64
+                Ty::Int
             }
             "println" => {
                 self.forbid_in_bit_if(span, "println");
                 let Some(first) = args.first() else {
                     self.err(Code::PrintlnFormat, span, msg::println_format());
-                    return Ty::Unit;
+                    return Ty::Void;
                 };
                 let ExprKind::Str(pieces) = &first.kind else {
                     self.err(Code::PrintlnFormat, first.span, msg::println_format());
                     for a in args {
                         self.expr(a);
                     }
-                    return Ty::Unit;
+                    return Ty::Void;
                 };
                 let holes = pieces.iter().filter(|p| **p == FmtPiece::Hole).count();
                 if holes != args.len() - 1 {
@@ -719,18 +767,36 @@ impl Checker {
                 }
                 for a in &args[1..] {
                     let t = self.expr(a);
-                    if !matches!(t, Ty::I64 | Ty::Bool | Ty::Bit | Ty::BitReg | Ty::Error) {
+                    if !matches!(
+                        t,
+                        Ty::Int
+                            | Ty::Double
+                            | Ty::Boolean
+                            | Ty::Bit
+                            | Ty::BitReg
+                            | Ty::ShotInt
+                            | Ty::ShotBinary
+                            | Ty::Error
+                    ) {
                         self.err(Code::NotPrintable, a.span, msg::not_printable(t.name()));
                     }
                 }
-                Ty::Unit
+                Ty::Void
+            }
+            _ if ROTATIONS.contains(&n) => {
+                if self.arity(name, args, 2, span) {
+                    self.place(&args[0]);
+                    let t = self.expr(&args[1]);
+                    self.numeric(args[1].span, t);
+                }
+                Ty::Void
             }
             _ => {
                 debug_assert!(ONE_QUBIT_OPS.contains(&n));
                 if self.arity(name, args, 1, span) {
                     self.place(&args[0]);
                 }
-                Ty::Unit
+                Ty::Void
             }
         }
     }
@@ -753,7 +819,7 @@ impl Checker {
                 let id = self.lookup(name)?;
                 self.use_var(id, base.span);
                 let t = self.expr(index);
-                self.expect_ty(index.span, Ty::I64, t);
+                self.expect_ty(index.span, Ty::Int, t);
                 let idx = match index.kind {
                     ExprKind::Int(k) => Idx::Lit(k),
                     _ => Idx::Dynamic,

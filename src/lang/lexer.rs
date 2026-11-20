@@ -1,4 +1,4 @@
-// Hand-written lexer: `//` comments, decimal integers, string literals, identifiers, punctuation.
+// Hand-written lexer: `//` comments, decimal integers and doubles, string literals, identifiers, punctuation.
 
 use super::diag::{Code, Diagnostic, Span};
 use super::msg;
@@ -7,11 +7,11 @@ use super::msg;
 pub enum Tok {
     Ident(String),
     Int(i64),
+    // f64 bit pattern, so `Tok` can stay `Eq`.
+    Double(u64),
     Str(String),
     // Keywords
-    Fn,
-    Let,
-    Mut,
+    Final,
     If,
     Else,
     For,
@@ -31,6 +31,7 @@ pub enum Tok {
     Colon,
     Arrow,
     DotDot,
+    Dot,
     Plus,
     Minus,
     Star,
@@ -54,9 +55,7 @@ impl Tok {
     pub fn symbol(&self) -> Option<&'static str> {
         use Tok::*;
         Some(match self {
-            Fn => "fn",
-            Let => "let",
-            Mut => "mut",
+            Final => "final",
             If => "if",
             Else => "else",
             For => "for",
@@ -75,6 +74,7 @@ impl Tok {
             Colon => ":",
             Arrow => "->",
             DotDot => "..",
+            Dot => ".",
             Plus => "+",
             Minus => "-",
             Star => "*",
@@ -90,7 +90,7 @@ impl Tok {
             Ge => ">=",
             AndAnd => "&&",
             OrOr => "||",
-            Ident(_) | Int(_) | Str(_) | Eof => return None,
+            Ident(_) | Int(_) | Double(_) | Str(_) | Eof => return None,
         })
     }
 
@@ -99,12 +99,16 @@ impl Tok {
         match self {
             Tok::Ident(s) => format!("`{s}`"),
             Tok::Int(n) => format!("`{n}`"),
+            Tok::Double(b) => format!("`{:?}`", f64::from_bits(*b)),
             Tok::Str(_) => msg::desc_string(),
             Tok::Eof => msg::desc_eof(),
             t => format!("`{}`", t.symbol().unwrap_or_default()),
         }
     }
 }
+
+// Rust-style syntax removed in 0.5.0; reported with a migration hint.
+pub const REMOVED: &[&str] = &["let", "fn", "mut"];
 
 pub const RESERVED: &[&str] = &[
     "while",
@@ -150,6 +154,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 i += 1;
             }
             let word = &src[start..i];
+            if REMOVED.contains(&word) {
+                return Err(Diagnostic::new(
+                    Code::RemovedSyntax,
+                    Span::new(start, i),
+                    msg::removed_syntax(word),
+                ));
+            }
             if RESERVED.contains(&word) {
                 return Err(Diagnostic::new(
                     Code::ReservedKeyword,
@@ -158,9 +169,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
                 ));
             }
             match word {
-                "fn" => Tok::Fn,
-                "let" => Tok::Let,
-                "mut" => Tok::Mut,
+                "final" => Tok::Final,
                 "if" => Tok::If,
                 "else" => Tok::Else,
                 "for" => Tok::For,
@@ -174,15 +183,47 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
             while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
                 i += 1;
             }
+            // A double needs digits on both sides of the dot, so `0..n` stays a range.
+            let mut is_double = false;
+            if bytes.get(i) == Some(&b'.') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+                is_double = true;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+                    i += 1;
+                }
+            }
+            if matches!(bytes.get(i), Some(b'e' | b'E')) {
+                let sign = usize::from(matches!(bytes.get(i + 1), Some(b'+' | b'-')));
+                if bytes.get(i + 1 + sign).is_some_and(u8::is_ascii_digit) {
+                    is_double = true;
+                    i += 1 + sign;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+            }
             let digits: String = src[start..i].chars().filter(|&c| c != '_').collect();
-            match digits.parse::<i64>() {
-                Ok(n) => Tok::Int(n),
-                Err(_) => {
-                    return Err(Diagnostic::new(
-                        Code::IntTooLarge,
-                        Span::new(start, i),
-                        msg::int_too_large(),
-                    ))
+            if is_double {
+                match digits.parse::<f64>() {
+                    Ok(v) if v.is_finite() => Tok::Double(v.to_bits()),
+                    _ => {
+                        return Err(Diagnostic::new(
+                            Code::IntTooLarge,
+                            Span::new(start, i),
+                            msg::double_out_of_range(),
+                        ))
+                    }
+                }
+            } else {
+                match digits.parse::<i64>() {
+                    Ok(n) => Tok::Int(n),
+                    Err(_) => {
+                        return Err(Diagnostic::new(
+                            Code::IntTooLarge,
+                            Span::new(start, i),
+                            msg::int_too_large(),
+                        ))
+                    }
                 }
             }
         } else if c == b'"' {
@@ -238,6 +279,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
             let (tok, len) = match (c, two) {
                 (b'-', Some(b'>')) => (Tok::Arrow, 2),
                 (b'.', Some(b'.')) => (Tok::DotDot, 2),
+                (b'.', _) => (Tok::Dot, 1),
                 (b'=', Some(b'=')) => (Tok::EqEq, 2),
                 (b'!', Some(b'=')) => (Tok::NotEq, 2),
                 (b'<', Some(b'=')) => (Tok::Le, 2),
@@ -297,14 +339,13 @@ mod tests {
     #[test]
     fn lexes_keywords_operators_and_literals() {
         assert_eq!(
-            toks("fn f() -> i64 { 1_000 <= x && !y } // c"),
+            toks("final int f() { 1_000 <= x && !y } // c"),
             vec![
-                Tok::Fn,
+                Tok::Final,
+                Tok::Ident("int".into()),
                 Tok::Ident("f".into()),
                 Tok::LParen,
                 Tok::RParen,
-                Tok::Arrow,
-                Tok::Ident("i64".into()),
                 Tok::LBrace,
                 Tok::Int(1000),
                 Tok::Le,
@@ -326,11 +367,27 @@ mod tests {
                 Tok::Eof
             ]
         );
+        let d = |v: f64| Tok::Double(v.to_bits());
+        assert_eq!(
+            toks("0.5 1e3 2.5E-2 1..2 m.as_int"),
+            vec![
+                d(0.5),
+                d(1000.0),
+                d(0.025),
+                Tok::Int(1),
+                Tok::DotDot,
+                Tok::Int(2),
+                Tok::Ident("m".into()),
+                Tok::Dot,
+                Tok::Ident("as_int".into()),
+                Tok::Eof
+            ]
+        );
     }
 
     #[test]
     fn lex_errors_have_codes_and_spans() {
-        let e = lex("let x = 1 # 2;").unwrap_err();
+        let e = lex("int x = 1 # 2;").unwrap_err();
         assert_eq!((e.code, e.span), (Code::UnexpectedChar, Span::new(10, 11)));
         assert_eq!(lex("\"abc").unwrap_err().code, Code::UnterminatedString);
         assert_eq!(lex(r#""\q""#).unwrap_err().code, Code::InvalidEscape);
@@ -339,6 +396,11 @@ mod tests {
             Code::IntTooLarge
         );
         assert_eq!(lex("while x").unwrap_err().code, Code::ReservedKeyword);
+        // Rust-style syntax removed in 0.5.0 gets a migration hint.
+        for word in ["let x = 1;", "fn main() {}", "mut"] {
+            assert_eq!(lex(word).unwrap_err().code, Code::RemovedSyntax);
+        }
+        assert_eq!(lex("1e999").unwrap_err().code, Code::IntTooLarge);
         // Non-ASCII characters outside strings are rejected without panicking on char boundaries.
         assert_eq!(lex("큐").unwrap_err().code, Code::UnexpectedChar);
     }

@@ -14,16 +14,26 @@ pub const MAX_CALL_DEPTH: usize = 200;
 // Caps allocations so a huge `qreg(n)` fails with a diagnostic instead of aborting on OOM.
 pub const MAX_QUBITS: usize = 1 << 20;
 
+// How a `BitReg` is printed: `{}` gives an array, `.to_binary()` and `.as_int()` give numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitsFmt {
+    Array,
+    Binary,
+    Int,
+}
+
 #[derive(Debug, Clone)]
 pub enum OutPiece {
     Text(String),
     Bit(Bit),
-    Bits(Vec<Bit>),
+    Bits(Vec<Bit>, BitsFmt),
 }
 
 pub struct Elaborated {
     pub circuit: Circuit,
     pub output: Vec<OutPiece>,
+    // Every measurement result in order, i.e. the circuit's classical register `c[0..]`.
+    pub measured: Vec<Bit>,
     // Physical qubit slots of `circuit` (the library reuses slots freed by `measure`).
     pub slots: usize,
 }
@@ -31,9 +41,11 @@ pub struct Elaborated {
 #[derive(Debug, Clone)]
 enum Value {
     Int(i64),
+    Double(f64),
     Bool(bool),
     Bit(Bit),
     Bits(Vec<Bit>),
+    ShotView(Vec<Bit>, BitsFmt),
     Qubit(usize),
     QReg(Vec<usize>),
     Unit,
@@ -46,8 +58,17 @@ enum Flow {
 
 type R<T> = Result<T, Diagnostic>;
 
+// Java-style widening of an `int` into a `double` slot.
+fn coerce(v: Value, ty: Ty) -> Value {
+    match (v, ty) {
+        (Value::Int(n), Ty::Double) => Value::Double(n as f64),
+        (v, _) => v,
+    }
+}
+
 struct Frame {
-    scopes: Vec<Vec<(String, Value)>>,
+    // (name, value, declared type)
+    scopes: Vec<Vec<(String, Value, Ty)>>,
 }
 
 impl Frame {
@@ -56,8 +77,8 @@ impl Frame {
             .iter()
             .rev()
             .flat_map(|s| s.iter().rev())
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.clone())
+            .find(|(n, _, _)| n == name)
+            .map(|(_, v, _)| v.clone())
             .ok_or_else(|| Diagnostic::new(Code::UnknownVar, at, msg::unknown_var(name)))
     }
 
@@ -67,17 +88,18 @@ impl Frame {
             .iter_mut()
             .rev()
             .flat_map(|s| s.iter_mut().rev())
-            .find(|(n, _)| n == name)
+            .find(|(n, _, _)| n == name)
         {
-            slot.1 = value;
+            slot.1 = coerce(value, slot.2);
         }
     }
 
-    fn bind(&mut self, name: &str, value: Value) {
-        self.scopes
-            .last_mut()
-            .expect("frame has a scope")
-            .push((name.to_string(), value));
+    fn bind(&mut self, name: &str, value: Value, ty: Ty) {
+        self.scopes.last_mut().expect("frame has a scope").push((
+            name.to_string(),
+            coerce(value, ty),
+            ty,
+        ));
     }
 }
 
@@ -85,6 +107,7 @@ struct Interp<'p> {
     fns: HashMap<&'p str, &'p FnDecl>,
     pool: Vec<Option<Qubit>>,
     output: Vec<OutPiece>,
+    measured: Vec<Bit>,
     depth: usize,
     // Mirrors Circuit's slot reuse: `measure` frees a slot, the next `qubit()` takes it.
     slots: usize,
@@ -96,6 +119,7 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
         pool: Vec::new(),
         output: Vec::new(),
+        measured: Vec::new(),
         depth: 0,
         slots: 0,
         free_slots: 0,
@@ -109,6 +133,7 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
     Ok(Elaborated {
         circuit: c,
         output: it.output,
+        measured: it.measured,
         slots: it.slots,
     })
 }
@@ -133,14 +158,14 @@ impl<'p> Interp<'p> {
                 .params
                 .iter()
                 .zip(args)
-                .map(|(p, v)| (p.name.name.clone(), v))
+                .map(|(p, v)| (p.name.name.clone(), coerce(v, p.ty), p.ty))
                 .collect()],
         };
         let flow = self.block(c, &mut frame, &f.body);
         self.depth -= 1;
         match flow? {
-            Flow::Return(v) => Ok(v),
-            Flow::Next if f.ret == Ty::Unit => Ok(Value::Unit),
+            Flow::Return(v) => Ok(coerce(v, f.ret)),
+            Flow::Next if f.ret == Ty::Void => Ok(Value::Unit),
             Flow::Next => Err(Diagnostic::new(
                 Code::NoReturn,
                 f.body.close,
@@ -162,17 +187,14 @@ impl<'p> Interp<'p> {
                 return Ok(Flow::Return(v));
             }
         }
-        match &b.tail {
-            Some(e) => Ok(Flow::Return(self.expr(c, f, e)?)),
-            None => Ok(Flow::Next),
-        }
+        Ok(Flow::Next)
     }
 
     fn stmt(&mut self, c: &mut Circuit, f: &mut Frame, s: &'p Stmt) -> R<Flow> {
         match s {
-            Stmt::Let { name, init, .. } => {
+            Stmt::Decl { name, init, ty, .. } => {
                 let v = self.expr(c, f, init)?;
-                f.bind(&name.name, v);
+                f.bind(&name.name, v, *ty);
             }
             Stmt::Assign { name, value } => {
                 let v = self.expr(c, f, value)?;
@@ -188,7 +210,8 @@ impl<'p> Interp<'p> {
                 let a = self.int(c, f, start)?;
                 let b = self.int(c, f, end)?;
                 for k in a..b {
-                    f.scopes.push(vec![(var.name.clone(), Value::Int(k))]);
+                    f.scopes
+                        .push(vec![(var.name.clone(), Value::Int(k), Ty::Int)]);
                     let r = self.block(c, f, body);
                     f.scopes.pop();
                     if let Flow::Return(v) = r? {
@@ -249,6 +272,7 @@ impl<'p> Interp<'p> {
     fn expr(&mut self, c: &mut Circuit, f: &mut Frame, e: &'p Expr) -> R<Value> {
         Ok(match &e.kind {
             ExprKind::Int(n) => Value::Int(*n),
+            ExprKind::Double(v) => Value::Double(*v),
             ExprKind::Bool(b) => Value::Bool(*b),
             ExprKind::Str(_) => return Err(internal(e.span)),
             ExprKind::Var(name) => f.get(name, e.span)?,
@@ -262,11 +286,30 @@ impl<'p> Interp<'p> {
                     _ => return Err(internal(e.span)),
                 }
             }
+            ExprKind::Method { recv, name } => {
+                let Value::Bits(v) = self.expr(c, f, recv)? else {
+                    return Err(internal(e.span));
+                };
+                match name.name.as_str() {
+                    // Printed as an unsigned integer with r[0] as the least significant bit.
+                    "as_int" if v.len() > 64 => {
+                        return Err(Diagnostic::new(
+                            Code::AsIntTooWide,
+                            e.span,
+                            msg::as_int_too_wide(v.len()),
+                        ))
+                    }
+                    "as_int" => Value::ShotView(v, BitsFmt::Int),
+                    "to_binary" => Value::ShotView(v, BitsFmt::Binary),
+                    _ => return Err(internal(e.span)),
+                }
+            }
             ExprKind::Unary { op, expr } => match (op, self.expr(c, f, expr)?) {
                 (UnOp::Neg, Value::Int(n)) => Value::Int(
                     n.checked_neg()
                         .ok_or_else(|| Diagnostic::new(Code::Overflow, e.span, msg::overflow()))?,
                 ),
+                (UnOp::Neg, Value::Double(v)) => Value::Double(-v),
                 (UnOp::Not, Value::Bool(b)) => Value::Bool(!b),
                 _ => return Err(internal(e.span)),
             },
@@ -325,7 +368,9 @@ impl<'p> Interp<'p> {
             "measure" => match self.expr(c, f, &args[0])? {
                 Value::Qubit(i) => {
                     self.free_slots += 1;
-                    Ok(Value::Bit(c.measure(self.take(i, span)?)))
+                    let b = c.measure(self.take(i, span)?);
+                    self.measured.push(b);
+                    Ok(Value::Bit(b))
                 }
                 Value::QReg(v) => {
                     let mut bits = Vec::with_capacity(v.len());
@@ -333,6 +378,7 @@ impl<'p> Interp<'p> {
                         self.free_slots += 1;
                         bits.push(c.measure(self.take(i, span)?));
                     }
+                    self.measured.extend_from_slice(&bits);
                     Ok(Value::Bits(bits))
                 }
                 _ => Err(internal(span)),
@@ -367,14 +413,34 @@ impl<'p> Interp<'p> {
                         FmtPiece::Lit(s) => self.text(s),
                         FmtPiece::Hole => match values.next() {
                             Some(Value::Int(n)) => self.text(&n.to_string()),
+                            Some(Value::Double(v)) => self.text(&format!("{v:?}")),
                             Some(Value::Bool(b)) => self.text(&b.to_string()),
                             Some(Value::Bit(b)) => self.output.push(OutPiece::Bit(b)),
-                            Some(Value::Bits(v)) => self.output.push(OutPiece::Bits(v)),
+                            Some(Value::Bits(v)) => {
+                                self.output.push(OutPiece::Bits(v, BitsFmt::Array))
+                            }
+                            Some(Value::ShotView(v, fmt)) => {
+                                self.output.push(OutPiece::Bits(v, fmt))
+                            }
                             _ => return Err(internal(span)),
                         },
                     }
                 }
                 self.text("\n");
+                Ok(Value::Unit)
+            }
+            _ if super::check::ROTATIONS.contains(&n) => {
+                let i = self.place(c, f, &args[0])?;
+                let theta = match coerce(self.expr(c, f, &args[1])?, Ty::Double) {
+                    Value::Double(v) => v,
+                    _ => return Err(internal(args[1].span)),
+                };
+                let [q] = self.qubits([i], span, n)?;
+                match n {
+                    "rx" => c.rx(q, theta),
+                    "ry" => c.ry(q, theta),
+                    _ => c.rz(q, theta),
+                }
                 Ok(Value::Unit)
             }
             _ if super::check::ONE_QUBIT_OPS.contains(&n) => {
@@ -493,6 +559,9 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
             Ge => Value::Bool(a >= b),
             And | Or => return Err(internal(at)),
         },
+        (Value::Double(a), Value::Int(b)) => double_op(op, a, b as f64, at)?,
+        (Value::Int(a), Value::Double(b)) => double_op(op, a as f64, b, at)?,
+        (Value::Double(a), Value::Double(b)) => double_op(op, a, b, at)?,
         (Value::Bool(a), Value::Bool(b)) => match op {
             And => Value::Bool(a && b),
             Or => Value::Bool(a || b),
@@ -501,5 +570,24 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
             _ => return Err(internal(at)),
         },
         _ => return Err(internal(at)),
+    })
+}
+
+// IEEE 754 like Java: division by zero gives an infinity or NaN, not an error.
+fn double_op(op: BinOp, a: f64, b: f64, at: Span) -> R<Value> {
+    use BinOp::*;
+    Ok(match op {
+        Add => Value::Double(a + b),
+        Sub => Value::Double(a - b),
+        Mul => Value::Double(a * b),
+        Div => Value::Double(a / b),
+        Rem => Value::Double(a % b),
+        Eq => Value::Bool(a == b),
+        Ne => Value::Bool(a != b),
+        Lt => Value::Bool(a < b),
+        Le => Value::Bool(a <= b),
+        Gt => Value::Bool(a > b),
+        Ge => Value::Bool(a >= b),
+        And | Or => return Err(internal(at)),
     })
 }

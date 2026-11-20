@@ -4,13 +4,17 @@ use super::diag::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ty {
-    I64,
-    Bool,
+    Int,
+    Double,
+    Boolean,
     Bit,
     BitReg,
     Qubit,
     QReg,
-    Unit,
+    Void,
+    // Per-shot views of a `BitReg` (`r.as_int()`, `r.to_binary()`); printable only.
+    ShotInt,
+    ShotBinary,
     // Placeholder after an error, so one mistake does not cascade.
     Error,
 }
@@ -18,25 +22,31 @@ pub enum Ty {
 impl Ty {
     pub fn name(self) -> &'static str {
         match self {
-            Ty::I64 => "i64",
-            Ty::Bool => "bool",
+            Ty::Int => "int",
+            Ty::Double => "double",
+            Ty::Boolean => "boolean",
             Ty::Bit => "Bit",
             Ty::BitReg => "BitReg",
             Ty::Qubit => "Qubit",
             Ty::QReg => "QReg",
-            Ty::Unit => "()",
+            Ty::Void => "void",
+            Ty::ShotInt => "BitReg.as_int()",
+            Ty::ShotBinary => "BitReg.to_binary()",
             Ty::Error => "{error}",
         }
     }
 
+    /// Type names as written in source (`void` is only valid as a return type).
     pub fn from_name(s: &str) -> Option<Ty> {
         Some(match s {
-            "i64" => Ty::I64,
-            "bool" => Ty::Bool,
+            "int" => Ty::Int,
+            "double" => Ty::Double,
+            "boolean" => Ty::Boolean,
             "Bit" => Ty::Bit,
             "BitReg" => Ty::BitReg,
             "Qubit" => Ty::Qubit,
             "QReg" => Ty::QReg,
+            "void" => Ty::Void,
             _ => return None,
         })
     }
@@ -46,7 +56,11 @@ impl Ty {
     }
 
     pub fn is_shot_time(self) -> bool {
-        matches!(self, Ty::Bit | Ty::BitReg)
+        matches!(self, Ty::Bit | Ty::BitReg | Ty::ShotInt | Ty::ShotBinary)
+    }
+
+    pub fn is_numeric(self) -> bool {
+        matches!(self, Ty::Int | Ty::Double)
     }
 }
 
@@ -80,17 +94,17 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
-    pub tail: Option<Expr>,
     // Span of the closing brace: where block-local qubits go out of scope.
     pub close: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Let {
-        mutable: bool,
+    Decl {
+        is_final: bool,
+        ty: Ty,
+        ty_span: Span,
         name: Ident,
-        ty: Option<(Ty, Span)>,
         init: Expr,
     },
     Assign {
@@ -162,6 +176,7 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
+    Double(f64),
     Bool(bool),
     Str(Vec<FmtPiece>),
     Var(String),
@@ -172,6 +187,10 @@ pub enum ExprKind {
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+    },
+    Method {
+        recv: Box<Expr>,
+        name: Ident,
     },
     Unary {
         op: UnOp,

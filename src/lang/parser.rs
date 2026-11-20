@@ -116,18 +116,15 @@ impl Parser {
         Ok(())
     }
 
+    // `ReturnType name(Type a, Type b) { ... }`
     fn fn_decl(&mut self) -> PResult<FnDecl> {
-        if self.peek() != &Tok::Fn {
-            return Err(self.unexpected(msg::expected_token("`fn`", &self.peek().describe())));
-        }
-        self.bump();
+        let (ret, ret_span) = self.ty()?;
         let name = self.ident()?;
         self.expect(Tok::LParen)?;
         let mut params = Vec::new();
         while self.peek() != &Tok::RParen {
-            let pname = self.ident()?;
-            self.expect(Tok::Colon)?;
             let (ty, ty_span) = self.ty()?;
+            let pname = self.ident()?;
             params.push(Param {
                 name: pname,
                 ty,
@@ -138,12 +135,7 @@ impl Parser {
             }
         }
         self.expect(Tok::RParen)?;
-        let (ret, ret_span) = if self.eat(&Tok::Arrow) {
-            self.ty()?
-        } else {
-            (Ty::Unit, name.span)
-        };
-        let body = self.block(true)?;
+        let body = self.block()?;
         Ok(FnDecl {
             name,
             params,
@@ -153,15 +145,18 @@ impl Parser {
         })
     }
 
-    fn block(&mut self, fn_body: bool) -> PResult<Block> {
+    fn block(&mut self) -> PResult<Block> {
         self.enter()?;
         self.expect(Tok::LBrace)?;
         let mut stmts = Vec::new();
-        let mut tail = None;
         loop {
             match self.peek() {
                 Tok::RBrace => break,
-                Tok::Let => stmts.push(self.let_stmt()?),
+                Tok::Final => stmts.push(self.decl()?),
+                // `Type name = ...`: two identifiers in a row start a declaration.
+                Tok::Ident(_) if matches!(self.peek_at(1), Tok::Ident(_)) => {
+                    stmts.push(self.decl()?)
+                }
                 Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
                 Tok::For => stmts.push(self.for_stmt()?),
                 Tok::Return => {
@@ -186,10 +181,6 @@ impl Parser {
                 }
                 _ => {
                     let e = self.expr()?;
-                    if fn_body && self.peek() == &Tok::RBrace {
-                        tail = Some(e);
-                        break;
-                    }
                     self.expect(Tok::Semi)?;
                     stmts.push(Stmt::Expr(e));
                 }
@@ -197,25 +188,22 @@ impl Parser {
         }
         let close = self.expect(Tok::RBrace)?;
         self.depth -= 1;
-        Ok(Block { stmts, tail, close })
+        Ok(Block { stmts, close })
     }
 
-    fn let_stmt(&mut self) -> PResult<Stmt> {
-        self.bump();
-        let mutable = self.eat(&Tok::Mut);
+    // `[final] Type name = init;`
+    fn decl(&mut self) -> PResult<Stmt> {
+        let is_final = self.eat(&Tok::Final);
+        let (ty, ty_span) = self.ty()?;
         let name = self.ident()?;
-        let ty = if self.eat(&Tok::Colon) {
-            Some(self.ty()?)
-        } else {
-            None
-        };
         self.expect(Tok::Eq)?;
         let init = self.expr()?;
         self.expect(Tok::Semi)?;
-        Ok(Stmt::Let {
-            mutable,
-            name,
+        Ok(Stmt::Decl {
+            is_final,
             ty,
+            ty_span,
+            name,
             init,
         })
     }
@@ -224,12 +212,12 @@ impl Parser {
         self.enter()?;
         self.bump();
         let cond = self.expr()?;
-        let then = self.block(false)?;
+        let then = self.block()?;
         let els = if self.eat(&Tok::Else) {
             if self.peek() == &Tok::If {
                 Some(Else::If(Box::new(self.if_stmt()?)))
             } else {
-                Some(Else::Block(self.block(false)?))
+                Some(Else::Block(self.block()?))
             }
         } else {
             None
@@ -245,7 +233,7 @@ impl Parser {
         let start = self.expr()?;
         self.expect(Tok::DotDot)?;
         let end = self.expr()?;
-        let body = self.block(false)?;
+        let body = self.block()?;
         Ok(Stmt::For {
             var,
             start,
@@ -332,20 +320,35 @@ impl Parser {
 
     fn postfix(&mut self) -> PResult<Expr> {
         let mut e = self.primary()?;
-        while self.peek() == &Tok::LBracket {
-            self.bump();
-            let index = self.expr()?;
-            let end = self.expect(Tok::RBracket)?;
-            let span = e.span.to(end);
-            e = Expr {
-                kind: ExprKind::Index {
-                    base: Box::new(e),
-                    index: Box::new(index),
-                },
-                span,
-            };
+        loop {
+            if self.eat(&Tok::LBracket) {
+                let index = self.expr()?;
+                let end = self.expect(Tok::RBracket)?;
+                let span = e.span.to(end);
+                e = Expr {
+                    kind: ExprKind::Index {
+                        base: Box::new(e),
+                        index: Box::new(index),
+                    },
+                    span,
+                };
+            } else if self.eat(&Tok::Dot) {
+                // Methods take no arguments for now: `r.as_int()`, `r.to_binary()`.
+                let name = self.ident()?;
+                self.expect(Tok::LParen)?;
+                let end = self.expect(Tok::RParen)?;
+                let span = e.span.to(end);
+                e = Expr {
+                    kind: ExprKind::Method {
+                        recv: Box::new(e),
+                        name,
+                    },
+                    span,
+                };
+            } else {
+                return Ok(e);
+            }
         }
-        Ok(e)
     }
 
     fn primary(&mut self) -> PResult<Expr> {
@@ -354,6 +357,10 @@ impl Parser {
             Tok::Int(n) => {
                 self.bump();
                 ExprKind::Int(n)
+            }
+            Tok::Double(bits) => {
+                self.bump();
+                ExprKind::Double(f64::from_bits(bits))
             }
             Tok::True => {
                 self.bump();
@@ -457,16 +464,21 @@ mod tests {
     #[test]
     fn parses_precedence_and_statements() {
         let p = parse_src(
-            "fn f(n: i64) -> bool { let mut x = 1 + 2 * 3; x = -x; for i in 0..n { if x < 0 || i == 1 && true { x = x % 2; } else if false {} else {} } return n != x; }",
+            "boolean f(int n) { int x = 1 + 2 * 3; x = -x; for i in 0..n { if x < 0 || i == 1 && true { x = x % 2; } else if false {} else {} } return n != x; }",
         )
         .unwrap();
         let f = &p.fns[0];
-        assert_eq!(f.ret, Ty::Bool);
+        assert_eq!(f.ret, Ty::Boolean);
+        assert_eq!(f.params[0].ty, Ty::Int);
         assert_eq!(f.body.stmts.len(), 4);
-        let Stmt::Let { init, mutable, .. } = &f.body.stmts[0] else {
+        let Stmt::Decl {
+            init, is_final, ty, ..
+        } = &f.body.stmts[0]
+        else {
             panic!()
         };
-        assert!(mutable);
+        assert!(!is_final);
+        assert_eq!(*ty, Ty::Int);
         let ExprKind::Binary { op, rhs, .. } = &init.kind else {
             panic!()
         };
@@ -475,40 +487,68 @@ mod tests {
     }
 
     #[test]
-    fn tail_expression_only_in_function_body() {
-        let p = parse_src("fn f() -> i64 { 1 + 2 }").unwrap();
-        assert!(p.fns[0].body.tail.is_some());
-        let e = parse_src("fn f() { if true { 1 } }").unwrap_err();
+    fn java_style_declarations_and_methods() {
+        let p = parse_src(
+            "void main() { final double t = 0.5; Qubit q = qubit(); BitReg m = measure(qreg(2)); println(\"{}\", m.as_int()); }",
+        )
+        .unwrap();
+        let f = &p.fns[0];
+        assert_eq!(f.ret, Ty::Void);
+        assert!(matches!(
+            f.body.stmts[0],
+            Stmt::Decl {
+                is_final: true,
+                ty: Ty::Double,
+                ..
+            }
+        ));
+        assert!(matches!(f.body.stmts[1], Stmt::Decl { ty: Ty::Qubit, .. }));
+        let Stmt::Expr(call) = &f.body.stmts[3] else {
+            panic!()
+        };
+        let ExprKind::Call { args, .. } = &call.kind else {
+            panic!()
+        };
+        assert!(matches!(&args[1].kind, ExprKind::Method { name, .. } if name.name == "as_int"));
+    }
+
+    #[test]
+    fn no_tail_expressions() {
+        let e = parse_src("int f() { 1 + 2 }").unwrap_err();
         assert_eq!(e.code, Code::UnexpectedToken);
     }
 
     #[test]
     fn syntax_errors_have_codes() {
         assert_eq!(
-            parse_src("fn main() { let x = ; }").unwrap_err().code,
+            parse_src("void main() { int x = ; }").unwrap_err().code,
             Code::UnexpectedToken
         );
         assert_eq!(
-            parse_src("fn main() { let x: int = 1; }").unwrap_err().code,
+            parse_src("void main() { long x = 1; }").unwrap_err().code,
             Code::UnknownType
         );
         assert_eq!(
-            parse_src("fn main() { a < b < c; }").unwrap_err().code,
+            parse_src("void main() { int x; }").unwrap_err().code,
             Code::UnexpectedToken
         );
         assert_eq!(
-            parse_src(r#"fn main() { println("{x}"); }"#)
+            parse_src("void main() { a < b < c; }").unwrap_err().code,
+            Code::UnexpectedToken
+        );
+        assert_eq!(
+            parse_src(r#"void main() { println("{x}"); }"#)
                 .unwrap_err()
                 .code,
             Code::BadFormat
         );
         let deep = format!(
-            "fn main() {{ let x = {}1{}; }}",
+            "void main() {{ int x = {}1{}; }}",
             "(".repeat(500),
             ")".repeat(500)
         );
         assert_eq!(parse_src(&deep).unwrap_err().code, Code::TooDeep);
-        let neg = format!("fn main() {{ let x = {}1; }}", "-".repeat(500));
+        let neg = format!("void main() {{ int x = {}1; }}", "-".repeat(500));
         assert_eq!(parse_src(&neg).unwrap_err().code, Code::TooDeep);
     }
 

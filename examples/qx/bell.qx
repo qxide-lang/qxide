@@ -1,10 +1,10 @@
 // Bell pair: the two measured bits are always equal.
-fn main() {
-    let a = qubit();
-    let b = qubit();
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
     h(a);
     cx(a, b);
-    let ma = measure(a);
-    let mb = measure(b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
     println("a={} b={}", ma, mb);
 }

@@ -23,7 +23,7 @@ pub fn invalid_escape(ch: char) -> String {
 }
 
 pub fn int_too_large() -> String {
-    "integer literal is too large for `i64`".into()
+    "integer literal is too large for `int`".into()
 }
 
 pub fn reserved_keyword(word: &str) -> String {
@@ -91,7 +91,7 @@ pub fn builtin_redefined(name: &str) -> String {
 }
 
 pub fn missing_main() -> String {
-    "missing `fn main()` entry point".into()
+    "missing `void main()` entry point".into()
 }
 
 pub fn main_signature() -> String {
@@ -127,7 +127,7 @@ pub fn string_not_allowed() -> String {
 }
 
 pub fn bad_condition(ty: &str) -> String {
-    format!("expected `bool` or `Bit` in `if` condition, found `{ty}`")
+    format!("an `if` condition must be `boolean` or `Bit`, found `{ty}`")
 }
 
 pub fn bit_at_build_time(ty: &str) -> String {
@@ -199,7 +199,7 @@ pub fn outer_assign_in_bit_if(name: &str) -> String {
 }
 
 pub fn shadow_live(name: &str) -> String {
-    format!("this `let` shadows qubit `{name}`, which is still alive")
+    format!("declaration shadows qubit `{name}`, which is still alive")
 }
 
 pub fn place_required() -> String {
@@ -211,7 +211,7 @@ pub fn temp_dropped() -> String {
 }
 
 pub fn overflow() -> String {
-    "attempt to compute a value that overflows `i64`".into()
+    "attempt to compute a value that overflows `int`".into()
 }
 
 pub fn div_by_zero() -> String {
@@ -258,21 +258,44 @@ pub fn too_many_qubits(limit: usize) -> String {
 pub fn help(code: Code) -> Option<String> {
     Some(match code {
         Code::InvalidEscape => "supported escapes are `\\n`, `\\t`, `\\\\`, and `\\\"`".into(),
-        Code::TooDeep => "split the expression into smaller parts with `let` bindings".into(),
-        Code::UnknownType => "available types are `i64`, `bool`, `Bit`, `BitReg`, `Qubit`, and `QReg`".into(),
+        Code::TooDeep => "split the expression into smaller parts and store them in local variables".into(),
+        Code::UnknownType => "use one of the available types: `int`, `double`, `boolean`, `Bit`, `BitReg`, `Qubit`, `QReg`, or `void` for functions that return nothing".into(),
         Code::BadFormat => "use `{}` to insert a value, and `{{` or `}}` to print literal braces".into(),
-        Code::ImmutableAssign => "declare the variable with `let mut`".into(),
+        Code::ImmutableAssign => "remove `final` from its declaration".into(),
         Code::BuiltinRedefined => "rename the function to avoid conflicting with a built-in".into(),
         Code::BitAtBuildTime => "a `Bit` can be used as an `if` condition or printed with `println`".into(),
         Code::NeverConsumed => "call `measure` or `discard` on it before the end of its scope".into(),
         Code::BranchMismatch => "consume the qubit in both branches or in neither".into(),
         Code::ConsumedInLoop => "allocate the qubit inside the loop body instead".into(),
         Code::PartialMove => "measure or discard the whole register; gates may still use `r[i]`".into(),
-        Code::ForbiddenInBitIf => "only gates, `reset`, `for`, nested `if`, and classical `let` are allowed here; move this operation before or after the `if`".into(),
+        Code::ForbiddenInBitIf => "move this operation before or after the `if`; only gates, `reset`, `for`, nested `if`, and classical variable declarations are allowed inside".into(),
         Code::OuterAssignInBitIf => "this assignment would not depend on the shot; use a variable declared inside the `if` body instead".into(),
         Code::ShadowLive => "consume the qubit first or choose another name".into(),
-        Code::TempDropped => "bind it with `let` and then call `measure` or `discard`".into(),
+        Code::TempDropped => "store it in a variable such as `Qubit q = qubit();`, then call `measure` or `discard`".into(),
         Code::RecursionLimit => "check for recursion without a base case".into(),
+        Code::RemovedSyntax => "declare variables like `int x = 1;` or `Qubit q = qubit();`, functions like `void main()` or `int add(int a, int b)`, and use `final` for constants".into(),
+        Code::UnknownMethod => "use `to_binary()` or `as_int()`, the available methods on `BitReg` values".into(),
+        Code::AsIntTooWide => "print it with `to_binary()` or as an array using a plain placeholder instead".into(),
         _ => return None,
     })
+}
+
+pub fn double_out_of_range() -> String {
+    "floating-point literal is out of range for `double`".into()
+}
+
+pub fn removed_syntax(word: &str) -> String {
+    format!("keyword `{word}` is no longer supported since qxide 0.5.0")
+}
+
+pub fn void_variable() -> String {
+    "type `void` can only be used as a function return type".into()
+}
+
+pub fn unknown_method(name: &str, ty: &str) -> String {
+    format!("no method named `{name}` found for type `{ty}`")
+}
+
+pub fn as_int_too_wide(len: usize) -> String {
+    format!("method `as_int()` supports at most 64 bits, but the register has {len}")
 }

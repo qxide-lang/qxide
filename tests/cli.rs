@@ -49,8 +49,15 @@ fn run_bell_example_gives_correlated_bits() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8(out.stdout).unwrap();
-    for line in text.lines().filter(|l| !l.starts_with("==")) {
-        assert!(line == "a=0 b=0" || line == "a=1 b=1", "{text}");
+    // Table rows (`[0, 0]  0b00 = 0  ×52`) followed by that outcome's indented output.
+    for line in text.lines() {
+        match line.strip_prefix("  ") {
+            Some(out) => assert!(out == "a=0 b=0" || out == "a=1 b=1", "{text}"),
+            None => assert!(
+                line.starts_with("[0, 0]  0b00 = 0  ×") || line.starts_with("[1, 1]  0b11 = 3  ×"),
+                "{text}"
+            ),
+        }
     }
 }
 
@@ -76,7 +83,7 @@ fn check_reports_errors_with_line_and_column() {
     // CRLF line endings, as a Windows checkout may produce.
     let path = tmp_qx(
         "use_after_measure.qx",
-        "fn main() {\r\n    let q = qubit();\r\n    let m = measure(q);\r\n    h(q);\r\n}\r\n",
+        "void main() {\r\n    Qubit q = qubit();\r\n    Bit m = measure(q);\r\n    h(q);\r\n}\r\n",
     );
     for cmd in ["check", "run", "qasm"] {
         let out = qxide(&[cmd, &path]);
@@ -92,7 +99,7 @@ fn check_reports_errors_with_line_and_column() {
 fn runtime_errors_exit_with_one() {
     let path = tmp_qx(
         "oob.qx",
-        "fn main() {\n    let r = qreg(2);\n    h(r[5]);\n    discard(r);\n}\n",
+        "void main() {\n    QReg r = qreg(2);\n    h(r[5]);\n    discard(r);\n}\n",
     );
     let out = qxide(&["run", &path]);
     assert_eq!(out.status.code(), Some(1));
@@ -107,7 +114,7 @@ fn runtime_errors_exit_with_one() {
 fn deep_recursion_is_a_diagnostic_not_a_crash() {
     let path = tmp_qx(
         "recurse.qx",
-        "fn f(n: i64) -> i64 {\n    if n > 0 - 1 {\n        return f(n + 1);\n    }\n    n\n}\nfn main() {\n    println(\"{}\", f(0));\n}\n",
+        "int f(int n) {\n    if n > 0 - 1 {\n        return f(n + 1);\n    }\n    return n;\n}\nvoid main() {\n    println(\"{}\", f(0));\n}\n",
     );
     let out = qxide(&["run", &path]);
     assert_eq!(out.status.code(), Some(1));
