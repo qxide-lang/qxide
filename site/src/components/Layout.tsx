@@ -1,6 +1,7 @@
-import {useEffect} from 'react';
+import {useEffect, useRef} from 'react';
 import {Link, NavLink, Outlet, useLocation} from 'react-router';
 import {GITHUB} from '../lib/meta';
+import {useMotion} from '../lib/motion';
 
 const NAV = [
   {label: 'Learn', to: '/learn'},
@@ -72,6 +73,8 @@ export function SiteFooter() {
 /** Shared frame for every page: skip link, top bar, routed content, footer. */
 export function Layout() {
   const {pathname, hash} = useLocation();
+  const paperRef = useRef<HTMLDivElement>(null);
+  useMotion(paperRef, pathname);
   useEffect(() => {
     const target = hash ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
     if (target) target.scrollIntoView();
@@ -79,12 +82,12 @@ export function Layout() {
   }, [pathname, hash]);
 
   return (
-    <div className="paper">
+    <div className="paper" ref={paperRef}>
       <a className="skip" href="#main">
         Skip to content
       </a>
       <SiteHeader />
-      <main id="main" className="wrap">
+      <main id="main" key={pathname} className="wrap page-fade">
         <Outlet />
       </main>
       <SiteFooter />

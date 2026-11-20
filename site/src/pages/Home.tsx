@@ -1,6 +1,8 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useState, type CSSProperties} from 'react';
 import {Link} from 'react-router';
 import {highlightQx} from '../components/CodeBlock';
+import {CopyLabel} from '../components/CopyLabel';
+import {WAVES, WAVE_WIDTH} from '../lib/waves';
 import {GITHUB, usePageMeta} from '../lib/meta';
 
 type Os = 'unix' | 'windows';
@@ -70,7 +72,7 @@ function Install() {
           {current.cmd}
         </code>
         <button type="button" className="copy" onClick={copy} aria-label={`Copy install command for ${current.tab}`}>
-          {copied ? 'Copied' : 'Copy'}
+          <CopyLabel copied={copied} />
         </button>
       </div>
       <p className="sr-only" role="status">
@@ -151,7 +153,7 @@ function Example() {
                 <li className="bar-row" key={bits}>
                   <span>{bits}</span>
                   <span className="bar-track" aria-hidden="true">
-                    <span className="bar-fill" style={{display: 'block', width: `${n / 10}%`}} />
+                    <span className="bar-fill" style={{'--p': n / 1000} as CSSProperties} />
                   </span>
                   <span className="bar-n">{n}</span>
                 </li>
@@ -218,6 +220,16 @@ export function Home() {
   return (
     <>
       <section className="hero">
+        <div className="hero-bg" aria-hidden="true">
+          <svg className="waves" viewBox={`0 0 ${WAVE_WIDTH} 300`} width={WAVE_WIDTH} height="300" focusable="false">
+            {WAVES.map((w) => (
+              <path key={w.cls} className={w.cls} d={w.d} />
+            ))}
+          </svg>
+          <span className="qdot qdot-1" />
+          <span className="qdot qdot-2" />
+          <span className="qdot qdot-3" />
+        </div>
         <p className="hero-kicker">void main() → |ψ⟩</p>
         <h1>
           <span>Write it once.</span>

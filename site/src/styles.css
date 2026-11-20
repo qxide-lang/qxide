@@ -151,7 +151,7 @@
 
 /* ---------- install ---------- */
 .install {
-  max-width: 100%;
+  max-width: 52rem;
   margin: 3rem auto 0;
   text-align: left;
 }
@@ -191,7 +191,7 @@
 .cmd code {
   display: block;
   font-family: var(--font-mono);
-  font-size: 0.9375rem;
+  font-size: 0.8125rem;
   overflow-x: auto;
   white-space: nowrap;
   min-width: 0;
@@ -212,6 +212,8 @@
   border: 1px solid #55555e;
   border-radius: 999px;
   padding: 0.375rem 0.875rem;
+  min-width: 5.5rem;
+  text-align: center;
   cursor: pointer;
 }
 .copy:hover {
@@ -292,7 +294,7 @@
 .bars {
   display: grid;
   gap: 0.75rem;
-  margin: 0;
+  margin: 0 0 1.5rem;
   padding: 0;
   list-style: none;
   font-family: var(--font-mono);
@@ -311,6 +313,10 @@
   overflow: hidden;
 }
 .bar-fill {
+  display: block;
+  width: 100%;
+  transform: scaleX(var(--p, 1));
+  transform-origin: left center;
   height: 100%;
   background: var(--paper-accent);
   border-radius: 999px;
@@ -435,11 +441,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .paper * {
-    transition: none !important;
-  }
-}
 
 /* Astryx reset gives headings its own text color; keep the paper ink. */
 .paper h1,

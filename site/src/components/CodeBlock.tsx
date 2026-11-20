@@ -1,3 +1,4 @@
+import {CopyLabel} from './CopyLabel';
 import {Fragment, useState, type ReactNode} from 'react';
 
 const RUST_KEYWORDS = new Set(['use', 'fn', 'let', 'mut', 'for', 'in', 'as', 'if', 'else', 'move', 'pub', 'struct', 'impl']);
@@ -55,7 +56,7 @@ export function CodeBlock({code, label, lang = 'text', copyable = true}: Props) 
         <span>{label}</span>
         {copyable && (
           <button type="button" className="copy" onClick={copy} aria-label={`Copy ${label}`}>
-            {copied ? 'Copied' : 'Copy'}
+            <CopyLabel copied={copied} />
           </button>
         )}
       </figcaption>
