@@ -1,0 +1,8 @@
+[package]
+name = "bell-app"
+version = "0.1.0"
+qxide = ">=0.6"
+
+[dependencies]
+# `path` makes the example work from a clean checkout; a registry user writes `bell-utils = "0.1"`.
+bell-utils = { version = "0.1", path = "../bell-utils" }

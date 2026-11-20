@@ -4,6 +4,7 @@
 //! can be installed as a standalone tool (cargo-dist installers, PyPI wheel).
 
 mod lang;
+mod pkg;
 
 use qxide::Circuit;
 use std::path::Path;
@@ -15,23 +16,26 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 // 1 MiB Windows main thread so the call-depth limit, not a stack overflow, is what stops it.
 const LANG_STACK: usize = 64 << 20;
 
-fn usage() -> &'static str {
-    "Usage: qxide <COMMAND>
+fn usage() -> String {
+    format!(
+        "Usage: qxide <COMMAND>
 
 Commands:
-  run <FILE> [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, seed 0)
-  check <FILE>                       Check a .qx program for errors without running it
-  qasm <FILE>                        Print the OpenQASM 3 circuit built by a .qx program
+  run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, seed 0)
+  check [FILE]                       Check a .qx program for errors without running it
+  qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
   repl [--seed S]                    Start an interactive .qx session (default: seed 0)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
   new <NAME>                         Create a new project folder with main.qx and README.md
   bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
-
+{}
 Options:
   -V, --version                      Print version
   -h, --help                         Print help
-"
+",
+        pkg::cli::usage()
+    )
 }
 
 fn bell(shots: u64) {
@@ -230,13 +234,20 @@ fn explain_command(args: &[String]) -> ExitCode {
 
 // Runs one `.qx` command: `run`, `check` or `qasm`.
 fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
-    let Some(path) = args.first() else {
-        eprintln!("qxide: command `{cmd}` requires a .qx file path");
-        eprint!("{}", usage());
-        return ExitCode::from(2);
+    // Without a file, use `src/main.qx` of the project around the current directory.
+    let (path, flags) = match args.first() {
+        Some(p) if !p.starts_with("--") => (p.clone(), &args[1..]),
+        _ => match pkg::project::default_entry() {
+            Ok(p) => (p.display().to_string(), args),
+            Err(_) => {
+                eprintln!("qxide: command `{cmd}` requires a .qx file path");
+                eprint!("{}", usage());
+                return ExitCode::from(2);
+            }
+        },
     };
     let (mut shots, mut seed) = (1, 0);
-    let mut rest = args[1..].iter();
+    let mut rest = flags.iter();
     while let Some(flag) = rest.next() {
         let parsed = match (cmd, flag.as_str()) {
             ("run", "--shots") => parse_count(flag, rest.next(), 1).map(|n| shots = n),
@@ -250,24 +261,40 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             return code;
         }
     }
-    let src = match std::fs::read_to_string(path) {
+    let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("qxide: failed to read `{path}`: {e}");
             return ExitCode::from(1);
         }
     };
-    let (cmd, path) = (cmd.to_string(), path.clone());
+    // Inside a project (a `qxide.toml` above the file), imports resolve to its locked packages.
+    let project = match pkg::project::for_entry(std::path::Path::new(&path)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprint!("{}", e.render());
+            return ExitCode::from(1);
+        }
+    };
+    let cmd = cmd.to_string();
     let worker = std::thread::Builder::new()
         .stack_size(LANG_STACK)
-        .spawn(move || match cmd.as_str() {
-            "check" => lang::check(&path, &src).map(|()| {
-                let mut line = format!("{path}: ok");
-                line.push('\n');
-                line
-            }),
-            "qasm" => lang::qasm(&path, &src),
-            _ => lang::run(&path, &src, shots, seed),
+        .spawn(move || {
+            let input = lang::Input {
+                name: &path,
+                src: &src,
+                project: project.as_ref(),
+                read: &lang::read_file,
+            };
+            match cmd.as_str() {
+                "check" => lang::check_input(&input).map(|()| {
+                    let mut line = format!("{path}: ok");
+                    line.push('\n');
+                    line
+                }),
+                "qasm" => lang::qasm_input(&input),
+                _ => lang::run_input(&input, shots, seed),
+            }
         });
     match worker.map(|h| h.join()) {
         Ok(Ok(Ok(out))) => {
@@ -293,6 +320,7 @@ fn main() -> ExitCode {
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),
         Some("repl") => return repl_command(&args[1..]),
+        Some(cmd) if pkg::cli::COMMANDS.contains(&cmd) => return pkg::cli::main(cmd, &args[1..]),
         Some("bell") => {
             let shots = match args.get(1) {
                 None => 1000,

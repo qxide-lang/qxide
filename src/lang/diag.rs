@@ -97,6 +97,16 @@ codes! {
     NegativeSize => "Q0408",
     TooManyQubits => "Q0409",
     AsIntTooWide => "Q0410",
+    UnknownPackage => "Q0501",
+    ModuleNotFound => "Q0502",
+    UnknownImport => "Q0503",
+    PrivateFunction => "Q0504",
+    ImportCycle => "Q0505",
+    ImportConflict => "Q0506",
+    AmbiguousName => "Q0507",
+    ImportOutsideProject => "Q0508",
+    BadImportPath => "Q0509",
+    MisplacedImport => "Q0510",
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +122,8 @@ pub struct Diagnostic {
     pub message: String,
     pub notes: Vec<Note>,
     pub help: Option<String>,
+    // Errors about a file as a whole (for example a missing module) have no source line to show.
+    pub no_snippet: bool,
 }
 
 impl Diagnostic {
@@ -122,6 +134,7 @@ impl Diagnostic {
             message,
             notes: Vec::new(),
             help: super::msg::help(code),
+            no_snippet: false,
         }
     }
 
@@ -131,65 +144,92 @@ impl Diagnostic {
     }
 }
 
-/// Source text with precomputed line starts for offset -> (line, column) lookups.
-pub struct SourceMap<'a> {
-    pub name: &'a str,
-    pub text: &'a str,
+struct File {
+    name: String,
+    text: String,
+    // Offset of the file's first byte in the shared span space.
+    base: usize,
     line_starts: Vec<usize>,
     // Line numbers to display instead of 1, 2, 3, ... (the REPL numbers lines as they were typed).
     labels: Option<Vec<usize>>,
 }
 
-impl<'a> SourceMap<'a> {
-    pub fn new(name: &'a str, text: &'a str) -> Self {
-        let mut line_starts = vec![0];
-        line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
-        Self {
-            name,
-            text,
-            line_starts,
-            labels: None,
-        }
+/// Every loaded source file in one offset space, so a `Span` needs no file id: the entry file
+/// starts at 0 and each imported file follows the previous one with a one-byte gap.
+pub struct SourceMap {
+    files: Vec<File>,
+}
+
+impl SourceMap {
+    pub fn new(name: &str, text: &str) -> Self {
+        let mut map = Self { files: Vec::new() };
+        map.add(name, text);
+        map
     }
 
-    /// Displays line `i + 1` of the text as `labels[i]`; needs one label per line.
+    /// Adds a file and returns the base offset to add to its local spans.
+    pub fn add(&mut self, name: &str, text: &str) -> usize {
+        let base = self.files.last().map_or(0, |f| f.base + f.text.len() + 1);
+        let mut line_starts = vec![0];
+        line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+        self.files.push(File {
+            name: name.to_string(),
+            text: text.to_string(),
+            base,
+            line_starts,
+            labels: None,
+        });
+        base
+    }
+
+    /// Displays line `i + 1` of the entry file as `labels[i]`; needs one label per line.
     pub fn with_labels(mut self, labels: Vec<usize>) -> Self {
-        assert_eq!(labels.len(), self.line_starts.len(), "one label per line");
-        self.labels = Some(labels);
+        let f = &mut self.files[0];
+        assert_eq!(labels.len(), f.line_starts.len(), "one label per line");
+        f.labels = Some(labels);
         self
     }
 
-    /// 1-based line and column; columns count chars, not bytes.
+    fn file(&self, offset: usize) -> &File {
+        let i = self.files.partition_point(|f| f.base <= offset).max(1) - 1;
+        &self.files[i]
+    }
+
+    /// Display name of the file that holds `offset`.
+    pub fn file_name(&self, offset: usize) -> &str {
+        &self.file(offset).name
+    }
+
+    /// 1-based line and column within the file holding `offset`; columns count chars, not bytes.
     pub fn line_col(&self, offset: usize) -> (usize, usize) {
-        let offset = offset.min(self.text.len());
-        let line = self.line_starts.partition_point(|&s| s <= offset) - 1;
-        let col = self.text[self.line_starts[line]..offset].chars().count() + 1;
+        let f = self.file(offset);
+        let local = (offset - f.base).min(f.text.len());
+        let line = f.line_starts.partition_point(|&s| s <= local) - 1;
+        let col = f.text[f.line_starts[line]..local].chars().count() + 1;
         (line + 1, col)
     }
 
-    fn line_text(&self, line: usize) -> &str {
-        let start = self.line_starts[line - 1];
-        let end = self
-            .line_starts
-            .get(line)
-            .map_or(self.text.len(), |&e| e - 1);
-        self.text[start..end].trim_end_matches('\r')
+    fn line_text(f: &File, line: usize) -> &str {
+        let start = f.line_starts[line - 1];
+        let end = f.line_starts.get(line).map_or(f.text.len(), |&e| e - 1);
+        f.text[start..end].trim_end_matches('\r')
     }
 
     fn snippet(&self, out: &mut String, span: Span) {
+        let f = self.file(span.start);
         let (line, col) = self.line_col(span.start);
-        let text = self.line_text(line);
+        let text = Self::line_text(f, line);
         // Carets stop at the end of the first line for multi-line spans.
-        let (end_line, end_col) = self.line_col(span.end);
-        let width = if end_line == line {
+        let (end_line, end_col) = self.line_col(span.end.max(span.start));
+        let width = if end_line == line && span.end <= f.base + f.text.len() {
             end_col.saturating_sub(col).max(1)
         } else {
             (text.chars().count() + 1).saturating_sub(col).max(1)
         };
-        let line = self.labels.as_ref().map_or(line, |l| l[line - 1]);
+        let line = f.labels.as_ref().map_or(line, |l| l[line - 1]);
         let gutter = line.to_string().len();
         let pad = " ".repeat(gutter);
-        let _ = writeln!(out, "{pad}--> {}:{line}:{col}", self.name);
+        let _ = writeln!(out, "{pad}--> {}:{line}:{col}", f.name);
         let _ = writeln!(out, "{pad} |");
         let _ = writeln!(out, "{line} | {text}");
         let lead: String = text
@@ -203,7 +243,9 @@ impl<'a> SourceMap<'a> {
     pub fn render(&self, d: &Diagnostic) -> String {
         let mut out = String::new();
         let _ = writeln!(out, "error[{}]: {}", d.code.as_str(), d.message);
-        self.snippet(&mut out, d.span);
+        if !d.no_snippet {
+            self.snippet(&mut out, d.span);
+        }
         for n in &d.notes {
             let _ = writeln!(out, "note: {}", n.message);
             if let Some(s) = n.span {
@@ -229,6 +271,16 @@ mod tests {
         let x = src.find('x').unwrap();
         assert_eq!(map.line_col(x), (2, 5));
         assert_eq!(map.line_col(src.len()), (3, 2));
-        assert_eq!(map.line_text(2), "큐비트 x");
+        assert_eq!(SourceMap::line_text(&map.files[0], 2), "큐비트 x");
+    }
+
+    #[test]
+    fn later_files_have_their_own_lines() {
+        let mut map = SourceMap::new("a.qx", "ab\ncd");
+        let base = map.add("b.qx", "x\ny");
+        assert_eq!(base, 6);
+        assert_eq!(map.line_col(base + 2), (2, 1));
+        assert_eq!(map.file_name(base), "b.qx");
+        assert_eq!(map.file_name(5), "a.qx");
     }
 }

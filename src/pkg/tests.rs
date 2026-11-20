@@ -1,0 +1,384 @@
+// Package manager unit tests (no network: in-memory indexes and temporary directories).
+// Assertions use error codes, never message text.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use semver::{Version, VersionReq};
+
+use super::index::{Entry, IndexDep};
+use super::lock::{Lock, LockedPackage, Source};
+use super::manifest::{self, Manifest};
+use super::resolve::{self, join_rel, Provider, Resolver};
+use super::*;
+
+const URL: &str = "file:///registry/";
+
+fn tmp_dir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("qxide-pkg-unit-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+struct Mem(HashMap<String, Vec<Entry>>);
+
+impl Provider for Mem {
+    fn entries(&mut self, name: &str) -> Result<Vec<Entry>> {
+        self.0
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::new(Code::PackageNotFound, name.to_string()))
+    }
+}
+
+fn entry(name: &str, vers: &str, deps: &[(&str, &str)]) -> Entry {
+    Entry {
+        name: name.into(),
+        vers: Version::parse(vers).unwrap(),
+        deps: deps
+            .iter()
+            .map(|(n, r)| IndexDep {
+                name: n.to_string(),
+                req: VersionReq::parse(r).unwrap(),
+            })
+            .collect(),
+        cksum: sha256_hex(format!("{name}-{vers}").as_bytes()),
+        qxide: None,
+        description: None,
+        dl: None,
+        yanked: false,
+    }
+}
+
+fn registry(entries: Vec<Entry>) -> Mem {
+    let mut m: HashMap<String, Vec<Entry>> = HashMap::new();
+    for e in entries {
+        m.entry(e.name.clone()).or_default().push(e);
+    }
+    Mem(m)
+}
+
+fn root(deps: &str) -> Manifest {
+    let text = format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{deps}");
+    manifest::parse(&text, Path::new("/project")).unwrap()
+}
+
+fn resolve_with(m: &Manifest, lock: Option<&Lock>, reg: &mut Mem) -> Result<Lock> {
+    Resolver::new(m, lock, reg, URL, Version::new(0, 6, 0)).resolve()
+}
+
+fn versions(lock: &Lock) -> Vec<(String, String)> {
+    lock.packages
+        .iter()
+        .filter(|p| p.source != Source::Root)
+        .map(|p| (p.name.clone(), p.version.to_string()))
+        .collect()
+}
+
+fn pair(n: &str, v: &str) -> (String, String) {
+    (n.to_string(), v.to_string())
+}
+
+#[test]
+fn names_and_index_paths() {
+    assert!(valid_name("bell-utils") && valid_name("a") && valid_name("q2"));
+    for bad in [
+        "",
+        "Bell",
+        "bell_utils",
+        "-a",
+        "a-",
+        "a--b",
+        "1a",
+        &"a".repeat(65),
+    ] {
+        assert!(!valid_name(bad), "{bad}");
+    }
+    assert_eq!(import_name("bell-utils"), "bell_utils");
+    assert_eq!(index::index_path("a"), "index/1/a");
+    assert_eq!(index::index_path("ab"), "index/2/ab");
+    assert_eq!(index::index_path("abc"), "index/3/a/abc");
+    assert_eq!(index::index_path("bell-utils"), "index/be/ll/bell-utils");
+    assert_eq!(join_rel("", "./../a/"), "../a");
+    assert_eq!(join_rel("../a", "../b"), "../b");
+    assert_eq!(join_rel("vendor/a", "sub"), "vendor/a/sub");
+}
+
+#[test]
+fn index_entries_round_trip() {
+    let mut e = entry("bell-utils", "0.1.0", &[("other", "^1.2")]);
+    e.qxide = Some(VersionReq::parse(">=0.6").unwrap());
+    e.description = Some("Bell \"pairs\"".into());
+    let line = e.to_json();
+    assert_eq!(Entry::parse(&line).unwrap(), e);
+    assert!(!line.contains('\n'));
+    // Unknown keys are ignored (forward compatibility); a bad checksum is not.
+    let extra = line.replacen('{', "{\"future\":1,", 1);
+    assert_eq!(Entry::parse(&extra).unwrap(), e);
+    assert!(Entry::parse(&line.replace(&e.cksum, "abc")).is_err());
+    assert!(Entry::parse(&line.replace("bell-utils", "Bell")).is_err());
+}
+
+#[test]
+fn manifests_parse_and_validate() {
+    let m = root("a = \"0.1\"\nb = { version = \"1\", path = \"../b\" }\nc = { path = \"c\" }\n");
+    assert_eq!(
+        m.dependencies["a"].req,
+        Some(VersionReq::parse("^0.1").unwrap())
+    );
+    assert_eq!(m.dependencies["b"].path.as_deref(), Some("../b"));
+    assert_eq!(m.dependencies["c"].req, None);
+    let bad = |text: &str| manifest::parse(text, Path::new("/p")).unwrap_err().code;
+    assert_eq!(bad("name = \"x\""), Code::InvalidManifest);
+    assert_eq!(
+        bad("[package]\nname = \"x_y\"\nversion = \"1.0.0\""),
+        Code::InvalidManifest
+    );
+    assert_eq!(
+        bad("[package]\nname = \"x\"\nversion = \"1.0\""),
+        Code::InvalidManifest
+    );
+    assert_eq!(
+        bad("[package]\nname = \"x\"\nversion = \"1.0.0\"\nqxide = \"~>1\""),
+        Code::InvalidManifest
+    );
+    assert_eq!(
+        bad("[package]\nname = \"x\"\nversion = \"1.0.0\"\n[dependencies]\ny = {}"),
+        Code::InvalidManifest
+    );
+    assert_eq!(bad("[package"), Code::InvalidManifest);
+}
+
+#[test]
+fn add_and_remove_keep_comments() {
+    let dir = tmp_dir("edit");
+    let text = "# my project\n[package]\nname = \"app\" # the name\nversion = \"0.1.0\"\n";
+    std::fs::write(dir.join("qxide.toml"), text).unwrap();
+    manifest::add_dependency(&dir, "bell-utils", Some("0.1.0"), None).unwrap();
+    manifest::add_dependency(&dir, "local", None, Some("../local")).unwrap();
+    let edited = std::fs::read_to_string(dir.join("qxide.toml")).unwrap();
+    assert!(edited.starts_with(text), "{edited}");
+    let m = manifest::load(&dir).unwrap();
+    assert_eq!(m.dependencies.len(), 2);
+    assert_eq!(m.dependencies["local"].path.as_deref(), Some("../local"));
+    assert!(manifest::remove_dependency(&dir, "bell-utils").unwrap());
+    assert!(!manifest::remove_dependency(&dir, "bell-utils").unwrap());
+    assert_eq!(manifest::load(&dir).unwrap().dependencies.len(), 1);
+}
+
+#[test]
+fn resolution_picks_newest_and_respects_the_lock() {
+    let mut reg = registry(vec![
+        entry("a", "0.1.0", &[]),
+        entry("a", "0.1.3", &[("b", "^1.0")]),
+        entry("a", "0.2.0", &[]),
+        entry("b", "1.0.0", &[]),
+        entry("b", "1.4.0", &[]),
+    ]);
+    let m = root("a = \"0.1\"\n");
+    let lock = resolve_with(&m, None, &mut reg).unwrap();
+    assert_eq!(versions(&lock), [pair("a", "0.1.3"), pair("b", "1.4.0")]);
+    // A pinned older version stays pinned even though a newer one matches.
+    let mut pinned = lock.clone();
+    for p in &mut pinned.packages {
+        if p.name == "b" {
+            p.version = Version::new(1, 0, 0);
+        }
+    }
+    let again = resolve_with(&m, Some(&pinned), &mut reg).unwrap();
+    assert_eq!(versions(&again), [pair("a", "0.1.3"), pair("b", "1.0.0")]);
+    assert!(resolve::is_fresh(&m, &lock, URL));
+    assert!(!resolve::is_fresh(&root("a = \"0.2\"\n"), &lock, URL));
+    assert!(!resolve::is_fresh(&m, &lock, "file:///elsewhere/"));
+}
+
+#[test]
+fn yanked_versions_are_skipped_unless_locked() {
+    let mut yanked = entry("a", "1.1.0", &[]);
+    yanked.yanked = true;
+    let mut reg = registry(vec![entry("a", "1.0.0", &[]), yanked]);
+    let m = root("a = \"1\"\n");
+    let lock = resolve_with(&m, None, &mut reg).unwrap();
+    assert_eq!(versions(&lock), [pair("a", "1.0.0")]);
+    let mut pinned = lock.clone();
+    pinned
+        .packages
+        .iter_mut()
+        .find(|p| p.name == "a")
+        .unwrap()
+        .version = Version::new(1, 1, 0);
+    let kept = resolve_with(&m, Some(&pinned), &mut reg).unwrap();
+    assert_eq!(versions(&kept), [pair("a", "1.1.0")]);
+}
+
+#[test]
+fn resolution_errors_have_codes() {
+    let mut reg = registry(vec![
+        entry("a", "1.0.0", &[("c", "^1")]),
+        entry("b", "1.0.0", &[("c", "^2")]),
+        entry("c", "1.0.0", &[]),
+        entry("c", "2.0.0", &[]),
+    ]);
+    let code = |deps: &str, reg: &mut Mem| resolve_with(&root(deps), None, reg).unwrap_err().code;
+    assert_eq!(code("a = \"9\"\n", &mut reg), Code::NoMatchingVersion);
+    assert_eq!(code("zz = \"1\"\n", &mut reg), Code::PackageNotFound);
+    assert_eq!(
+        code("a = \"1\"\nb = \"1\"\n", &mut reg),
+        Code::VersionConflict
+    );
+    let mut newer = entry("d", "1.0.0", &[]);
+    newer.qxide = Some(VersionReq::parse(">=9").unwrap());
+    let mut reg = registry(vec![newer]);
+    assert_eq!(code("d = \"1\"\n", &mut reg), Code::LanguageVersion);
+}
+
+#[test]
+fn lock_files_are_deterministic() {
+    let lock = Lock {
+        packages: vec![
+            LockedPackage {
+                name: "zeta".into(),
+                version: Version::new(1, 0, 0),
+                source: Source::Registry(URL.into()),
+                checksum: Some(sha256_hex(b"z")),
+                dependencies: vec!["alpha".into()],
+            },
+            LockedPackage {
+                name: "app".into(),
+                version: Version::new(0, 1, 0),
+                source: Source::Root,
+                checksum: None,
+                dependencies: vec!["zeta".into(), "alpha".into()],
+            },
+            LockedPackage {
+                name: "alpha".into(),
+                version: Version::new(0, 3, 1),
+                source: Source::Path("../alpha".into()),
+                checksum: None,
+                dependencies: vec![],
+            },
+        ],
+    };
+    let mut sorted = lock.clone();
+    sorted.sort();
+    let text = sorted.render();
+    assert!(!text.contains('\r'));
+    let parsed = lock::parse(&text, Path::new("qxide.lock")).unwrap();
+    assert_eq!(parsed, sorted);
+    assert_eq!(parsed.render(), text, "render -> parse -> render is stable");
+    let names: Vec<&str> = parsed.packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["alpha", "app", "zeta"]);
+    let bad = text.replace("sha256:", "md5:");
+    assert_eq!(
+        lock::parse(&bad, Path::new("qxide.lock")).unwrap_err().code,
+        Code::InvalidLock
+    );
+}
+
+fn write_package(dir: &Path) -> Manifest {
+    std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+    std::fs::write(
+        dir.join("qxide.toml"),
+        "[package]\nname = \"demo\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/lib.qx"), "public void f() {}\r\n").unwrap();
+    std::fs::write(dir.join("src/sub/x.qx"), "public void g() {}\n").unwrap();
+    std::fs::write(dir.join("src/notes.txt"), "not shipped").unwrap();
+    std::fs::write(dir.join("README.md"), "# demo\n").unwrap();
+    manifest::load(dir).unwrap()
+}
+
+#[test]
+fn archives_are_deterministic_and_unpack_safely() {
+    let dir = tmp_dir("pack");
+    let m = write_package(&dir.join("pkg"));
+    let (a, files) = archive::pack(&m).unwrap();
+    assert_eq!(
+        files,
+        ["README.md", "qxide.toml", "src/lib.qx", "src/sub/x.qx"]
+    );
+    let (b, _) = archive::pack(&m).unwrap();
+    assert_eq!(sha256_hex(&a), sha256_hex(&b));
+    let out = dir.join("out");
+    archive::unpack(&a, "demo-1.2.3", &out).unwrap();
+    // Line endings were normalised, and only package files were shipped.
+    assert_eq!(
+        std::fs::read_to_string(out.join("src/lib.qx")).unwrap(),
+        "public void f() {}\n"
+    );
+    assert!(!out.join("src/notes.txt").exists());
+    // The wrong top-level directory is rejected.
+    let err = archive::unpack(&a, "other-1.0.0", &dir.join("out2")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+}
+
+// A gzip tarball with raw header paths and types, bypassing the tar crate's own path checks.
+fn evil_archive(path: &str, kind: tar::EntryType) -> Vec<u8> {
+    let mut h = tar::Header::new_gnu();
+    {
+        let name = &mut h.as_old_mut().name;
+        name[..path.len()].copy_from_slice(path.as_bytes());
+    }
+    h.set_size(4);
+    h.set_mode(0o644);
+    h.set_entry_type(kind);
+    h.set_cksum();
+    let mut raw = h.as_bytes().to_vec();
+    raw.extend_from_slice(b"evil");
+    raw.resize(raw.len() + 508, 0);
+    raw.resize(raw.len() + 1024, 0);
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, &raw).unwrap();
+    gz.finish().unwrap()
+}
+
+#[test]
+fn unsafe_archive_entries_are_rejected() {
+    let dir = tmp_dir("evil");
+    // The hand-built format itself is valid: a harmless entry unpacks.
+    let fine = evil_archive("demo-1.0.0/qxide.toml", tar::EntryType::Regular);
+    archive::unpack(&fine, "demo-1.0.0", &dir.join("fine")).unwrap();
+    assert_eq!(std::fs::read(dir.join("fine/qxide.toml")).unwrap(), b"evil");
+    for (path, kind) in [
+        ("demo-1.0.0/../escape.qx", tar::EntryType::Regular),
+        ("/abs/escape.qx", tar::EntryType::Regular),
+        ("demo-1.0.0/C:/escape.qx", tar::EntryType::Regular),
+        ("demo-1.0.0/link", tar::EntryType::Symlink),
+        ("demo-1.0.0/hard", tar::EntryType::Link),
+    ] {
+        let bytes = evil_archive(path, kind);
+        let out = dir.join("out");
+        let err = archive::unpack(&bytes, "demo-1.0.0", &out).unwrap_err();
+        assert_eq!(err.code, Code::BadArchive, "{path}");
+        assert!(!dir.join("escape.qx").exists());
+    }
+    assert_eq!(
+        archive::unpack(b"not gzip", "demo-1.0.0", &dir.join("x"))
+            .unwrap_err()
+            .code,
+        Code::BadArchive
+    );
+}
+
+#[test]
+fn installs_verify_the_checksum_first() {
+    let dir = tmp_dir("install");
+    let m = write_package(&dir.join("pkg"));
+    let (bytes, _) = archive::pack(&m).unwrap();
+    let home = cache::Home {
+        root: dir.join("home"),
+    };
+    let v = Version::new(1, 2, 3);
+    let wrong = sha256_hex(b"something else");
+    let err = home.install("r", "demo", &v, &wrong, &bytes).unwrap_err();
+    assert_eq!(err.code, Code::ChecksumMismatch);
+    assert!(home.installed("r", "demo", &v, &wrong).is_none());
+    assert!(!home.src_dir("r", "demo", &v).exists(), "nothing unpacked");
+    let cksum = sha256_hex(&bytes);
+    let path = home.install("r", "demo", &v, &cksum, &bytes).unwrap();
+    assert!(path.join("src/sub/x.qx").is_file());
+    assert_eq!(home.installed("r", "demo", &v, &cksum), Some(path));
+    assert!(home.cached_archive("r", "demo", &v, &cksum).is_some());
+}

@@ -1,0 +1,5 @@
+// `bell_utils.gates`: small gate helpers.
+
+public void entangle(Qubit control, Qubit target) {
+    cx(control, target);
+}

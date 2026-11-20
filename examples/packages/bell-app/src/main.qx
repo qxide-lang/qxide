@@ -1,0 +1,13 @@
+import bell_utils.bell_pair;
+import bell_utils.plus;
+
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    bell_pair(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    Qubit p = plus();
+    Bit mp = measure(p);
+    println("a={} b={} plus={}", ma, mb, mp);
+}

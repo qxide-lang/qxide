@@ -8,6 +8,7 @@ mod explain;
 mod fmt;
 mod interp;
 mod lexer;
+mod link;
 mod msg;
 mod parser;
 pub mod repl;
@@ -17,31 +18,90 @@ mod tests;
 #[cfg(test)]
 mod tools_tests;
 
+#[cfg(test)]
+mod module_tests;
+
 use std::collections::HashMap;
+use std::path::Path;
 
 use qxide::{Backend, Shot, SimError, DEFAULT_MEMORY_LIMIT};
 
 use diag::{Code, Diagnostic, SourceMap};
 use interp::{BitsFmt, Elaborated, OutPiece};
+pub use link::{PackageRoot, Project, ReadFn};
 
 /// Rendered diagnostics, ready for stderr.
 pub struct Failure(pub String);
 
-fn front(src: &str) -> Result<ast::Program, Vec<Diagnostic>> {
-    let toks = lexer::lex(src).map_err(|d| vec![d])?;
-    let program = parser::parse(toks).map_err(|d| vec![d])?;
-    let errors = check::check(&program);
-    if errors.is_empty() {
-        Ok(program)
-    } else {
-        Err(errors)
+/// The entry file of `qxide run`/`check`/`qasm` and the packages its imports may reach.
+pub struct Input<'a> {
+    pub name: &'a str,
+    pub src: &'a str,
+    pub project: Option<&'a Project>,
+    /// Reads imported module files; `read_file` outside of tests.
+    pub read: ReadFn<'a>,
+}
+
+pub fn read_file(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
+impl<'a> Input<'a> {
+    /// A lone file: no project, so any `import` is an error.
+    pub fn file(name: &'a str, src: &'a str) -> Self {
+        Self {
+            name,
+            src,
+            project: None,
+            read: &read_file,
+        }
+    }
+
+    // A module file of a package (such as `lib.qx`) is a library: it needs no `main`.
+    fn is_library(&self) -> bool {
+        self.project.is_some_and(|p| p.entry_module.is_some())
     }
 }
 
+fn front_input(
+    input: &Input,
+    require_main: bool,
+) -> (SourceMap, Result<ast::Program, Vec<Diagnostic>>) {
+    let src = strip_bom(input.src);
+    let (map, linked) = link::link(input.name, src, input.project, input.read);
+    let checked = linked.and_then(|program| {
+        let errors = check::check_with(&program, require_main);
+        if errors.is_empty() {
+            Ok(program)
+        } else {
+            Err(errors)
+        }
+    });
+    (map, checked)
+}
+
+fn build_input(
+    input: &Input,
+) -> (
+    SourceMap,
+    Result<(ast::Program, Elaborated), Vec<Diagnostic>>,
+) {
+    let (map, program) = front_input(input, true);
+    let built = program.and_then(|program| {
+        let elaborated = interp::elaborate(&program).map_err(|d| vec![d])?;
+        Ok((program, elaborated))
+    });
+    (map, built)
+}
+
+// A lone source without imports, as the REPL and the tests check it.
+fn front(src: &str) -> Result<ast::Program, Vec<Diagnostic>> {
+    front_input(&Input::file("t.qx", src), true).1
+}
+
+#[cfg(test)]
 fn build(src: &str) -> Result<(ast::Program, Elaborated), Vec<Diagnostic>> {
-    let program = front(src)?;
-    let elaborated = interp::elaborate(&program).map_err(|d| vec![d])?;
-    Ok((program, elaborated))
+    build_input(&Input::file("t.qx", src)).1
 }
 
 // Tableau size of the library's stabilizer backend: x and z bit rows (2n + 1 of them) plus signs.
@@ -77,8 +137,7 @@ fn sim_error(err: SimError, at: diag::Span) -> Diagnostic {
     }
 }
 
-fn render(name: &str, src: &str, errors: &[Diagnostic]) -> Failure {
-    let map = SourceMap::new(name, src);
+fn render(map: &SourceMap, errors: &[Diagnostic]) -> Failure {
     Failure(
         errors
             .iter()
@@ -93,16 +152,29 @@ fn strip_bom(src: &str) -> &str {
     src.strip_prefix('\u{feff}').unwrap_or(src)
 }
 
-/// `qxide check`: lexing, parsing and static checks only.
+/// `qxide check` of a lone file.
+// The single-file entry points stay for callers that have no project (tests, a future REPL).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn check(name: &str, src: &str) -> Result<(), Failure> {
-    let src = strip_bom(src);
-    front(src).map(|_| ()).map_err(|e| render(name, src, &e))
+    check_input(&Input::file(name, src))
+}
+
+/// `qxide check`: lexing, linking and static checks only, for the entry file and its imports.
+pub fn check_input(input: &Input) -> Result<(), Failure> {
+    let (map, program) = front_input(input, !input.is_library());
+    program.map(|_| ()).map_err(|e| render(&map, &e))
+}
+
+/// `qxide qasm` of a lone file.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn qasm(name: &str, src: &str) -> Result<String, Failure> {
+    qasm_input(&Input::file(name, src))
 }
 
 /// `qxide fmt`: the formatted source. Refuses sources that do not parse, and double-checks that
 /// formatting kept every token and comment before anything is written.
 pub fn format(name: &str, src: &str) -> Result<String, Failure> {
-    let out = fmt::format(src).map_err(|e| render(name, strip_bom(src), &e))?;
+    let out = fmt::format(src).map_err(|e| render(&SourceMap::new(name, strip_bom(src)), &e))?;
     if fmt::fingerprint(&out) != fmt::fingerprint(src) {
         return Err(Failure(msg::fmt_changed_tokens(name)));
     }
@@ -115,9 +187,9 @@ pub fn explain(arg: &str) -> Option<String> {
 }
 
 /// `qxide qasm`: elaborate once and print the OpenQASM 3 of the resulting circuit.
-pub fn qasm(name: &str, src: &str) -> Result<String, Failure> {
-    let src = strip_bom(src);
-    let (_, e) = build(src).map_err(|e| render(name, src, &e))?;
+pub fn qasm_input(input: &Input) -> Result<String, Failure> {
+    let (map, built) = build_input(input);
+    let (_, e) = built.map_err(|e| render(&map, &e))?;
     Ok(e.circuit.to_qasm())
 }
 
@@ -194,13 +266,14 @@ impl Limits {
 
 /// `qxide run`: elaborate once, then simulate. One shot prints the `println` output; several
 /// shots print one table row per distinct measurement record (`c[0]` first) with its output.
-// The playground binding calls `run_with` directly.
+// The playground binding calls `run_with`; the CLI calls `run_input`.
 #[allow(dead_code)]
 pub fn run(name: &str, src: &str, shots: u64, seed: u64) -> Result<String, Failure> {
     run_with(name, src, shots, seed, Limits::CLI)
 }
 
-/// `run` with explicit resource limits.
+/// `run` of a lone file with explicit resource limits.
+#[allow(dead_code)]
 pub fn run_with(
     name: &str,
     src: &str,
@@ -208,8 +281,18 @@ pub fn run_with(
     seed: u64,
     limits: Limits,
 ) -> Result<String, Failure> {
-    let src = strip_bom(src);
-    let (program, e) = build(src).map_err(|e| render(name, src, &e))?;
+    run_input_with(&Input::file(name, src), shots, seed, limits)
+}
+
+/// `qxide run` of an entry file and its imports; see `run`.
+#[allow(dead_code)]
+pub fn run_input(input: &Input, shots: u64, seed: u64) -> Result<String, Failure> {
+    run_input_with(input, shots, seed, Limits::CLI)
+}
+
+fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Result<String, Failure> {
+    let (map, built) = build_input(input);
+    let (program, e) = built.map_err(|e| render(&map, &e))?;
     let prints_bits = e
         .output
         .iter()
@@ -233,8 +316,7 @@ pub fn run_with(
         if backend == Backend::StateVector && e.slots > limit {
             let reason = msg::playground_qubit_limit(e.slots, limit);
             return Err(render(
-                name,
-                src,
+                &map,
                 &[
                     Diagnostic::new(Code::Simulation, main_span, msg::simulation_failed(&reason))
                         .with_help(msg::help_playground_qubit_limit()),
@@ -248,8 +330,7 @@ pub fn run_with(
         let reason =
             msg::stabilizer_too_large(e.slots, &gib(tableau), &gib(limits.stabilizer_bytes.into()));
         return Err(render(
-            name,
-            src,
+            &map,
             &[
                 Diagnostic::new(Code::Simulation, main_span, msg::simulation_failed(&reason))
                     .with_help(msg::help_too_large()),
@@ -259,7 +340,7 @@ pub fn run_with(
     let simulate = |k: u64| {
         e.circuit
             .simulate_with(Backend::Auto, seed.wrapping_add(k))
-            .map_err(|err| render(name, src, &[sim_error(err, main_span)]))
+            .map_err(|err| render(&map, &[sim_error(err, main_span)]))
     };
     if shots == 1 {
         return Ok(render_output(&e.output, Some(&simulate(0)?)));
