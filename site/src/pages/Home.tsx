@@ -107,10 +107,10 @@ function BellCode() {
 }
 
 // Output captured by running `qxide run examples/qx/bell.qx --shots 1000` and `qxide qasm examples/qx/bell.qx`.
-const RUN_OUT = `[0, 0]  0b00 = 0  ×504
-  a=0 b=0
-[1, 1]  0b11 = 3  ×496
-  a=1 b=1`;
+const RUN_OUT = `[1, 1]  0b11 = 3  ×521
+  a=1 b=1
+[0, 0]  0b00 = 0  ×479
+  a=0 b=0`;
 
 const QASM = `OPENQASM 3.0;
 include "stdgates.inc";
@@ -122,8 +122,8 @@ c[0] = measure q[0];
 c[1] = measure q[1];`;
 
 const OUTCOMES = [
-  {bits: '[0, 0]', n: 504},
-  {bits: '[1, 1]', n: 496},
+  {bits: '[1, 1]', n: 521},
+  {bits: '[0, 0]', n: 479},
 ];
 
 function Example() {

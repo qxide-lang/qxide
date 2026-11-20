@@ -13,6 +13,8 @@ mod parser;
 pub mod repl;
 
 #[cfg(test)]
+mod sampling_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tools_tests;
@@ -256,18 +258,20 @@ pub fn run_with(
             ],
         ));
     }
-    let simulate = |k: u64| {
-        e.circuit
-            .simulate_with(Backend::Auto, seed.wrapping_add(k))
-            .map_err(|err| render(name, src, &[sim_error(err, main_span)]))
-    };
+    // Every shot gets its own seed derived from `seed` (see `qxide::shot_seed`), shared with the
+    // library and the playground, so runs with nearby seeds do not reuse each other's shots.
+    let mut sims = e
+        .circuit
+        .simulate_shots(Backend::Auto, seed, shots)
+        .map(|r| r.map_err(|err| render(name, src, &[sim_error(err, main_span)])));
     if shots == 1 {
-        return Ok(render_output(&e.output, Some(&simulate(0)?)));
+        let shot = sims.next().expect("one shot")?;
+        return Ok(render_output(&e.output, Some(&shot)));
     }
     // The printed output depends only on the measured bits, so it is rendered once per record.
     let mut groups: HashMap<Vec<bool>, (u64, String)> = HashMap::new();
-    for k in 0..shots {
-        let shot = simulate(k)?;
+    for shot in sims {
+        let shot = shot?;
         let key: Vec<bool> = e.measured.iter().map(|&b| shot.get(b)).collect();
         groups
             .entry(key)

@@ -806,7 +806,7 @@ fn new_examples_run() {
     let mut heads: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
     heads.sort_unstable();
     assert_eq!(heads, ["[0, 0]  0b00 = 0", "[1, 1]  0b11 = 3"]);
-    assert_eq!(run_ok(ROTATION, 1), "ry total 90 degrees (90.0), m=0\n");
+    assert_eq!(run_ok(ROTATION, 1), "ry total 90 degrees (90.0), m=1\n");
     let q = qasm("t.qx", ROTATION).ok().unwrap();
     assert_eq!(q.matches("ry(").count(), 4, "{q}");
 }

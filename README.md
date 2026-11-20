@@ -70,10 +70,10 @@ Run the program with `qxide run`: a single shot prints the program's output, whi
 $ qxide run examples/qx/bell.qx
 a=1 b=1
 $ qxide run examples/qx/bell.qx --shots 1000
-[0, 0]  0b00 = 0  ×504
-  a=0 b=0
-[1, 1]  0b11 = 3  ×496
+[1, 1]  0b11 = 3  ×521
   a=1 b=1
+[0, 0]  0b00 = 0  ×479
+  a=0 b=0
 ```
 
 In the multi-shot table, each row represents one measurement record followed by its count: shown as an array with `c[0]` first (`[0, 1, 1]`), in binary with the highest bit first (`0b110`), and as an integer with `c[0]` as the least significant bit (`= 6`). The program's own output for that outcome is indented below the row. Use `qxide check` to validate a program without running it, or `qxide qasm` to emit OpenQASM 3.
@@ -162,7 +162,7 @@ qx> Qubit q = qubit();
 qx> h(q);
 qx> Bit m = measure(q);
 qx> m
-0
+1
 qx> h(q);
 error[Q0301]: use of consumed qubit `q`
  --> <repl>:5:3
