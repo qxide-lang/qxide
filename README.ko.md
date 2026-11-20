@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/qxide-mark.svg" alt="Qxide 로고" width="96" height="96">
+</p>
+
 # Qxide
 
 [English](README.md) · [qxide.dev](https://qxide.dev)
