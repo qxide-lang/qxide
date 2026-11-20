@@ -286,6 +286,10 @@ pub fn repl_unknown_command(cmd: &str) -> String {
     format!("error: unknown command `:{cmd}`; type `:help` for a list of commands\n")
 }
 
+pub fn repl_unbalanced() -> String {
+    "error: input closes a bracket it did not open, which is not allowed in the REPL\n".into()
+}
+
 pub fn repl_return() -> String {
     "error: top-level `return` is not allowed in the REPL because it would end the session's `main` function and skip later input\n".into()
 }

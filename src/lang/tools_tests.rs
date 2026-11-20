@@ -374,6 +374,64 @@ fn repl_rejects_top_level_return() {
     assert_eq!(code, 0);
 }
 
+// A `return` anywhere in `main` (not just at the top level) would end the replayed session.
+#[test]
+fn repl_rejects_nested_return() {
+    for nested in [
+        "if true { return; }",
+        "if true {\n    if 1 < 2 {\n        return;\n    }\n}",
+        "for i in 0..2 { return; }",
+        "if false { } else { return; }",
+    ] {
+        let (out, err, code) = repl(&format!(
+            "println(\"before\");\n{nested}\nprintln(\"after\");\nint x = 42;\nx\n"
+        ));
+        assert_eq!(out, "before\nafter\n42\n", "{nested}: {err}");
+        assert!(!err.is_empty(), "{nested}");
+        assert_eq!(code, 0);
+    }
+    // A `return` inside a function definition is fine.
+    let (out, err, _) =
+        repl("int f() {\n    if true {\n        return 1;\n    }\n    return 2;\n}\nf()\n");
+    assert_eq!((out.as_str(), err.as_str()), ("1\n", ""));
+}
+
+// The REPL adds `);`/`;` after the input; a trailing `//` comment must not swallow it.
+#[test]
+fn repl_accepts_trailing_line_comments() {
+    let (out, err, _) =
+        repl("1 + 2 // sum\nint x = 1 // one\nx + 1 // two\nprintln(\"//\") // s\n");
+    assert_eq!((out.as_str(), err.as_str()), ("3\n2\n//\n", ""));
+}
+
+// Input that closes `main` early could inject functions and silently break the session.
+#[test]
+fn repl_rejects_input_that_closes_main() {
+    let (out, err, code) = repl("int a = 3\n} void evil() { int z = 1\nprintln(\"hi\");\na\n");
+    assert_eq!(out, "hi\n3\n", "{err}");
+    assert!(!err.is_empty());
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn repl_strips_a_byte_order_mark() {
+    let (out, err, _) = repl("\u{feff}int a = 3;\na\n");
+    assert_eq!((out.as_str(), err.as_str()), ("3\n", ""));
+}
+
+// Diagnostics show what the user typed, not the `println("{}", …)` wrapper the REPL runs.
+#[test]
+fn repl_diagnostics_show_the_typed_input() {
+    let (_, err, _) = repl("Qubit q = qubit();\nmeasure(q)\nh(q);\n");
+    assert_eq!(error_codes(&err), ["Q0301"], "{err}");
+    assert!(!err.contains("println"), "{err}");
+    assert!(err.contains("2 | measure(q)"), "{err}");
+    let (_, err, _) = repl("undefined_var + 1\n");
+    assert_eq!(error_codes(&err), ["Q0201"], "{err}");
+    assert!(err.contains("1 | undefined_var + 1\n"), "{err}");
+    assert!(err.contains(" --> <repl>:1:1"), "{err}");
+}
+
 #[test]
 fn repl_reports_runtime_errors_without_keeping_the_input() {
     let (out, err, code) = repl("int zero = 0;\n10 / zero\nzero + 1\n");

@@ -17,6 +17,25 @@ struct Entry {
     text: String,
     // Session line number of the entry's first line, counting accepted inputs as they were typed.
     line: usize,
+    // Set when `text` wraps what was typed (`println("{}", code)` or `code;`): diagnostics show the
+    // typed input instead.
+    typed: Option<Typed>,
+}
+
+#[derive(Clone)]
+struct Typed {
+    input: String,
+    // `text` is `prefix + code + suffix + rest`, where `input` is `code + rest`.
+    prefix: usize,
+    code: usize,
+    suffix: usize,
+}
+
+// Where an entry's wrapped text sits in the assembled program.
+struct Region {
+    start: usize,
+    len: usize,
+    typed: Typed,
 }
 
 pub struct Session {
@@ -43,6 +62,7 @@ enum New<'a> {
 
 struct Program {
     src: String,
+    regions: Vec<Region>,
     // Session line number of every line of `src`; 0 for the lines the REPL adds around `main`.
     labels: Vec<usize>,
     // Offset of the new input inside `src`, and the closing brace of `main`.
@@ -54,31 +74,80 @@ impl Program {
     fn assemble(fns: &[Entry], stmts: &[Entry], new: New) -> Program {
         let mut p = Program {
             src: String::new(),
+            regions: Vec::new(),
             labels: Vec::new(),
             input_at: 0,
             main_close: Span::default(),
         };
         for f in fns {
-            p.push(&f.text, f.line);
+            p.push_entry(f);
             p.push("", 0);
         }
         if let New::Fn(f) = new {
             p.input_at = p.src.len();
-            p.push(&f.text, f.line);
+            p.push_entry(f);
             p.push("", 0);
         }
         p.push("void main() {", 0);
         for s in stmts {
-            p.push(&s.text, s.line);
+            p.push_entry(s);
         }
         if let New::Stmt(s) = new {
             p.input_at = p.src.len();
-            p.push(&s.text, s.line);
+            p.push_entry(s);
         }
         p.main_close = Span::new(p.src.len(), p.src.len() + 1);
         p.src.push('}');
         p.labels.push(0);
         p
+    }
+
+    fn push_entry(&mut self, e: &Entry) {
+        if let Some(typed) = &e.typed {
+            self.regions.push(Region {
+                start: self.src.len(),
+                len: e.text.len(),
+                typed: typed.clone(),
+            });
+        }
+        self.push(&e.text, e.line);
+    }
+
+    // `src` with every wrapped entry replaced by what was typed, and the matching offset map.
+    fn display(&self) -> (String, impl Fn(usize) -> usize + '_) {
+        let mut shown = String::with_capacity(self.src.len());
+        let mut at = 0;
+        for r in &self.regions {
+            shown.push_str(&self.src[at..r.start]);
+            shown.push_str(&r.typed.input);
+            at = r.start + r.len;
+        }
+        shown.push_str(&self.src[at..]);
+        let map = move |off: usize| {
+            let mut delta: isize = 0;
+            for r in &self.regions {
+                let t = &r.typed;
+                if off < r.start {
+                    break;
+                }
+                if off <= r.start + r.len {
+                    let rel = off - r.start;
+                    // Offsets inside the added prefix/suffix move to the nearest typed character.
+                    let typed_rel = if rel <= t.prefix {
+                        0
+                    } else if rel - t.prefix <= t.code {
+                        rel - t.prefix
+                    } else {
+                        (rel - t.prefix - t.suffix).max(t.code)
+                    };
+                    let typed_rel = typed_rel.min(t.input.len());
+                    return (r.start as isize + delta) as usize + typed_rel;
+                }
+                delta += t.input.len() as isize - r.len as isize;
+            }
+            (off as isize + delta) as usize
+        };
+        (shown, map)
     }
 
     fn push(&mut self, text: &str, first_line: usize) {
@@ -91,8 +160,20 @@ impl Program {
     }
 
     fn render(&self, errors: &[Diagnostic]) -> Failure {
-        let map = SourceMap::new(NAME, &self.src).with_labels(self.labels.clone());
-        let text: Vec<String> = errors.iter().map(|d| map.render(d)).collect();
+        let (shown, at) = self.display();
+        let span = |s: Span| Span::new(at(s.start), at(s.end));
+        let map = SourceMap::new(NAME, &shown).with_labels(self.labels.clone());
+        let text: Vec<String> = errors
+            .iter()
+            .map(|d| {
+                let mut d = d.clone();
+                d.span = span(d.span);
+                for n in &mut d.notes {
+                    n.span = n.span.map(span);
+                }
+                map.render(&d)
+            })
+            .collect();
         Failure(text.join("\n"))
     }
 
@@ -105,11 +186,28 @@ impl Program {
 
 /// Brackets still open in `text`, ignoring string literals and `//` comments.
 pub fn open_brackets(text: &str) -> i64 {
-    let (mut depth, mut chars) = (0i64, text.chars().peekable());
-    while let Some(c) = chars.next() {
+    scan(text).depth
+}
+
+struct Scan {
+    depth: i64,
+    // Lowest depth reached: below zero, the input closes a bracket it did not open.
+    min_depth: i64,
+    // Byte offset of a `//` comment that runs to the end of `text`, if any.
+    trailing_comment: Option<usize>,
+}
+
+fn scan(text: &str) -> Scan {
+    let mut s = Scan {
+        depth: 0,
+        min_depth: 0,
+        trailing_comment: None,
+    };
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
         match c {
             '"' => {
-                while let Some(c) = chars.next() {
+                while let Some((_, c)) = chars.next() {
                     match c {
                         '\\' => {
                             chars.next();
@@ -119,19 +217,43 @@ pub fn open_brackets(text: &str) -> i64 {
                     }
                 }
             }
-            '/' if chars.peek() == Some(&'/') => {
-                for c in chars.by_ref() {
+            '/' if chars.peek().map(|&(_, c)| c) == Some('/') => {
+                s.trailing_comment = Some(i);
+                for (_, c) in chars.by_ref() {
                     if c == '\n' {
+                        s.trailing_comment = None;
                         break;
                     }
                 }
             }
-            '{' | '(' | '[' => depth += 1,
-            '}' | ')' | ']' => depth -= 1,
+            '{' | '(' | '[' => s.depth += 1,
+            '}' | ')' | ']' => {
+                s.depth -= 1;
+                s.min_depth = s.min_depth.min(s.depth);
+            }
             _ => {}
         }
     }
-    depth
+    s
+}
+
+// A `return` anywhere in the new input would end the session's `main` and skip later inputs.
+fn has_return(stmts: &[ast::Stmt], from: usize) -> bool {
+    stmts.iter().any(|s| match s {
+        ast::Stmt::Return { span, .. } => span.start >= from,
+        ast::Stmt::If(i) => if_has_return(i, from),
+        ast::Stmt::For { body, .. } => has_return(&body.stmts, from),
+        _ => false,
+    })
+}
+
+fn if_has_return(i: &ast::IfStmt, from: usize) -> bool {
+    has_return(&i.then.stmts, from)
+        || match &i.els {
+            Some(ast::Else::Block(b)) => has_return(&b.stmts, from),
+            Some(ast::Else::If(inner)) => if_has_return(inner, from),
+            None => false,
+        }
 }
 
 fn is_fn_decl(input: &str) -> bool {
@@ -155,7 +277,8 @@ impl Session {
     /// Handles one complete input: a `:command`, a function definition, statements, or an
     /// expression (printed like `println("{}", expr)`; a trailing `;` may be left out).
     pub fn input(&mut self, input: &str) -> Reply {
-        let input = input.trim();
+        // Piped files may start with a UTF-8 byte order mark, which `run` also ignores.
+        let input = input.trim_start_matches('\u{feff}').trim();
         if input.is_empty() {
             return Reply::Out(String::new());
         }
@@ -163,20 +286,42 @@ impl Session {
             return self.command(cmd.trim());
         }
         let line = self.next_line;
-        let entry = |text: String| Entry { text, line };
+        let entry = |text: String| Entry {
+            text,
+            line,
+            typed: None,
+        };
+        let scanned = scan(input);
+        // The code before a trailing `//` comment, which the added `);` or `;` must not follow.
+        let code = input[..scanned.trailing_comment.unwrap_or(input.len())].trim_end();
+        let rest = &input[code.len()..];
+        // `prefix + code + suffix + rest`, shown in diagnostics as the typed `code + rest`.
+        let wrap = |prefix: &str, suffix: &str| Entry {
+            text: format!("{prefix}{code}{suffix}{rest}"),
+            line,
+            typed: Some(Typed {
+                input: input.to_string(),
+                prefix: prefix.len(),
+                code: code.len(),
+                suffix: suffix.len(),
+            }),
+        };
         let reply = if is_fn_decl(input) {
             let e = entry(input.to_string());
             self.try_run(New::Fn(&e)).map(|out| (e, true, out))
-        } else if input.ends_with(';') || input.ends_with('}') {
+        } else if scanned.min_depth < 0 {
+            // Closing `main` early would move every later input out of it.
+            return Reply::Err(msg::repl_unbalanced());
+        } else if code.ends_with(';') || code.ends_with('}') {
             let e = entry(input.to_string());
             self.try_run(New::Stmt(&e)).map(|out| (e, false, out))
         } else {
             // A bare expression is printed; anything else gets the `;` it was typed without.
-            let echo = entry(format!("println(\"{{}}\", {input});"));
+            let echo = wrap("println(\"{}\", ", ");");
             match self.try_run(New::Stmt(&echo)) {
                 Ok(out) => Ok((echo, false, out)),
                 Err(_) => {
-                    let e = entry(format!("{input};"));
+                    let e = wrap("", ";");
                     self.try_run(New::Stmt(&e)).map(|out| (e, false, out))
                 }
             }
@@ -240,10 +385,7 @@ impl Session {
         };
         if is_stmt {
             let main = program.fns.iter().find(|f| f.name.name == "main");
-            let top_return = main
-                .into_iter()
-                .flat_map(|f| &f.body.stmts)
-                .any(|s| matches!(s, ast::Stmt::Return { span, .. } if span.start >= p.input_at));
+            let top_return = main.is_some_and(|f| has_return(&f.body.stmts, p.input_at));
             // A top-level `return` would end `main` and silently skip every later input.
             if top_return {
                 return Err(Failure(msg::repl_return()));
