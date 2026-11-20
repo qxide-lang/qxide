@@ -24,3 +24,8 @@ required-features = ["gpu"]
 # The simulator comparison tests run hundreds of thousands of shots; unoptimized builds make them ~50x slower.
 [profile.test]
 opt-level = 2
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
