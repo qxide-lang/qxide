@@ -238,6 +238,14 @@ pub fn help_too_large() -> String {
     "use fewer qubits, or run `qxide qasm` to export the circuit without simulating it".into()
 }
 
+pub fn playground_qubit_limit(qubits: usize, limit: usize) -> String {
+    format!("state-vector simulation of {qubits} qubits exceeds the browser playground limit of {limit} qubits")
+}
+
+pub fn help_playground_qubit_limit() -> String {
+    "use fewer qubits, or install `qxide` to run locally with `qxide run` (no qubit cap); the QASM button still exports the circuit".into()
+}
+
 pub fn no_return(name: &str) -> String {
     format!("function `{name}` ended without returning a value")
 }

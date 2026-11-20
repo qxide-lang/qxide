@@ -936,3 +936,40 @@ fn conditional_calls_reject_what_blocks_cannot_hold() {
     // Outside the `if` the same calls are fine.
     ok(&format!("void g() {{\n    println(\"x\");\n}}\nvoid f(Qubit q) {{\n    h(q);\n    g();\n}}\n{pre}    f(t);\n    discard(t);\n}}\n"));
 }
+
+#[test]
+fn run_limits_cap_state_vector_qubits_and_tableaus() {
+    let rotated = main_body(
+        "    QReg r = qreg(3);\n    t(r[0]);\n    BitReg m = measure(r);\n    println(\"{}\", m);",
+    );
+    let clifford = main_body(
+        "    QReg r = qreg(3);\n    h(r[0]);\n    BitReg m = measure(r);\n    println(\"{}\", m);",
+    );
+    let cap = |n| Limits {
+        max_state_vector_qubits: Some(n),
+        ..Limits::CLI
+    };
+    let Err(Failure(d)) = run_with("t.qx", &rotated, 1, 0, cap(2)) else {
+        panic!("3 qubits must exceed a cap of 2");
+    };
+    assert!(
+        d.starts_with("error[Q0406]: ") && d.contains("--> t.qx:1:6"),
+        "{d}"
+    );
+    assert!(d.contains("\nhelp: "), "{d}");
+    assert!(run_with("t.qx", &rotated, 1, 0, cap(3)).is_ok());
+    // Clifford circuits run on the stabilizer backend, which the qubit cap does not cover.
+    assert!(run_with("t.qx", &clifford, 1, 0, cap(2)).is_ok());
+    let tiny = Limits {
+        stabilizer_bytes: 8,
+        ..Limits::CLI
+    };
+    let Err(Failure(d)) = run_with("t.qx", &clifford, 1, 0, tiny) else {
+        panic!("an 8-byte limit must reject the tableau");
+    };
+    assert!(d.starts_with("error[Q0406]: "), "{d}");
+    assert_eq!(
+        run_with("t.qx", &rotated, 5, 9, Limits::CLI).ok(),
+        run("t.qx", &rotated, 5, 9).ok()
+    );
+}

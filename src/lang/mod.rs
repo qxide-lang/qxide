@@ -176,9 +176,38 @@ fn table_row(bits: &[bool], count: u64) -> String {
     format!("{}  {}{value}  ×{count}", fmt_array(bits), fmt_binary(bits))
 }
 
+/// Resource limits for `run`. The CLI uses `Limits::CLI`; the browser playground passes tighter ones.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Most qubit slots the state-vector backend may simulate; `None` leaves it to the memory limit.
+    pub max_state_vector_qubits: Option<usize>,
+    /// Largest stabilizer tableau, in bytes.
+    pub stabilizer_bytes: u64,
+}
+
+impl Limits {
+    pub const CLI: Limits = Limits {
+        max_state_vector_qubits: None,
+        stabilizer_bytes: DEFAULT_MEMORY_LIMIT,
+    };
+}
+
 /// `qxide run`: elaborate once, then simulate. One shot prints the `println` output; several
 /// shots print one table row per distinct measurement record (`c[0]` first) with its output.
+// The playground binding calls `run_with` directly.
+#[allow(dead_code)]
 pub fn run(name: &str, src: &str, shots: u64, seed: u64) -> Result<String, Failure> {
+    run_with(name, src, shots, seed, Limits::CLI)
+}
+
+/// `run` with explicit resource limits.
+pub fn run_with(
+    name: &str,
+    src: &str,
+    shots: u64,
+    seed: u64,
+    limits: Limits,
+) -> Result<String, Failure> {
     let src = strip_bom(src);
     let (program, e) = build(src).map_err(|e| render(name, src, &e))?;
     let prints_bits = e
@@ -199,13 +228,25 @@ pub fn run(name: &str, src: &str, shots: u64, seed: u64) -> Result<String, Failu
         .iter()
         .find(|f| f.name.name == "main")
         .map_or(diag::Span::default(), |f| f.name.span);
+    let backend = e.circuit.select_backend();
+    if let Some(limit) = limits.max_state_vector_qubits {
+        if backend == Backend::StateVector && e.slots > limit {
+            let reason = msg::playground_qubit_limit(e.slots, limit);
+            return Err(render(
+                name,
+                src,
+                &[
+                    Diagnostic::new(Code::Simulation, main_span, msg::simulation_failed(&reason))
+                        .with_help(msg::help_playground_qubit_limit()),
+                ],
+            ));
+        }
+    }
     // The stabilizer backend has no memory limit of its own; huge tableaus would abort on allocation.
     let tableau = stabilizer_bytes(e.slots);
-    if e.circuit.select_backend() == Backend::Stabilizer
-        && tableau > u128::from(DEFAULT_MEMORY_LIMIT)
-    {
+    if backend == Backend::Stabilizer && tableau > u128::from(limits.stabilizer_bytes) {
         let reason =
-            msg::stabilizer_too_large(e.slots, &gib(tableau), &gib(DEFAULT_MEMORY_LIMIT.into()));
+            msg::stabilizer_too_large(e.slots, &gib(tableau), &gib(limits.stabilizer_bytes.into()));
         return Err(render(
             name,
             src,
