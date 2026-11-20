@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "qxide"
 # Version comes from Cargo.toml so the wheel and `qxide --version` always match.
 dynamic = ["version"]
-description = "Early Qxide experiment: Rust-like quantum/classical language CLI (OpenQASM 3 output, state-vector/stabilizer simulators)"
+description = "Qxide command-line tool: a language for classical and quantum computers with C-style syntax, compile-time qubit safety like Rust's ownership, and OpenQASM 3 output"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.8"
