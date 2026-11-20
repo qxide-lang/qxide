@@ -1,0 +1,541 @@
+# Packages, modules and the registry
+
+Status: Implemented on the `packages` branch (2026-11-20), not merged into `main`, and not released. The registry repository `qxide-lang/registry` does not exist yet; its contents are prepared in `registry-template/`.
+
+## 1. Goals and non-goals
+
+**Goals**
+
+- Reuse `.qx` code across files within a project and across separate projects.
+- Publish and fetch packages through a workflow comparable to crates.io or PyPI.
+- Host the initial registry as a GitHub repository index (similar to early Cargo or Homebrew), with no server to operate, no hosting cost, and no user accounts or passwords; publishing happens through pull requests reviewed by maintainers.
+- Design the index format and URL layout so the same data can later be served by a dedicated registry server without changing lock file semantics or the index format.
+
+**Non-goals (current implementation)**
+
+- Exporting structs, types, or constants.
+- Multiple versions of the same package in a single build.
+- Dependency renaming.
+- Private or authenticated registries.
+- A web UI.
+- `qxide yank` and `qxide login` commands.
+- Build scripts.
+
+## 2. Project layout and manifest (`qxide.toml`)
+
+A Qxide package is a directory containing a `qxide.toml` manifest and `.qx` source files under `src/`:
+
+```text
+my-app/
+  qxide.toml
+  qxide.lock          (generated)
+  src/
+    main.qx           program entry (has `void main()`)
+    lib.qx            package root module (library packages)
+    gates.qx          module `my_app.gates`
+    algo/grover.qx    module `my_app.algo.grover`
+  target/package/     archives built by `qxide publish` (not committed)
+```
+
+An example `qxide.toml`:
+
+```toml
+[package]
+name = "bell-utils"
+version = "0.1.0"
+description = "Bell-pair helpers for Qxide"
+license = "MIT OR Apache-2.0"
+authors = ["Qxide contributors"]
+repository = "https://github.com/qxide-lang/qxide"
+qxide = ">=0.6"
+
+[dependencies]
+other-pkg = "0.3"                                   # caret requirement, like Cargo: ^0.3
+local-pkg = { version = "0.1", path = "../local-pkg" }
+dev-only  = { path = "../dev-only" }                # path-only: cannot be published
+```
+
+**Manifest rules**
+
+- `[package]` with `name` and `version` is required.
+- `version` must be a valid semver string (for example `1.2.3`).
+- `qxide` is a semver requirement on the `qxide` language and tool version, checked by `run`, `check`, `qasm`, and `install`. This binary is version `0.6.0`; `>=0.6` is recommended because a caret requirement such as `^0.6` would reject `0.7`.
+- `description`, `license`, and `qxide` are required when publishing a package.
+- `authors` (array of strings) and `repository` are optional metadata.
+- Unknown keys are ignored for forward compatibility.
+- Package names consist of lowercase ASCII letters, digits, and single hyphens. They must start with a letter, must not end with a hyphen, are at most 64 characters long, and cannot contain underscores.
+- In `.qx` source files, a package is addressed by its import name, formed by replacing hyphens with underscores (`bell-utils` becomes `bell_utils`). Because underscores are disallowed in package names, the mapping between package names and import names is one-to-one.
+- Dependency values are either a version requirement string or an inline table with `version` and/or `path`. Bare version strings are caret requirements (`"0.1.0"` is equivalent to `^0.1.0`).
+- `qxide add` and `qxide remove` edit `qxide.toml` using a format-preserving TOML editor (`toml_edit`), preserving comments and layout.
+
+## 3. Modules and import syntax
+
+Each `.qx` file under `src/` defines a module. A module path is the package's import name followed by the file's path relative to `src/`, without the `.qx` extension and with `/` replaced by `.`.
+
+- `src/lib.qx` is the package root module and is addressed by the package import name alone (`bell_utils`). `pkg.lib` also resolves to the root module.
+- `src/main.qx` is the program entry point and is not intended to be imported.
+- A module within the current package is addressed using the current package's own import name (fully qualified, Java style): inside package `my-app`, another file imports `entangle` from `src/gates.qx` as `import my_app.gates.entangle;`.
+
+Implemented import syntax:
+
+```java
+import bell_utils.bell_pair;          // one public function from the package root (src/lib.qx)
+import bell_utils.gates.entangle;     // one public function from module bell_utils.gates (src/gates.qx)
+import bell_utils.gates.*;            // every public function of a module
+
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    bell_pair(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    println("a={} b={}", ma, mb);
+}
+```
+
+Grammar additions:
+
+```ebnf
+program = { import } { fn_decl } ;
+import  = "import" IDENT { "." IDENT } ( "." IDENT | "." "*" ) ";" ;
+fn_decl = [ "public" ] type IDENT "(" [ param { "," param } ] ")" block ;
+```
+
+`import` and `public` are keywords; identifiers named `import` or `public` are no longer accepted (this is the only source-level incompatibility). All `import` declarations must appear before the first function declaration (`Q0510`). An import path must name at least a module and a function or `.*` (`Q0509`), so `import bell_utils;` is rejected.
+
+### Alternatives considered
+
+| Option | Syntax | Pros | Cons |
+| --- | --- | --- | --- |
+| A. Single-function and wildcard imports | `import pkg.module.function;`, `import pkg.module.*;`, unqualified calls `f(q)` | Same shape as Java's `import a.b.C;` / `import a.b.*;`, matching the Java-style declarations adopted in 0.5.0; call sites remain unchanged so gate-style calls `bell_pair(a, b)` read like built-ins; all imported names are listed at the top of the file; requires no change to expression parsing. | Names can clash (handled by `Q0506`/`Q0507`); a reader must check the imports at the top of the file to see where a function comes from. |
+| B. Module import with qualified calls | `import bell_utils;`, calls `bell_utils.bell_pair(a, b)` | Origin of each function is visible at every call site. | `a.b(...)` already parses as a method call on a value (`r.as_int()`, `r.to_binary()`), requiring a namespace-vs-value resolution rule in the parser and checker; longer call sites. |
+| C. Rust-style imports | `use pkg::module::f;`, `mod` | Familiar to Rust users. | `use` and `mod` are reserved words for other plans, and `::` does not fit the Java-style syntax. |
+| D. Aliased imports | `import pkg.f as g;` | Avoids name collisions locally. | Not part of Java; deferred. |
+
+**Recommendation and decision:** Option A is implemented. Qualified calls (Option B) can be added later without breaking Option A.
+
+## 4. Visibility, name resolution, conflicts and cycles
+
+### Visibility
+
+Functions are private to their defining module unless marked `public` (for example, `public void prepare(Qubit q) { ... }`).
+
+- Only `public` functions can be imported. Explicitly importing a private function fails with `Q0504`, including a note at the function's declaration and a help message suggesting `public`.
+- Wildcard imports (`import pkg.module.*;`) silently skip private functions.
+- Marking a function `public` in the entry file is permitted and has no effect.
+- Private helper functions with the same name in different modules do not collide.
+
+### Name resolution and conflicts
+
+Inside a module, function calls are resolved in this order:
+
+1. Functions defined in the module itself.
+2. Single-function imports.
+3. Wildcard imports.
+
+Conflict rules:
+
+- Importing a function whose name matches a function defined in the same module is an error (`Q0506`).
+- Two single-function imports bringing different functions under the same name are an error (`Q0506`). Importing the exact same function twice is allowed.
+- A call whose name is provided by more than one wildcard import is an error at the call site (`Q0507`), reported only if the ambiguous name is actually called. An explicit single-function import of that name resolves the ambiguity.
+- Calls to functions that cannot be resolved remain `Q0202`.
+
+### Import cycles
+
+The module import graph must be acyclic. Cycles are detected with a depth-first search while loading modules. When a cycle is found, `Q0505` is reported at the import that closes the cycle, with `note:` lines pointing to the other imports in the cycle and the cycle chain in the message (for example, `my_app.a -> my_app.b -> my_app.a`).
+
+Diamond dependencies (two modules importing a shared third module) are permitted. When the checked entry file is itself a module (such as `qxide check src/lib.qx`), importing that module back also forms a cycle and is rejected.
+
+Disallowing module cycles keeps module loading order well defined and leaves room for separate compilation with the planned typed IR. Mutual or direct recursion between functions remains allowed within a single module.
+
+### Linking
+
+`src/lang/link.rs` lexes and parses the entry file along with every transitively imported module. It then rewrites each call target to a qualified name (such as `bell_utils.bell_pair` or `bell_utils.gates.entangle`; functions in the entry file keep bare names) and merges all functions into a single program. Because `.` cannot appear in identifiers, generated qualified names cannot collide with user-defined names.
+
+The existing checker, interpreter, and OpenQASM 3 exporter run unchanged on the merged program. Program output and generated OpenQASM 3 are identical to writing the same functions in a single file (a test verifies byte-identical OpenQASM 3 output).
+
+All loaded files share a single byte-offset space for source spans: the entry file starts at offset 0, and each subsequent file starts after the previous file plus a one-byte gap. Diagnostics in imported files therefore report accurate file names, lines, and columns, and diagnostic notes can point across files. Lexer and parser errors in imported files are reported in those files. The loader caps a module graph at 4096 modules. Single-file programs without imports follow the original code path unchanged.
+
+## 5. Linearity across package boundaries
+
+The function signature is the linearity contract across module and package boundaries:
+
+- A `Qubit` or `QReg` parameter without `consume` is borrowed: the callee may only apply gates or `reset`, while the caller retains ownership and must still `measure` or `discard` it (`Q0302` if leaked).
+- A parameter declared with `consume` (for example `consume Qubit q`) moves ownership into the callee; subsequent use in the caller fails with `Q0301`.
+- A function returning `Qubit` or `QReg` transfers ownership of the returned quantum value to the caller.
+
+Each callee body is checked once in its own module against its own signature. For example, if a dependency discards a borrowed parameter, `Q0313` is reported in the dependency's source file.
+
+The rule restricting calls inside an `if` conditioned on a measured `Bit` (`Q0314`) is computed over the merged call graph, so it sees through imported functions. Duplicate-qubit checks (`Q0303`) apply to imported functions in the same way as local functions.
+
+Because checking currently operates on source, a future separate-compilation mode would export these signature properties (parameter ownership, quantum return types, and conditional-call safety) in an interface file.
+
+## 6. Lock file (`qxide.lock`)
+
+`qxide.lock` pins the resolved package graph:
+
+```toml
+# This file is automatically generated by qxide. Do not edit by hand.
+version = 1
+
+[[package]]
+name = "bell-app"
+version = "0.1.0"
+dependencies = ["bell-utils"]
+
+[[package]]
+name = "bell-utils"
+version = "0.1.0"
+source = "registry+https://raw.githubusercontent.com/qxide-lang/registry/main/"
+checksum = "sha256:d18afc9d9e5b2362b5ddf0db2007096f3556d38f3efe96d02b055e9718f7fc90"
+dependencies = []
+```
+
+**Format and freshness rules**
+
+- Each package in the resolved graph has one `[[package]]` entry, including the root package (which has no `source` field).
+- Package entries are sorted by `name`, each package's `dependencies` list is sorted, and the file is written with `\n` line endings in a deterministic field order so identical graphs always produce identical bytes.
+- `source` is either `registry+<registry URL>` or `path+<path relative to the project root>`.
+- Registry packages must include `checksum = "sha256:<64 hex>"`. Path packages have no `checksum`.
+- Applications should commit `qxide.lock`.
+- A lock file is considered fresh when:
+  1. the root package's direct dependencies match `qxide.toml` exactly,
+  2. every locked version satisfies all requirements on it,
+  3. registry packages match the active registry URL,
+  4. path dependencies still have the same version and dependency list on disk, and
+  5. every referenced dependency has a corresponding locked entry.
+- `qxide run`, `qxide check`, and `qxide qasm` require a fresh lock whenever the project has dependencies, failing with `Q0611` if the lock file is missing or a package is not unpacked, or `Q0612` if the lock file is stale. These commands never access the network.
+
+## 7. Version resolution
+
+Resolution is implemented in `src/pkg/resolve.rs`. A build contains at most one version per package name.
+
+The resolver iterates over the dependency graph:
+
+1. For each package, collect every version requirement imposed by the root manifest and by all currently chosen dependency versions.
+2. Select a version that satisfies every requirement, is not yanked (unless the existing lock file already pins that version), and whose `qxide` requirement accepts the current tool version.
+3. Among valid candidates, prefer the version pinned in `qxide.lock`, then the currently chosen version, and otherwise the newest matching version.
+4. Repeat until the chosen set stabilizes, up to a maximum of 256 rounds.
+
+The resolver does not backtrack. Resolution errors map to specific codes:
+
+- Unknown package: `Q0604`.
+- No version satisfies the requirements: `Q0605` (diagnostic notes list the requirements and available versions).
+- Incompatible requirements or a package depending on itself: `Q0606`.
+- Only versions requiring a different `qxide` version exist: `Q0613`.
+
+Adding a new dependency preserves already locked versions of existing dependencies. Deleting `qxide.lock` and running `qxide install` re-resolves the graph to the newest matching versions. `qxide remove` prunes unreachable packages from `qxide.lock` without contacting the registry.
+
+## 8. Registry index format
+
+A registry uses the same layout whether accessed as a local directory, a `file://` URL, or an `https://` URL:
+
+```text
+config.json                      {"dl": "packages/{prefix}/{name}/{name}-{version}.tar.gz", "api": null}
+index/<prefix>/<name>            one JSON object per line, one line per published version
+packages/<prefix>/<name>/<name>-<version>.tar.gz   archives (GitHub-hosted registry)
+search.json                      generated list for `qxide search`
+```
+
+`<prefix>` follows Cargo's sparse-index sharding scheme:
+
+| Name length | `<prefix>` | Example path |
+| --- | --- | --- |
+| 1 | `1` | `index/1/a` |
+| 2 | `2` | `index/2/ab` |
+| 3 | `3/<first letter>` | `index/3/a/abc` |
+| 4 or more | `<first two>/<next two>` | `index/be/ll/bell-utils` |
+
+Each line in `index/<prefix>/<name>` is a JSON object with sorted keys, representing one published version (shown exactly as printed by `qxide publish`):
+
+```json
+{"cksum":"d18afc9d9e5b2362b5ddf0db2007096f3556d38f3efe96d02b055e9718f7fc90","deps":[],"description":"Bell-pair helpers for Qxide","name":"bell-utils","qxide":">=0.6","v":1,"vers":"0.1.0","yanked":false}
+```
+
+**Index entry fields**
+
+- `name`: package name.
+- `vers`: semver version string.
+- `deps`: array of `{"name", "req"}` objects.
+- `cksum`: 64-character lowercase hex SHA-256 digest of the package archive.
+- `qxide`: optional `qxide` version requirement.
+- `description`: optional package description (used by search).
+- `dl`: optional absolute or registry-relative download URL overriding `config.json`'s `dl` template (for example, a GitHub Release asset).
+- `yanked`: boolean indicating whether the version is yanked.
+- `v`: index schema version (`1`).
+
+Unknown keys in index entries are ignored by the client. Download URL templates expand `{name}`, `{version}`, `{prefix}`, and `{sha256-checksum}`. Relative URLs are resolved against the registry root.
+
+The default registry URL is `https://raw.githubusercontent.com/qxide-lang/registry/main/`. It can be overridden with `--registry <url|path>` or the `QXIDE_REGISTRY` environment variable. Plain `http://` URLs are refused (`Q0608`).
+
+## 9. Archives and checksums
+
+### Archive storage decision
+
+Package archives are committed directly into the registry repository under `packages/` in the same pull request as the corresponding index line.
+
+- Reviewers inspect the exact archive bytes that users will download.
+- Availability is controlled by the registry rather than external author repositories, so deleting an author repository or release cannot break downstream builds.
+- GitHub's automatically generated tag tarballs are not used because their bytes (and therefore SHA-256 digests) are not guaranteed to remain stable over time.
+
+The index format also supports a per-entry `dl` URL (such as a GitHub Release asset), though `qxide publish` does not automate that mode. `.qx` packages are small (the `bell-utils` example archive is 642 bytes), and the client caps archive downloads at 10 MiB.
+
+### Archive format
+
+Archives are deterministic gzip-compressed tar files:
+
+- Every entry path sits under `<name>-<version>/`.
+- Included files are `qxide.toml`, every `.qx` file under `src/`, and top-level `README*` and `LICENSE*` files. Nothing else is packaged.
+- Entries are sorted by path, with `mtime` 0, `uid` and `gid` 0, file mode `0644`, and gzip header `mtime` 0.
+- `.qx` files and `qxide.toml` are normalized to `\n` line endings before archiving.
+
+The same source files produce identical archive bytes and the same SHA-256 checksum on every operating system (publishing the example package twice yields the same digest).
+
+## 10. Publishing flow
+
+### Client workflow
+
+`qxide publish [--dry-run] [--registry <url|path>]` performs the following steps:
+
+1. Validates `qxide.toml`: `description`, `license`, and `qxide` must be present; every dependency must specify a `version` requirement (path-only dependencies are rejected); and `src/lib.qx` must exist.
+2. Runs `qxide check` on `src/lib.qx` with its dependencies (library packages do not require `main`).
+3. Builds the deterministic archive at `target/package/<name>-<version>.tar.gz`.
+4. Prints the packaged file list, `sha256 <hex>`, the target index path, and the index JSON line.
+
+If `--dry-run` is passed, `qxide publish` stops after printing this summary. Otherwise:
+
+- **Local directory registry** (for example, a local clone of the registry repository): appends the index line (rejecting duplicate versions with `Q0614`) and writes the archive to its resolved `dl` path.
+- **Default GitHub registry with `gh` available and authenticated**: forks `qxide-lang/registry`, shallow-clones the fork into a temporary directory, creates branch `publish/<name>-<version>` from upstream `main`, writes the index line and archive, commits, pushes, and opens a pull request via `gh pr create`. This automated `gh` path has not yet been run against GitHub (tests never invoke `gh`).
+- **Otherwise**: prints the two files to add and where to open the pull request manually.
+
+### Registry validation and CI (`registry-template/`)
+
+`registry-template/` contains the automation prepared for the registry repository:
+
+- `scripts/validate.py` (using only the Python standard library) runs on every pull request and push and verifies:
+  - Index files live at the correct `<prefix>/<name>` path and use valid package names.
+  - Every line is valid JSON containing the required keys, a valid package name, a valid semver version, a 64-hex checksum, and `v` equal to `1`.
+  - No version appears more than once.
+  - Every archive hosted in the repository exists, its SHA-256 matches `cksum`, and it is a valid gzip tar containing only regular files and directories under `<name>-<version>/`, with no absolute, `..`, drive-letter, or backslash paths, at most 2000 files, at most 10 MiB compressed, and at most 50 MiB unpacked.
+  - Each archive contains `qxide.toml` whose `name` and `version` match the index entry and which defines `description`, `license`, and `qxide`, and contains `src/lib.qx`.
+  - Every dependency listed in an entry names a package present in the registry.
+  - Against the pull request's base branch: previously published lines are unchanged except for `yanked`; no version is removed; no archive under `packages/` is modified or deleted; `search.json` is not manually edited; and a new package name is not a look-alike of an existing package (identical after removing hyphens).
+  - Outputs a summary listing the files inside each newly added archive for reviewers.
+- `scripts/build_search.py` regenerates `search.json` with the newest non-yanked version and description for each package. The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`.
+- `.gitattributes` keeps index files LF-terminated and marks archives as binary.
+- Human review on pull requests covers name squatting, malicious or misleading packages, and licensing issues according to the policy documented in the registry `README`.
+
+### Yanking
+
+Yanking a version is performed by setting `"yanked": true` on that version's index line in a pull request. This is the only modification permitted on an already published line; versions are never deleted or overwritten.
+
+Yanked versions are skipped during fresh version resolution and by `qxide add`, while projects whose `qxide.lock` already pins a yanked version continue to install it.
+
+## 11. Installing and the local cache
+
+### `qxide install`, `qxide add`, and `qxide search`
+
+- `qxide install [--locked] [--offline] [--registry <url|path>]`:
+  - Uses `qxide.lock` directly if it is fresh. Otherwise resolves the dependency graph and writes `qxide.lock` (unless `--locked` is set, which fails with `Q0612`).
+  - Fetches any registry package not yet unpacked locally:
+    1. If a cached archive exists and its SHA-256 still matches the lock, it is reused.
+    2. Otherwise the client verifies that the registry index entry lists the same checksum as `qxide.lock` (`Q0607` before downloading if they differ), downloads the archive, and checks the downloaded bytes' SHA-256 against the lock (`Q0607` on mismatch, unpacking nothing).
+    3. Unpacks the archive defensively into a temporary directory alongside the destination, renames it into place, and writes a `.qxide-checksum` marker file last.
+- `qxide add <pkg>[@<req>] [--path <dir>]`:
+  - Selects the newest non-yanked version compatible with the current `qxide` version (writing, for example, `bell-utils = "0.1.0"`), or adds a path dependency when `--path` is supplied, and then runs installation.
+  - If installation fails, the edit to `qxide.toml` is rolled back.
+- `qxide search <word>`:
+  - Performs a case-insensitive substring match against package names and descriptions using `search.json`, or by scanning all index files for a local directory registry without `search.json`.
+  - Prints matches in the form `bell-utils = "0.1.0" # Bell-pair helpers for Qxide`.
+
+### Running inside a project
+
+When running `qxide run`, `qxide check`, or `qxide qasm`:
+
+- If a file argument is given, `qxide` locates the nearest `qxide.toml` above that file.
+- If no file argument is given, `qxide` locates the project around the current working directory and uses `src/main.qx`.
+- Diagnostics display project module paths relative to the current working directory.
+- A standalone `.qx` file outside any project continues to work as before, but cannot use `import` (`Q0508`).
+
+### Local cache layout
+
+The cache root is `$QXIDE_HOME`, defaulting to `~/.qxide` (resolved from `HOME` or `USERPROFILE`):
+
+```text
+~/.qxide/registry/index/<registry id>/...                 copies of fetched index files (for --offline)
+~/.qxide/registry/cache/<registry id>/<name>-<version>.tar.gz
+~/.qxide/registry/src/<registry id>/<name>-<version>/      unpacked packages read by run/check/qasm
+```
+
+`<registry id>` combines a readable host segment with the first 16 hex digits of the SHA-256 of the registry URL so data from different registries never collides.
+
+## 12. Security
+
+- **Checksum verification at three points:** SHA-256 digests are mandatory and verified by registry CI against the committed archive, by the client comparing the index entry against `qxide.lock` before downloading, and by the client hashing the downloaded archive against `qxide.lock` before unpacking.
+- **Immutability:** Once published, a version's index entry and archive cannot be overwritten or deleted; CI allows only the `yanked` field to change.
+- **Defensive extraction:** Archives are verified prior to unpacking and extracted into a temporary directory with path, entry-type, size (10 MiB compressed, 50 MiB unpacked), and file-count (2000 files) restrictions, rejecting `..`, absolute paths, drive letters, backslashes, symlinks, and hard links.
+- **Transport:** Plain `http://` registries are refused; HTTPS requests require TLS 1.2 or higher.
+- **Index trust:** The index is trusted as served by GitHub over TLS. Cryptographic index signatures (such as signed index commits or TUF-style metadata) are not implemented yet and remain a follow-up.
+- **Moderation:** Name squatting and malicious packages are mitigated through pull-request review, look-alike name checks in CI, and yanking.
+- **No install-time code execution:** Packages have no build scripts and cannot execute arbitrary code during installation; `.qx` code runs only inside the `qxide` simulator.
+
+## 13. Offline use and caching
+
+Passing `--offline` or setting `QXIDE_OFFLINE=1` restricts `add`, `install`, and `search` to cached index files and cached archives under `$QXIDE_HOME`. Any missing index file or archive fails with `Q0615`.
+
+Local directory registries and `file://` registries are always local. `qxide run`, `qxide check`, and `qxide qasm` never perform network access.
+
+### Network transport
+
+HTTPS requests invoke the system `curl` executable with `--proto =https --tlsv1.2`, a 120-second timeout, and a 10 MiB transfer size limit. HTTP 404 is treated as "not found"; all other network or HTTP failures report `Q0608`.
+
+**Decision:** No HTTP or TLS library is linked into `qxide` for now, keeping the binary small and avoiding additional dependencies. `curl` is preinstalled on Windows 10+, macOS, and most Linux distributions. A native HTTP client can be added later behind a Cargo feature.
+
+## 14. Moving to a self-hosted server
+
+Migrating from the GitHub repository to a dedicated registry server does not require changing client lock semantics or the index format:
+
+- A server exposes the same relative endpoints (`config.json`, `index/<prefix>/<name>`, archives, and `search.json`), so clients only change the registry URL.
+- Updating the `dl` template in `config.json` redirects archive downloads without rewriting any index entries.
+- Existing index lines and archive SHA-256 checksums remain valid, so data migration consists of copying `index/` and `packages/`.
+- The `api` field in `config.json` (currently `null`) is reserved for a future HTTP publish API (for example, token-based `qxide publish` instead of pull requests).
+- Because `qxide.lock` records the registry URL in `source`, a project moving to a new registry re-resolves on the next `qxide install`; checksums of identical archives remain unchanged.
+
+## 15. CLI reference
+
+| Command | Behavior |
+| --- | --- |
+| `qxide add <pkg>[@<req>] [--path <dir>] [--registry <url>] [--offline]` | Add a registry or path dependency to `qxide.toml` and install it (reverts `qxide.toml` on failure). |
+| `qxide remove <pkg>` | Remove a dependency from `qxide.toml` and prune unreachable packages from `qxide.lock` without contacting the registry. |
+| `qxide install [--locked] [--offline] [--registry <url>]` | Resolve and lock dependencies if needed, then download and unpack missing registry packages. |
+| `qxide publish [--dry-run] [--registry <url>]` | Validate, check `src/lib.qx`, package into `target/package/`, and publish to a local directory registry, open a GitHub PR via `gh`, or print manual instructions. |
+| `qxide search <word> [--registry <url>] [--offline]` | Search package names and descriptions case-insensitively. |
+| `qxide run\|check\|qasm [FILE]` | Run, type-check, or export OpenQASM 3 for `FILE`, or `src/main.qx` in the current project if omitted. |
+
+`--registry` accepts either a URL (`https://` or `file://`) or a local directory path.
+
+**Environment variables**
+
+- `QXIDE_REGISTRY`: overrides the default registry URL.
+- `QXIDE_HOME`: overrides the local cache directory (default `~/.qxide`).
+- `QXIDE_OFFLINE`: when set to `1`, enables offline mode (equivalent to `--offline`).
+
+**Exit codes**
+
+- `0`: success.
+- `1`: package or program error.
+- `2`: CLI usage error.
+
+**Example session**
+
+```text
+$ qxide add bell-utils
+       Added bell-utils v0.1.0
+      Locked 1 packages
+  Downloaded bell-utils v0.1.0
+$ qxide run --shots 100
+[0, 0, 0]  0b000 = 0  ×31
+  a=0 b=0 plus=0
+...
+$ qxide publish --dry-run
+    Packaged 3 files, 642 bytes (.../target/package/bell-utils-0.1.0.tar.gz)
+             qxide.toml
+             src/gates.qx
+             src/lib.qx
+sha256 d18afc9d9e5b2362b5ddf0db2007096f3556d38f3efe96d02b055e9718f7fc90
+index index/be/ll/bell-utils
+{"cksum":"d18afc9d...","deps":[],"description":"Bell-pair helpers for Qxide","name":"bell-utils","qxide":">=0.6","v":1,"vers":"0.1.0","yanked":false}
+     Dry-run nothing was uploaded; registry unchanged
+```
+
+Package manager errors are formatted without source snippets (with optional `note:` and `help:` lines):
+
+```text
+error[Q0605]: no version of `bell-utils` matches `^0.2`
+```
+
+## 16. Error codes
+
+### Modules and imports (`Q05xx`)
+
+Rendered as source diagnostics with file name, line, and column.
+
+| Code | Meaning |
+| --- | --- |
+| `Q0501` | Unknown package in an import (neither the current package nor a declared dependency; help suggests `qxide add`). |
+| `Q0502` | Module file not found or unreadable (note shows the path tried; also emitted when exceeding the 4096-module limit). |
+| `Q0503` | The target module has no function of that name. |
+| `Q0504` | The target function is not `public`. |
+| `Q0505` | Module import cycle detected. |
+| `Q0506` | An import conflicts with a local function or another single-function import. |
+| `Q0507` | A function call is ambiguous between multiple wildcard imports. |
+| `Q0508` | `import` used in a file that is not inside a project. |
+| `Q0509` | Import path is too short (missing module or item / `.*`). |
+| `Q0510` | `import` declaration appears after a function declaration. |
+
+### Package manager (`Q06xx`)
+
+Rendered without a source snippet, with optional `note:` and `help:` lines.
+
+| Code | Meaning |
+| --- | --- |
+| `Q0601` | No `qxide.toml` found. |
+| `Q0602` | Invalid `qxide.toml`. |
+| `Q0603` | Invalid `qxide.lock`. |
+| `Q0604` | Package not found (registry or path dependency). |
+| `Q0605` | No version matches the requirement. |
+| `Q0606` | Version conflict (incompatible requirements or self-dependency). |
+| `Q0607` | Checksum mismatch (index vs. lock or archive vs. lock). |
+| `Q0608` | Registry unreachable, download failed, or insecure URL (`http://`). |
+| `Q0609` | Malformed index entry or registry JSON. |
+| `Q0610` | Unsafe or invalid archive. |
+| `Q0611` | Dependency not installed or lock file missing. |
+| `Q0612` | Lock file out of date. |
+| `Q0613` | `qxide` language version requirement not met. |
+| `Q0614` | Publish rejected (for example, version already exists or manifest incomplete). |
+| `Q0615` | Offline mode requested and required data is not cached. |
+| `Q0616` | Filesystem error. |
+| `Q0617` | Package is not a declared dependency (`qxide remove`). |
+
+## 17. Implementation notes
+
+### Code layout
+
+- **Language changes (`src/lang/`):**
+  - Lexer keywords (`import`, `public`).
+  - `Import` AST node and `public` visibility flag on function declarations.
+  - `src/lang/link.rs` for module discovery, cycle detection, name resolution, and call rewriting.
+  - Multi-file `SourceMap` in `src/lang/diag.rs`.
+  - `check_with(require_main)` so library modules can be checked without requiring `void main()`.
+- **Package manager (`src/pkg/`, binary-only):**
+  - `manifest.rs`, `lock.rs`, `resolve.rs`, `index.rs`, `archive.rs`, `cache.rs`, `project.rs`, `cli.rs`, `msg.rs`.
+- **Library API:** The public `qxide` crate API is unchanged.
+
+### Cargo features and dependencies
+
+The six new dependencies (`semver`, `toml_edit`, `serde_json`, `sha2`, `tar`, `flate2`) are optional and enabled by a default feature `cli` required by the `qxide` binary. Running `cargo build --lib --no-default-features` continues to build the library with zero external dependencies.
+
+### Tests and examples
+
+All tests run without network access, without `gh`, and without touching the user's real home directory:
+
+- `src/lang/module_tests.rs`: module loading, visibility, conflicts, cycles, linking, and diagnostics using in-memory files.
+- `src/pkg/tests.rs`: version resolution, yanking, lock determinism, comment-preserving manifest edits, archive determinism, malicious archive rejection (`..`, absolute paths, drive-letter paths, symlinks, hard links), and checksum-first installs.
+- `tests/packages.rs`: end-to-end CLI tests against a temporary file registry covering `publish`, `add`, `install`, `run`, `remove`, lock reproducibility across caches and newer releases, `--locked`, stale locks, tampered archives and tampered index checksums, missing packages/versions, yanked versions, offline errors, import cycles and private functions inside a project, and the committed path-dependency example.
+- `examples/packages/bell-utils`: example library package containing `src/lib.qx` and `src/gates.qx`.
+- `examples/packages/bell-app`: example application using `bell-utils` via a path dependency with a committed `qxide.lock`.
+
+## 18. Limitations and follow-ups
+
+- The automated `gh` publishing path has not been tested against GitHub yet.
+- The `qxide-lang/registry` repository must still be created from `registry-template/`.
+- `qxide yank`, `qxide owner`, and `qxide login` are not implemented.
+- Only one version per package name can appear in a build (no side-by-side major versions).
+- Dependency renaming, optional package features, and dev-dependencies are not supported.
+- Version resolution does not perform backtracking.
+- The registry index has no cryptographic signatures yet.
+- `qxide search` downloads the entire `search.json`.
+- Only functions can be exported; exporting constants or types is not implemented yet.
+- `qxide new` (being added on the separate `cli-commands` branch) should generate `qxide.toml`, `src/main.qx`, and a `.gitignore` containing `target/`, and `qxide explain` on that branch should cover `Q05xx` and `Q06xx`.
+- The `Qx.toml` filename referenced in older design documents is superseded by `qxide.toml`.
+- A Korean translation of this document has not been written yet.

@@ -1,0 +1,25 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Pull requests are compared with their target branch: published versions are immutable.
+      - if: github.event_name == 'pull_request'
+        run: python scripts/validate.py --base "origin/${{ github.base_ref }}" --summary "$GITHUB_STEP_SUMMARY"
+      - if: github.event_name != 'pull_request'
+        run: python scripts/validate.py --summary "$GITHUB_STEP_SUMMARY"
