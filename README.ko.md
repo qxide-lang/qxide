@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/qxide-lang/qxide/main/assets/brand/qxide-mark.svg" alt="Qxide 로고" width="96" height="96">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/qxide-lang/qxide/main/assets/brand/qxide-mark-light.svg">
+    <img src="https://raw.githubusercontent.com/qxide-lang/qxide/main/assets/brand/qxide-mark.svg" alt="Qxide 로고" width="96" height="96">
+  </picture>
 </p>
 
 # Qxide
