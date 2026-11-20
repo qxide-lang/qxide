@@ -108,7 +108,7 @@ c[1] = measure q[1];
 
 ## 지금 지원하는 것
 
-- `.qx` 언어: Java식 선언(`int`, `double`, `boolean`, `Qubit`, `QReg`, `Bit`, `BitReg`, `final`), 선형 큐비트 검사, `qxide run`/`check`/`qasm`
+- `.qx` 언어: Java식 선언(`int`, `double`, `boolean`, `Qubit`, `QReg`, `Bit`, `BitReg`, `final`, `var`), `(int)` 캐스트, `PI` 상수, 큐비트 매개변수 함수(기본 대여, `consume`), 선형 큐비트 검사, `qxide run`/`check`/`qasm`
 - 게이트: `h`, `x`, `z`, `s`, `t`, `rx`, `ry`, `rz`, `cx`, `measure`, `reset`
 - 분기: `c.if_one`·`c.if_zero`로 측정 비트별 실행, OpenQASM 3 `if` 출력, 분기 내 측정 불가
 - 재사용: `c.reset`으로 활성 큐비트 |0⟩ 복귀, `measure` 후 `c.qubit()`가 물리 슬롯 초기화·재사용

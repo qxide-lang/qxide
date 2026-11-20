@@ -113,6 +113,8 @@ note: qubit consumed here
 - Gates and operations: `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rx`, `ry`, `rz`, `cx`, `ccx`, `reset`, `measure`, `discard`
 - Control flow: `if` on a measured `Bit` lowers to a classical feed-forward branch in OpenQASM 3
 - Register output: `r.to_binary()` and `r.as_int()`
+- Qubit parameters: borrowed by default, or ownership moved with `consume` (see `examples/qx/functions.qx`)
+- Type inference, casts, and constants: `var` for `int`/`double`/`boolean` locals, Java-style `(int) x` and `(double) n` casts, and `PI` (see `examples/qx/rotation.qx`)
 
 See [docs/design/qx-language.md](docs/design/qx-language.md) for the full language design document.
 

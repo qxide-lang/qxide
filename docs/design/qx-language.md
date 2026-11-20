@@ -111,15 +111,15 @@ void main() {
 }
 ```
 
-다음은 MVP 문법의 EBNF 정의다. 연산자 우선순위는 낮은 순서에서 높은 순서로 `||`, `&&`, 비교 연산자(비결합), `+ -`, `* / %`, 단항 `- !`, 인덱싱 순이다. 범위 연산자 `..`는 `for` 헤더에서만 허용된다. 문자열 리터럴(`\n`, `\t`, `\\`, `\"` 이스케이프와 리터럴 중괄호용 `{{`/`}}` 지원)은 `println`의 첫 번째 인자로만 사용할 수 있다. 향후 확장을 위해 예약된 키워드 `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, `apply`는 사용 시 오류로 거부한다.
+다음은 MVP 문법의 EBNF 정의다. 연산자 우선순위는 낮은 순서에서 높은 순서로 `||`, `&&`, 비교 연산자(비결합), `+ -`, `* / %`, 단항 `- !` 및 캐스트 `(type) expr`, 인덱싱 순이다. 범위 연산자 `..`는 `for` 헤더에서만 허용된다. 문자열 리터럴(`\n`, `\t`, `\\`, `\"` 이스케이프와 리터럴 중괄호용 `{{`/`}}` 지원)은 `println`의 첫 번째 인자로만 사용할 수 있다. `var`와 `consume`은 정식 키워드이며, `PI`는 내장 `double` 상수 식별자다. 타입 이름(`int`, `double`, `boolean`, `void`, `Bit`, `BitReg`, `Qubit`, `QReg`)은 식별자로 사용할 수 없다(`Q0112`). 향후 확장을 위해 예약된 키워드 `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, `apply`는 사용 시 오류로 거부한다.
 
 ```ebnf
 program    = { fn_decl } ;
 fn_decl    = type IDENT "(" [ param { "," param } ] ")" block ;   (* type may be "void" *)
-param      = type IDENT ;
+param      = [ "consume" ] type IDENT ;                      (* "consume" only on Qubit / QReg *)
 type       = "int" | "double" | "boolean" | "void" | "Bit" | "BitReg" | "Qubit" | "QReg" ;
 block      = "{" { stmt } "}" ;
-stmt       = [ "final" ] type IDENT "=" expr ";"
+stmt       = [ "final" ] ( type | "var" ) IDENT "=" expr ";"   (* "var": int / double / boolean only *)
            | IDENT "=" expr ";"
            | if_stmt
            | "for" IDENT "in" expr ".." expr block
@@ -132,9 +132,10 @@ and        = cmp { "&&" cmp } ;
 cmp        = sum [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum ] ;
 sum        = term { ( "+" | "-" ) term } ;
 term       = unary { ( "*" | "/" | "%" ) unary } ;
-unary      = ( "-" | "!" ) unary | postfix ;
+unary      = ( "-" | "!" ) unary | "(" type ")" unary | postfix ;   (* cast: int <-> double *)
 postfix    = primary { "[" expr "]" | "." IDENT "(" ")" } ;   (* r.to_binary(), r.as_int() *)
 primary    = INT | DOUBLE | "true" | "false" | STRING | IDENT [ "(" [ expr { "," expr } ] ")" ] | "(" expr ")" ;
+(* IDENT is never a type name; the IDENT "PI" is the built-in double constant *)
 ```
 
 아래 표는 MVP에서 제공하는 내장 함수와 각 함수가 `qxide` 라이브러리에서 대응하는 대상을 정리한 것이다.
@@ -153,6 +154,7 @@ primary    = INT | DOUBLE | "true" | "false" | STRING | IDENT [ "(" [ expr { ","
 | `len(r)` | `(QReg) -> int` / `(BitReg) -> int` | 빌드(전개) 시 평가, 연산 미방출 |
 | `r.to_binary()` / `r.as_int()` | `BitReg` 메서드, 출력 전용(변수 저장 불가) | 샷마다 렌더링, 연산 방출 없음 |
 | `println(fmt, ...)` | `{}` 자리표시자가 포함된 문자열 리터럴과 `int`/`double`/`boolean`/`Bit`/`BitReg`/`to_binary()`/`as_int()` 인자 | 출력 템플릿에 기록, 샷마다 1회 렌더링 |
+| `PI` | `double` 상수(재선언·대입 불가) | `std::f64::consts::PI` 값(빌드 시점 평가, 회로 연산 방출 없음) |
 
 ## 4. 타입 시스템
 
@@ -172,7 +174,7 @@ MVP의 6개 타입은 복사 가능 여부와 값 확정 시점에 따라 세 �
 4. **피연산자 중복 금지**: `cx`/`ccx`에 동일한 큐비트를 두 번 전달하는 경우, 정적으로 판별 가능하면(같은 변수이거나 같은 레지스터의 동일한 리터럴 인덱스) 검사 단계에서 `Q0303` 오류를 보고한다. 정적으로 알 수 없는 경우(예: 실행 시 `i == j`인 `cx(r[i], r[j])`)에는 런타임에서 동일한 코드로 오류를 보고한다.
 5. **제어 흐름 일치**: `boolean` 조건의 `if`에서는 양쪽 분기가 끝났을 때 외부 큐비트의 소비 상태가 모두 일치해야 하며, 다르면 `Q0304` 오류가 발생한다. `for` 루프 본문은 루프 바깥에서 선언된 큐비트를 소비할 수 없다(`Q0305`).
 6. **레지스터 단위 이동 및 재할당 금지**: MVP에서 `QReg`는 전체 단위로만 이동한다. `measure(r[i])`, `discard(r[i])`, `Qubit q = r[i];`는 `Q0306` 오류로 거부하며, 개별 원소는 게이트 호출의 대여 인자로만 사용할 수 있다. 또한 양자 변수에는 `=`로 재할당할 수 없다(`Q0307`).
-7. **연산 문맥 제한**: 양자 값을 산술 연산이나 비교 연산에 사용하면 타입 불일치(`Q0204`)로, `println`으로 출력하면 `Q0212`로 보고되며, 매개변수나 반환값이 `Qubit`/`QReg`인 함수는 MVP에서 지원하지 않아 `Q0219`로 거부된다. 또한 `h(qubit())`처럼 큐비트 변수나 레지스터 원소가 아닌 게이트 피연산자는 `Q0311`로 보고된다.
+7. **연산 문맥 제한**: 양자 값을 산술 연산이나 비교 연산에 사용하면 타입 불일치(`Q0204`)로, `println`으로 출력하면 `Q0212`로 보고된다. `Qubit`/`QReg` 매개변수는 기본 대여·`consume` 소유권 이동으로 지원되며(13.1절 참고), 반환값이 `Qubit`/`QReg`인 함수만 아직 지원하지 않아 `Q0219`로 거부된다. 또한 `h(qubit())`처럼 큐비트 변수나 레지스터 원소가 아닌 게이트 피연산자나 대여 매개변수 인자는 `Q0311`로 보고된다.
 
 아래 네 개의 코드 예제는 이러한 오류 코드가 발생하는 대표적인 사례를 보여 준다.
 
@@ -314,7 +316,7 @@ help: call `measure` or `discard` on it before the end of its scope
 
 ## 8. MVP 이후 확장 계획
 
-아래 두 코드 스케치는 아직 구현되지 않았으며 향후 문법 방향만 고정하기 위한 것이다. `with_ancilla anc { compute } apply { body }`는 `Circuit::with_ancilla`/`with_ancillas`로 낮춰지며, 라이브러리와 동일한 규칙(compute 블록에는 `x`/`cx`/`ccx`만 허용, apply 블록에서는 보조 큐비트와 compute 블록이 건드린 모든 큐비트를 제어 큐비트 또는 대각 위상 용도로만 사용)을 대여 검사기와 런타임 잠금 대신 `.qx` 검사기가 정적으로 검증한다. 큐비트를 다루는 사용자 함수는 Java식 시그니처(`void bell_pair(Qubit a, Qubit b)`, `Qubit fresh_plus()`)로 스케치했으며, Rust의 `&mut` 없이 매개변수의 대여와 이동을 어떻게 표기할지는 미결 사항이다(12.8절 참고).
+아래 두 코드 스케치는 향후 문법 방향을 고정하기 위한 것으로, 아직 구현되지 않은 기능을 포함한다. `with_ancilla anc { compute } apply { body }`는 `Circuit::with_ancilla`/`with_ancillas`로 낮춰지며, 라이브러리와 동일한 규칙(compute 블록에는 `x`/`cx`/`ccx`만 허용, apply 블록에서는 보조 큐비트와 compute 블록이 건드린 모든 큐비트를 제어 큐비트 또는 대각 위상 용도로만 사용)을 대여 검사기와 런타임 잠금 대신 `.qx` 검사기가 정적으로 검증한다. 큐비트 매개변수는 기본 대여와 `consume` 소유권 이동으로 구현되었으며(13.1절 참고), 아래 스케치 중 `Qubit fresh_plus()`처럼 큐비트를 반환하는 사용자 함수만 아직 구현되지 않았다.
 
 ```rust
 // Sketch only (not implemented): scoped uncomputation, lowered to Circuit::with_ancilla
@@ -336,12 +338,7 @@ void main() {
 ```
 
 ```rust
-// Sketch only (not implemented): qubit-taking functions; how to mark borrow vs move is open (section 12)
-void bell_pair(Qubit a, Qubit b) {
-    h(a);
-    cx(a, b);
-}
-
+// Sketch only (not implemented): functions returning qubits; qubit parameters are in section 13.1
 Qubit fresh_plus() {
     Qubit q = qubit();
     h(q);
@@ -349,7 +346,7 @@ Qubit fresh_plus() {
 }
 ```
 
-- 위 스케치와 같은 큐비트 매개변수·반환값 지원 사용자 함수
+- 위 스케치와 같은 큐비트 반환값(`Qubit`/`QReg` 반환 타입) 지원 사용자 함수(큐비트 매개변수는 구현됨, 13.1절 참고)
 - `with_ancilla` 블록 문법
 - 빌드 시점 `while`/`loop`/`break` 제어 흐름
 - `Bit` 값에 대한 샷 시점 고전 연산(OpenQASM 3 고전 타입)과 `BitReg`에 대한 `m == 3` 형태의 조건식
@@ -382,7 +379,7 @@ Qubit fresh_plus() {
 1. **선형 대 아핀 모델** — 결정(2026-11-20): 스코프 종료 시 소비되지 않은 큐비트는 계속 오류(`Q0302`)로 처리하며, 명시적 해제를 위해 `discard`를 제공한다.
 2. **게이트 호출 문법** — 결정(2026-11-20): `&mut` 없이 `h(q)` 형태를 유지하며, 큐비트를 받는 사용자 정의 함수에도 같은 규칙을 적용한다.
 3. **타입 명명 규칙** — 결정(2026-11-20): 같은 날 Java 스타일 결정으로 대체되었다. 기본 타입은 Java 스타일 소문자(`int` = 64비트 정수, `double`, `boolean`), 양자 및 복합 타입은 PascalCase(`Qubit`, `Bit`, `QReg`, `BitReg`)를 사용하며 `long`은 생략한다(12.1절). 이전의 `i64`/`bool` 선택은 0.5.0에서 대체되었다.
-4. **할당 문법** — 결정(2026-11-20): 이름 앞에 타입을 두는 Java 스타일 선언을 사용하며, 할당은 함수 호출 형태를 유지한다(`Qubit q = qubit();`, `QReg r = qreg(3);`). `QReg<3>` 같은 크기 지정 레지스터 타입과 `var` 타입 추론(12.3절)은 여전히 미결이다.
+4. **할당 문법** — 결정(2026-11-20): 이름 앞에 타입을 두는 Java 스타일 선언을 사용하며, 할당은 함수 호출 형태를 유지한다(`Qubit q = qubit();`, `QReg r = qreg(3);`). `var` 타입 추론은 2026-11-20에 고전 타입에 한해 채택·구현되었으며(13.2절 참고), `QReg<3>` 같은 크기 지정 레지스터 타입은 여전히 미결이다.
 5. **`measure` 오버로딩** — 미결: `Qubit`과 `QReg` 모두에 오버로딩하는 현재 방식과 별도의 `measure_reg`를 분리하는 방식을 비교 검토한다.
 6. **`with_ancilla` 블록 문법** — 미결: 초안의 `with_ancilla anc { ... } apply { ... }` 형태와 Q# 스타일의 `within { } apply { }` 또는 다른 구문을 비교 검토한다.
 7. **CLI 명령 이름** — 결정(2026-11-20): `qxide run`/`check`/`qasm`을 유지하며, ROADMAP의 `qxide build` 항목은 `qxide qasm`으로 이름을 변경했다.
@@ -496,7 +493,7 @@ a=1 b=1
 - 함수는 반환 타입을 앞에 쓰고(`void main()`, `int add(int a, int b)`), 값 반환은 `return` 문으로만 수행한다(마지막 표현식 반환은 제거되었다).
 - 지역 변수는 기본적으로 가변이며, `final`을 붙이면 불변이 된다. `final` 변수에 재할당하면 `Q0207` 오류가 발생한다.
 - 기본 타입은 `int`(64비트 부호 있는 정수, 오버플로 시 `Q0401` 오류), `double`(64비트 IEEE 754 부동소수점, 0으로 나누면 오류가 아니라 Java와 같이 무한대 또는 NaN 반환), `boolean`이며, `void`는 함수 반환 타입으로만 사용할 수 있다. 양자 및 복합 타입은 PascalCase(`Qubit`, `QReg`, `Bit`, `BitReg`)를 사용한다.
-- `int`는 대입, 인자, 반환값, 산술 연산에서 `double`로 암묵적 확장 변환된다. 반대 방향 변환에는 캐스트가 필요하지만 아직 지원하지 않는다. 새로 추가된 `rx`, `ry`, `rz` 게이트는 각도 인자로 `double`을 받는다.
+- `int`는 대입, 인자, 반환값, 산술 연산에서 `double`로 암묵적 확장 변환된다. 반대 방향 변환은 Java식 명시적 캐스트 `(int) x`를 사용하며 0 방향으로 절사한다(13.3절 참고). 새로 추가된 `rx`, `ry`, `rz` 게이트는 각도 인자로 `double`을 받는다.
 - 제어 흐름은 기존과 동일하다(괄호 없는 `if`, `for i in a..b`).
 - 제거된 `let`, `fn`, `mut` 키워드를 사용하면 새 형식을 안내하는 도움말과 함께 `Q0110` 오류가 발생한다.
 
@@ -543,15 +540,13 @@ void main() {
 - `qxide run`의 다중 샷 출력이 12.4절의 표 형식으로 바뀌었으므로, 기존의 `== n/N ==` 헤더를 파싱하던 스크립트를 함께 수정해야 한다.
 - 자동 마이그레이션 도구는 아직 제공하지 않는다.
 
-### 12.3 `var`를 통한 타입 추론(제안 단계)
+### 12.3 `var`를 통한 타입 추론(채택·구현됨)
 
-이 항목은 아직 구현되지 않은 제안이다. Java 10의 지역 변수 타입 추론과 마찬가지로 지역 변수에 한해 `var x = expr;`를 허용해 초기화식의 타입을 추론하고, 함수 매개변수·반환 타입·필드에는 명시적 타입을 계속 요구하는 방안이다.
+Java 10의 지역 변수 타입 추론과 마찬가지로 지역 변수에 한해 `var x = expr;`를 허용해 초기화식의 타입을 추론하고, 함수 매개변수와 반환 타입에는 명시적 타입을 계속 요구하는 방안이다. 다만 `.qx`에서는 변수의 타입이 소유권과 실행 시점 규칙을 결정하므로(`Qubit`은 선형 타입이고 `Bit`는 샷 시점 값이다) 신중하게 접근해야 한다. 명시적 타입은 이러한 규칙을 선언 지점에서 바로 드러내지만, `var q = qubit();`처럼 쓰면 `q`를 반드시 소비해야 한다는 사실이 가려진다.
 
-다만 `.qx`에서는 변수의 타입이 소유권과 실행 시점 규칙을 결정하므로(`Qubit`은 선형 타입이고 `Bit`는 샷 시점 값이다) 신중하게 접근해야 한다. 명시적 타입은 이러한 규칙을 선언 지점에서 바로 드러내지만, `var q = qubit();`처럼 쓰면 `q`를 반드시 소비해야 한다는 사실이 가려진다.
-
-- 도입 시 후보 규칙 1: 고전 값(`int`, `double`, `boolean`)에만 `var`를 허용하고 `Qubit`, `QReg`, `Bit`, `BitReg`에는 명시적 타입을 요구한다.
-- 도입 시 후보 규칙 2: 모든 지역 변수에 `var`를 허용하되, 진단 메시지에 추론된 타입을 명시한다.
-- 권고: 실제 프로그램에서 필요성이 확인될 때까지 보류하고, 크기 지정 레지스터 타입과 함께 결정한다.
+- 후보 규칙 1: 고전 값(`int`, `double`, `boolean`)에만 `var`를 허용하고 `Qubit`, `QReg`, `Bit`, `BitReg`에는 명시적 타입을 요구한다.
+- 후보 규칙 2: 모든 지역 변수에 `var`를 허용하되, 진단 메시지에 추론된 타입을 명시한다.
+- 결정(2026-11-20): 메인테이너가 후보 규칙 1을 채택해 구현했다(세부 규칙은 13.2절 참고).
 
 ### 12.4 측정 결과 출력
 
@@ -589,7 +584,7 @@ $ qxide run bits.qx --shots 1000
 
 메인테이너가 결정한 언어 포지셔닝은 세 가지 축으로 정리된다. 첫째, 타입 선언, 반환 타입 우선 표기, `final`, `int`/`double`/`boolean` 등 Java와 C 개발자에게 익숙한 문법을 제공한다. 둘째, 선형 큐비트, 측정 후 사용 금지, 게이트 피연산자 중복 금지 같은 양자 자원 소유권 규칙을 실행 전에 검사하는 Rust 수준의 컴파일 시점 안전성을 유지한다. 셋째, 장기 목표로 고전 코드에 대해 컴파일을 통한 네이티브 수준의 실행을 지향한다(12.6절).
 
-현재 언어는 트리 순회 인터프리터로 실행되며, 성능은 아직 측정되지 않았으므로 벤치마크가 마련되기 전까지는 어떤 성능 주장도 하지 않는다. 한편 크레이트 설명(description)에는 여전히 'Rust-like'라는 문구가 남아 있으며, 이 문구의 변경 여부는 메인테이너의 보류 결정 사항이다.
+현재 언어는 트리 순회 인터프리터로 실행되며, 성능은 아직 측정되지 않았으므로 벤치마크가 마련되기 전까지는 어떤 성능 주장도 하지 않는다. 한편 `Cargo.toml`과 `pyproject.toml`의 패키지 설명에 남아 있던 'Rust-like' 문구는 커밋 `dfe5b78`에서 C 스타일 문법, Rust 소유권과 같은 컴파일 시점 큐비트 안전성, OpenQASM 3 출력을 설명하는 문구로 교체되어 이 항목은 종결되었다.
 
 ### 12.6 인터프리터에서 IR, 네이티브 코드 생성까지의 로드맵
 
@@ -627,12 +622,162 @@ $ qxide run bits.qx --shots 1000
 - `Q0204`: 변수나 매개변수 타입으로 `void`를 사용한 경우도 포함한다.
 - `Q0218`: `to_binary()` 또는 `as_int()` 결과를 변수에 저장하려는 경우도 포함한다.
 
-### 12.8 0.5.0 이후 미결 사항
+### 12.8 0.5.0 이후 미결 사항의 결정
 
-1. Rust의 `&mut` 없이 함수에서 큐비트 매개변수의 대여(borrow)와 이동(move)을 구분하는 표기 방식(예: 키워드 또는 어노테이션) — 큐비트를 받는 함수 지원 전에 결정 필요
-2. `var` 지역 변수 타입 추론 도입 여부(12.3절)
-3. `double`에서 `int`로의 캐스트 문법(Java 스타일 `(int) x` 또는 변환 함수)
-4. 회전 각도에 사용할 원주율 상수(예: `PI`) 제공 여부
-5. `to_binary()`/`as_int()`를 대체할 `println` 서식 지정자(예: 이진 서식 지정자) 도입 여부
-6. 크레이트 설명에 남아 있는 'Rust-like' 문구 변경 여부
-7. IR 작업 착수 시점(12.6절)
+1. 큐비트 매개변수 대여·이동 표기(2026-11-20 결정): 기본 대여, 소유권 이동은 `consume` 키워드로 표기한다(13.1절).
+2. `var` 타입 추론(2026-11-20 결정): 고전 지역 변수에 한해 채택·구현했다(13.2절).
+3. 명시적 캐스트(2026-11-20 결정): 0 방향 절사 방식의 Java식 `(int) x`·`(double) n` 캐스트를 도입했다(13.3절).
+4. `PI` 상수(2026-11-20 결정): 내장 `double` 상수 `PI`를 제공한다(13.4절).
+5. `println` 이진 포맷 지정자(2026-11-20 결정): 추후로 보류하며 `to_binary()`와 `as_int()`를 유지한다.
+6. 'Rust-like' 문구 정리(2026-11-20 결정): 커밋 `dfe5b78`에서 `Cargo.toml`·`pyproject.toml` 설명에서 제거했다.
+7. IR 도입(2026-11-20 결정): 1~4번 항목의 구현과 테스트가 끝난 뒤 착수하며, 설계 초안은 [qx-ir.md](qx-ir.md)에 기록했다.
+
+## 13. 큐비트 매개변수, `var`, 캐스트 및 `PI` (2026-11-20 결정)
+
+이 절은 2026-11-20에 메인테이너가 결정하고 `src/lang/`에 구현한 네 가지 언어 기능을 정리한다. 이 기능들은 `main` 브랜치에 반영되어 있으며 아직 릴리스되지 않았다. 바이너리 전용 모듈로만 유지하고 공개 라이브러리 API를 변경하지 않으며 새 외부 의존성을 추가하지 않는 기존 설계 원칙은 그대로 유지된다.
+
+### 13.1 큐비트 매개변수: 대여와 `consume`
+
+아래 예제는 `examples/qx/functions.qx`로, `bellPair`가 두 큐비트를 대여해 게이트만 적용하고 `measureAll`이 `consume`으로 레지스터의 소유권을 넘겨받아 측정하므로 `main`에서 `r`을 직접 측정하지 않는다. 실행 결과는 `examples/qx/bell.qx`와 동일한 Bell 상관을 보이며, 측정 횟수 분포는 `--seed` 값에 따라 달라진다.
+
+```java
+// examples/qx/functions.qx
+void bellPair(Qubit a, Qubit b) {
+    h(a);
+    cx(a, b);
+}
+
+void measureAll(consume QReg r) {
+    BitReg m = measure(r);
+    println("{}", m);
+}
+
+void main() {
+    QReg r = qreg(2);
+    bellPair(r[0], r[1]);
+    measureAll(r);
+}
+```
+
+```text
+$ qxide run examples/qx/functions.qx --shots 1000
+[0, 0]  0b00 = 0  ×504
+  [0, 0]
+[1, 1]  0b11 = 3  ×496
+  [1, 1]
+```
+
+- **기본 대여**: `Qubit` 또는 `QReg` 매개변수는 기본적으로 대여된다. 함수는 대여받은 값에 게이트와 `reset`을 적용하거나, 다른 대여 매개변수로 넘기거나, 대여받은 `QReg`를 인덱싱할 수 있다. 반대로 이를 측정·폐기하거나 이동(`Qubit p = q;`)하거나 `consume` 매개변수로 넘기면 오류 `Q0313`이 발생하며, 호출자는 여전히 소유권을 가지므로 직접 측정하거나 폐기해야 한다.
+- **`consume` 소유권 이동**: 매개변수 타입 앞에 `consume` 키워드를 붙이면(`void measureAll(consume QReg r)`) 소유권이 함수로 이동한다. 호출 이후 호출자는 해당 값을 다시 사용할 수 없으며(`Q0301`), 피호출 함수는 모든 실행 경로에서 그 값을 측정하거나 폐기해야 한다(`Q0302`).
+- **인자 형태 제한**: 대여 매개변수에는 `Qubit`/`QReg` 변수나 `r[i]` 같은 레지스터 원소만 넘길 수 있으며 `qubit()` 같은 새 값은 `Q0311` 오류다. `consume` 매개변수에는 변수 전체나 `qreg(2)` 같은 새 값을 넘길 수 있지만 `r[i]` 같은 단일 레지스터 원소는 넘길 수 없다(`Q0306`).
+- **중복(별칭) 금지**: 한 번의 함수 호출에 동일한 큐비트가 두 번 이상 나타날 수 없으며, 레지스터 전체는 자신의 각 원소와 겹치는 것으로 간주한다(`Q0303`). 실행 시점에 결정되는 인덱스는 호출이 실행될 때 검사하며 위반 시 동일하게 `Q0303`을 보고한다.
+- **반복문 안 소비 금지**: 반복문 바깥에서 선언된 큐비트를 반복문 본문 안에서 `consume` 매개변수로 넘기는 것은 `measure`와 마찬가지로 금지된다(`Q0305`). 반면 반복문 본문 안에서 할당된 큐비트는 넘길 수 있다.
+- **고전 매개변수 `consume` 금지**: 고전 타입 매개변수에 `consume`을 붙이면 오류 `Q0221`이 발생한다.
+- **기타 제한**: `Qubit`이나 `QReg`를 반환하는 함수는 여전히 지원하지 않으며(`Q0219`), `Bit` 조건의 `if` 블록 안에서 사용자 함수를 호출하는 것도 계속 금지된다(`Q0308`).
+
+아래 예제는 대여받은 매개변수를 함수 안에서 측정할 때 `Q0313` 오류가 보고되는 경우를 보여 준다.
+
+```java
+void f(Qubit q) {
+    Bit m = measure(q);
+}
+```
+
+```text
+error[Q0313]: cannot consume borrowed parameter `q`
+ --> t.qx:2:21
+  |
+2 |     Bit m = measure(q);
+  |                     ^
+note: borrowed here without `consume`
+ --> t.qx:1:14
+  |
+1 | void f(Qubit q) {
+  |              ^
+help: add `consume` before the parameter type, such as `void f(consume Qubit q)`, to take ownership and become responsible for measuring or discarding it
+```
+
+대여를 기본값으로 택한 이유는 게이트 메서드가 `&mut Qubit`을 받고 `measure`가 `Qubit`을 값으로 소비하는 `qxide` 라이브러리 설계와 일치하며, 가장 흔한 게이트 서브루틴 작성 시 별도 키워드를 쓰지 않아도 되기 때문이다. 사용자 함수 호출은 인터프리터가 실행하므로 생성되는 회로는 게이트를 인라인으로 작성한 것과 동일하다. 실제로 대여 기반 `bellPair` 함수로 작성한 Bell 예제의 OpenQASM 3 출력은 인라인 버전과 바이트 단위로 동일함을 확인했다.
+
+### 13.2 `var` 지역 변수 타입 추론
+
+아래 예제는 초기화식의 타입에 따라 `var`가 `int`, `double`, `boolean`을 추론하는 방식을 보여 준다.
+
+```java
+var steps = 4;           // int
+var angle = PI / steps;  // double
+final var big = steps > 2;
+var q = qubit();         // error[Q0222]: write `Qubit q = qubit();`
+```
+
+- **사용 위치와 초기화식 필수**: Java 10의 지역 변수 타입 추론과 동일하게 초기화식이 있는 지역 변수 선언에서만 사용할 수 있다. 초기화식 없는 `var x;`는 문법 오류 `Q0105`이며, 매개변수나 반환 타입에 `var`를 쓰면 오류 `Q0111`이 발생한다.
+- **허용 타입 제한**: 초기화식의 타입이 `int`, `double`, `boolean`일 때만 허용된다(12.3절 후보 규칙 1 채택). `Qubit`, `QReg`, `Bit`, `BitReg`, `to_binary()`/`as_int()` 뷰, `void`에 `var`를 사용하면 오류 `Q0222`가 발생하는데, 선형 소유권이나 샷 시점 값처럼 실행 규칙이 다른 타입은 선언 지점에 명시적으로 드러내야 하기 때문이다.
+- **고정된 추론 타입과 `final var`**: 한 번 추론된 타입은 고정되므로 `var n = 1; n = 2.5;`처럼 다른 타입을 대입하면 `Q0204` 오류가 발생한다. 불변 선언인 `final var`도 허용된다.
+- **정식 키워드**: `var`는 새로운 키워드로 승격되어 더 이상 변수·매개변수·함수 이름으로 사용할 수 없다.
+
+### 13.3 `int`와 `double` 간 캐스트
+
+아래 예제는 Java식 캐스트 `(int) x`와 `(double) n`의 사용법을 보여 준다.
+
+```java
+double x = 2.9;
+int a = (int) x;          // 2
+int b = (int) -x;         // -2
+double half = (double) 7 / 2; // 3.5
+int c = (int) x * 2;      // 4: the cast binds tighter than `*`
+```
+
+- **연산자 우선순위**: 캐스트는 단항 연산자와 같은 우선순위로 결합한다(`*`보다 강하고 인덱싱·메서드 호출보다 약하다). 따라서 `(int) x * 2`는 `((int) x) * 2`로 해석되고 `(int) -x`는 부정 연산 결과를 캐스트한다.
+- **허용되는 변환**: `int`와 `double` 사이의 변환만 허용하며 동일 타입 캐스트도 허용한다. `(boolean) 1`이나 `(int) true`처럼 허용되지 않은 캐스트는 오류 `Q0223`이며, 측정 결과인 `Bit`를 캐스트하면 오류 `Q0218`이 발생한다.
+- **절사와 경계값 규칙**: `double`에서 `int`로의 변환은 0 방향으로 절사하며(`(int) 2.9`는 `2`, `(int) -2.9`는 `-2`), `.qx`의 `int`가 64비트 정수이므로 Java의 `long` 캐스트 규칙을 그대로 따른다. `NaN`은 `0`이 되고 범위를 벗어난 값은 `int` 최솟값 또는 최댓값으로 포화되며, 검사 산술(`Q0401`)과 달리 런타임 오류를 발생시키지 않는다.
+- **타입 이름의 식별자 사용 금지**: `(int) x`가 괄호로 감싼 변수 표현식과 모호해지지 않도록 타입 이름(`int`, `double`, `boolean`, `void`, `Bit`, `BitReg`, `Qubit`, `QReg`)은 더 이상 변수·매개변수·함수 이름으로 사용할 수 없다(`Q0112`).
+
+### 13.4 `PI` 상수
+
+`PI`는 Rust의 `std::f64::consts::PI`(3.141592653589793)와 같은 값을 갖는 내장 `double` 상수로, `rz(q, PI / 2)` 같은 회전 각도를 포함해 표현식이 올 수 있는 어디에서나 사용할 수 있다. `PI`라는 이름으로 변수·매개변수·`for` 변수·함수를 선언하면 오류 `Q0217`이 발생하고, `PI = 3.0;`처럼 대입하면 지역 변수 사용을 안내하는 도움말과 함께 오류 `Q0207`이 보고된다. 현재 `E`, `TAU` 등 다른 수학 상수는 제공하지 않는다. 아래 `examples/qx/rotation.qx` 예제는 큐비트를 `ry`로 `PI / 8`씩 네 단계에 걸쳐 총 `PI / 2` 회전한 뒤, 총 각도를 도(degree) 단위(90)로 환산해 `double` 값과 `(int)`로 절사한 값을 나란히 출력한다.
+
+```java
+// examples/qx/rotation.qx
+void main() {
+    var steps = 4;
+    var angle = PI / 2 / steps;
+    Qubit q = qubit();
+    for i in 0..steps {
+        ry(q, angle);
+    }
+    Bit m = measure(q);
+    var degrees = angle * steps * 180 / PI;
+    println("ry total {} degrees ({}), m={}", (int) degrees, degrees, m);
+}
+```
+
+```text
+$ qxide run examples/qx/rotation.qx
+ry total 90 degrees (90.0), m=0
+```
+
+### 13.5 추가 및 변경된 오류 코드
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0111` | `var`를 매개변수 또는 반환 타입에 사용함 |
+| `Q0112` | 타입 이름을 변수·매개변수·함수 이름으로 사용함 |
+| `Q0221` | 고전 타입 매개변수에 `consume`을 사용함 |
+| `Q0222` | `int`, `double`, `boolean`이 아닌 초기화식에 `var`를 사용함 |
+| `Q0223` | `int`와 `double` 사이가 아닌 캐스트를 사용함 |
+| `Q0313` | 대여받은 큐비트 매개변수를 측정·폐기·이동하거나 `consume` 매개변수로 넘김 |
+
+- `Q0219`: 이제 `Qubit`/`QReg`를 반환하는 함수에만 적용된다.
+- `Q0217`: `PI`를 변수·매개변수·`for` 변수·함수로 재선언할 때도 보고된다.
+- `Q0207`: `PI`에 대입할 때도 보고되며 지역 변수 사용을 안내하는 전용 도움말이 함께 출력된다.
+- `Q0303`: 사용자 함수 호출 한 번에 같은 큐비트가 중복 전달되는 경우(레지스터 전체와 그 원소의 겹침 포함)에도 적용되며, 실행 시점에 결정되는 인덱스는 호출 실행 시 검사해 동일하게 보고한다.
+- `Q0311`: `qubit()` 같은 새 큐비트 값을 대여 매개변수로 넘길 때도 보고된다.
+- `Q0302`: `consume` 매개변수가 어떤 실행 경로에서 소비되지 않을 때도 보고된다.
+
+### 13.6 남은 제약과 다음 단계
+
+- `Qubit`이나 `QReg`를 반환하는 사용자 함수는 여전히 지원하지 않는다(`Q0219`).
+- `println`의 이진 포맷 지정자는 추후 과제로 보류하며 `to_binary()`와 `as_int()`를 유지한다.
+- `Bit` 조건의 `if` 블록 안에서는 사용자 함수 호출을 여전히 허용하지 않는다(`Q0308`).
+- 내장 상수는 `PI`만 제공하며, 캐스트는 `int`와 `double` 간 변환만 지원한다.
+- 다음 단계로 [qx-ir.md](qx-ir.md) 설계 초안에 따라 타입 있는 IR 작업에 착수한다.
