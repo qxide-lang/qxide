@@ -163,5 +163,107 @@ class ValidateArchives(unittest.TestCase):
         self.assert_rejected(files, "evil 1.0.0")
 
 
+def load_validate():
+    import importlib.util
+
+    sys.dont_write_bytecode = True  # keep registry-template/scripts free of __pycache__
+    spec = importlib.util.spec_from_file_location("registry_validate", VALIDATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ValidateEntries(unittest.TestCase):
+    def assert_rejected(self, reg: Registry, needle: str):
+        r = reg.validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(needle, r.stdout)
+
+    def test_semver_cases_match_the_client(self):
+        # tests/data/semver_cases.json is checked against the client's parser by a Rust test.
+        cases = json.loads((REPO / "tests" / "data" / "semver_cases.json").read_text(encoding="utf-8"))
+        v = load_validate()
+        for text, ok in cases["versions"]:
+            self.assertEqual(v.registry_version(text), ok, repr(text))
+        for text, ok in cases["reqs"]:
+            self.assertEqual(v.valid_req(text), ok, repr(text))
+
+    def test_fields_the_client_rejects(self):
+        for vers, over in [
+            ("1.0.99999999999999999999", {}),
+            ("1.0.1-01", {}),
+            ("1.0.0+evil", {}),
+            ("1.0.0\n", {}),
+            ("1.0.1", {"deps": [{"name": "other", "req": "not a req"}]}),
+            ("1.0.1", {"deps": [{"name": "other\n", "req": "1"}]}),
+            ("1.0.1", {"qxide": "bogus!"}),
+            ("1.0.1", {"qxide": 99}),
+            ("1.0.1", {"description": 5}),
+            ("1.0.1", {"dl": 5}),
+            ("1.0.1", {"v": True}),
+            ("1.0.1", {"cksum": "0" * 64 + "\n"}),
+        ]:
+            with self.subTest(vers=vers, over=over):
+                reg = Registry(self)
+                reg.add("other", "1.0.0")
+                reg.add("evil", "1.0.0")
+                reg.add("evil", vers, archive=False, **over)
+                self.assert_rejected(reg, "index/ev/il/evil:2")
+
+    def test_download_locations(self):
+        for dl in [
+            "file:///C:/Windows/win.ini",
+            "/etc/passwd",
+            "packages/../../x.tar.gz",
+            "http://example.invalid/x.tar.gz",
+            "https://example.invalid/{name}[1-9].tar.gz",
+            "https://example.invalid/a b.tar.gz",
+            "packages\\x.tar.gz",
+        ]:
+            with self.subTest(dl=dl):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0", archive=False, dl=dl)
+                self.assert_rejected(reg, "evil 1.0.0")
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", archive=False, dl="https://example.invalid/releases/{name}-{version}.tar.gz")
+        r = reg.validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+
+class ValidatePullRequests(unittest.TestCase):
+    def setUp(self):
+        self.reg = Registry(self)
+        self.reg.git("init", "-q", "-b", "main")
+        self.reg.add("evil", "1.0.0")
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", "base")
+        self.reg.git("checkout", "-qb", "pr")
+
+    def commit_and_validate(self) -> subprocess.CompletedProcess:
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", "pr")
+        return self.reg.validate("--base", "main")
+
+    def test_a_new_version_passes(self):
+        self.reg.add("evil", "1.0.1")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_build_metadata_twin_of_a_published_version(self):
+        root = "evil-1.0.0+evil"
+        self.reg.add("evil", "1.0.0+evil", [(f"{root}/qxide.toml", manifest("evil", "1.0.0+evil")), (f"{root}/src/lib.qx", LIB)])
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("index/ev/il/evil:2", r.stdout)
+
+    def test_config_json_is_locked(self):
+        (self.reg.root / "config.json").write_text(
+            '{"dl": "https://attacker.invalid/{name}-{version}.tar.gz", "api": null}\n', encoding="utf-8", newline="\n"
+        )
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("config.json", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
