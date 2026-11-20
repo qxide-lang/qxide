@@ -374,3 +374,17 @@ fn repl_waits_for_closing_brackets() {
     assert_eq!(repl::open_brackets("println(\"{\"); // {\n"), 0);
     assert_eq!(repl::open_brackets("f(a,\n"), 1);
 }
+
+#[test]
+fn repl_interactive_mode_shows_banner_and_prompts() {
+    // The README transcript: a prompt goes to stdout before each line is read, diagnostics to stderr.
+    let input = "Qubit q = qubit();\nh(q);\nBit m = measure(q);\nm\nh(q);\nvoid f() {\n}\n:quit\n";
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = repl::run(input.as_bytes(), &mut out, &mut err, 0, true);
+    let out = String::from_utf8(out).unwrap();
+    let banner = msg::repl_banner(env!("CARGO_PKG_VERSION"));
+    assert_eq!(out, format!("{banner}qx> qx> qx> qx> 0\nqx> qx> ... qx> "));
+    let err = String::from_utf8(err).unwrap();
+    assert_eq!(error_codes(&err), ["Q0301"]);
+    assert_eq!(code, 0);
+}
