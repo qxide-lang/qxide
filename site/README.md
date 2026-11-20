@@ -2,7 +2,7 @@
 
 Website for `qxide.dev` in the `qxide` repository.
 
-**Status:** Placeholder page only — design chosen later.
+**Status:** Live site for the `.qx` language and the `qxide` CLI (v0.5.0).
 
 ## Stack
 
@@ -22,12 +22,30 @@ Run all commands inside `site/`:
 
 ## Deploy to Cloudflare Pages
 
-Static site — no functions and no secrets needed.
+Static site plus one Pages Function (`functions/_middleware.ts`); no secrets needed. The middleware answers `https://qxide.dev/<path>` with a 301 to `https://www.qxide.dev/<path>` (query kept). It only acts when the host is exactly `qxide.dev`, and it skips `/install.sh` and `/install.ps1`, which fall through to `public/_redirects` (302 to the latest GitHub release). `qxide.pages.dev` and preview URLs are untouched.
 
 - **Root directory:** `site`
 - **Build command:** `npm run build`
 - **Build output directory:** `dist`
 - **Node version:** Set the `NODE_VERSION` environment variable to `22` (or newer)
+
+The Git-connected build deploys `functions/` automatically. For a manual deploy, run this inside `site/`:
+
+```sh
+npm run build
+npx wrangler pages deploy dist
+```
+
+`wrangler pages deploy dist` looks for `functions/` in the current directory (not inside `dist/`), so it must be run from `site/`; the folder is then bundled and uploaded together with `dist`. Both the apex and `www` hostnames must be custom domains of the Pages project for the redirect to be reachable.
+
+To check the redirect locally, serve the build and override the `Host` header:
+
+```sh
+npx wrangler pages dev dist --port 8788
+curl -sI -H "Host: qxide.dev" "http://localhost:8788/learn?x=1"            # 301 -> https://www.qxide.dev/learn?x=1
+curl -sI -H "Host: qxide.dev" "http://localhost:8788/install.sh"           # 302 -> GitHub release installer
+curl -sI -H "Host: qxide.pages.dev" "http://localhost:8788/learn"          # 200, untouched
+```
 
 ## Agent tooling
 
