@@ -942,12 +942,14 @@ qxide 라이브러리 자체는 분기 안의 `measure`만 거부해 패닉을 �
 
 ### 15.1 `qxide new`
 
-`qxide new <NAME>`은 새 프로젝트 디렉터리 `NAME`을 생성한다.
+`qxide new <NAME>`은 `qx-packages.md` 규격에 맞는 새 패키지 프로젝트 디렉터리 `NAME`을 생성한다.
 
-- 디렉터리 안에 `main.qx`와 짧은 `README.md`를 만든다. `main.qx`는 `qxide check`와 `qxide fmt --check`를 이미 통과하는 벨 쌍(Bell pair) 프로그램이며, `README.md`의 제목은 프로젝트 이름(`NAME` 경로의 마지막 구성 요소)으로 채운다.
-- `NAME` 경로에 파일이나 디렉터리가 이미 있으면 종료 코드 `1`로 실패하며 아무 파일도 생성하거나 덮어쓰지 않는다.
-- 상위 디렉터리가 미리 존재해야 하며, 디렉터리는 재귀적으로 생성하지 않는다. 사용법 오류는 종료 코드 `2`로 종료한다.
-- 생성에 성공하면 만든 파일 목록과 이어서 실행할 명령(`qxide run NAME/main.qx`, `qxide fmt NAME/main.qx`)을 출력한다.
+- 디렉터리 안에 `qxide.toml`, `src/main.qx`, `README.md`, `.gitignore`를 만든다. `qxide.toml`에는 `[package]`의 패키지 이름, 버전 `0.1.0`, 현재 major.minor 기준 `qxide = ">=X.Y"`와 빈 `[dependencies]` 섹션이 들어가며, `src/main.qx`는 `qxide check`와 `qxide fmt --check`를 이미 통과하는 벨 쌍(Bell pair) 프로그램이다. `README.md`의 제목은 폴더 이름(`NAME` 경로의 마지막 구성 요소)으로 채우고, `.gitignore`에는 `target/`을 기록한다.
+- 패키지 이름은 폴더 이름을 소문자로 바꾼 뒤 ASCII 영숫자 외 연속 문자를 하이픈(`-`) 하나로 치환하고 끝의 하이픈을 제거해 최대 64자로 만든다. 남은 문자가 없으면 `app`을 사용하며, 숫자로 시작하면 `app-` 접두사를 붙인다(예: `New Project` → `new-project`, `2fast` → `app-2fast`).
+- 생성된 프로젝트 디렉터리 안에서는 파일 인자 없이 `qxide run`, `qxide check`, `qxide qasm`을 실행하면 `src/main.qx`를 대상으로 사용한다.
+- `NAME` 경로에 파일이나 디렉터리가 이미 있으면 종료 코드 `1`로 실패하며 아무 파일도 생성하거나 덮어쓰지 않는다. 파일 기록 중 오류가 발생하면 새로 만든 디렉터리를 다시 삭제하고 종료 코드 `1`로 종료한다.
+- 상위 디렉터리가 미리 존재해야 하며 디렉터리는 재귀적으로 생성하지 않는다. `-`로 시작하는 인자는 폴더 이름이 아닌 사용법 오류로 처리하며, 사용법 오류는 종료 코드 `2`로 종료한다.
+- 생성에 성공하면 만든 파일 목록과 이어서 실행할 명령(`qxide run NAME/src/main.qx`, `qxide fmt NAME/src/main.qx`)을 출력한다.
 
 ### 15.2 `qxide fmt`
 

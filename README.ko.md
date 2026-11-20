@@ -113,7 +113,7 @@ c[1] = measure q[1];
 - `qxide fmt <FILE> [--check]`: 소스 파일을 서식에 맞춰 제자리에서 다시 씁니다. `--check`를 지정하면 파일을 수정하지 않고 변경 필요 여부만 확인합니다.
 - `qxide repl [--seed S]`: 변수, 함수, 큐비트 상태를 유지하는 대화형 세션을 시작합니다. 측정에는 시드 `S`(기본값 `0`)를 사용합니다.
 - `qxide explain <CODE>`: 영문 카탈로그 [docs/error-codes.md](docs/error-codes.md)에서 해당 오류 코드의 발생 원인, 잘못된 예시, 수정 방법을 찾아 출력합니다.
-- `qxide new <NAME>`: `NAME` 디렉터리를 만들고 벨 쌍 예제 `main.qx`와 짧은 `README.md`를 생성합니다.
+- `qxide new <NAME>`: `NAME` 패키지 프로젝트를 만들고 `qxide.toml`(폴더 이름에서 생성한 패키지 이름, 버전 `0.1.0`, 필요한 `qxide` 버전), 벨 쌍 예제 `src/main.qx`, 짧은 `README.md`, `target/`을 무시하는 `.gitignore`를 생성합니다. 프로젝트 폴더 안에서는 파일 없이 `qxide run`을 실행하면 `src/main.qx`를 실행합니다.
 
 언어 사양과 문법의 자세한 내용은 [docs/design/qx-language.md](docs/design/qx-language.md)에서 확인할 수 있습니다.
 

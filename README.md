@@ -129,14 +129,14 @@ See [docs/design/qx-language.md](docs/design/qx-language.md) for the full langua
 
 Besides `run`, `check`, and `qasm`, the `qxide` command can start a project with `qxide new`, format code with `qxide fmt`, run an interactive session with `qxide repl`, and explain error codes with `qxide explain`.
 
-`qxide new <NAME>` creates a new folder containing a Bell-pair `main.qx` and a short `README.md`, and fails with exit code 1 without creating or overwriting anything if the path already exists. `qxide fmt <FILE>` rewrites a file in place to use standard 4-space indentation, brace placement, spacing, and blank-line rules while preserving comments and exact literal spelling; if the file does not parse, it prints the diagnostic and leaves the file untouched (type and ownership errors do not block formatting). Passing `--check` never writes to the file, exiting with 1 if the file would change and 0 if it is already formatted.
+`qxide new <NAME>` creates a new package project containing `qxide.toml` (with a package name derived from the folder name, version `0.1.0`, and the required `qxide` version), a Bell-pair `src/main.qx`, a short `README.md`, and a `.gitignore` that ignores `target/`; inside the folder, `qxide run` with no file runs `src/main.qx`. It fails with exit code 1 without creating or overwriting anything if the path already exists, and removes the folder again if writing a file fails. `qxide fmt <FILE>` rewrites a file in place to use standard 4-space indentation, brace placement, spacing, and blank-line rules while preserving comments and exact literal spelling; if the file does not parse, it prints the diagnostic and leaves the file untouched (type and ownership errors do not block formatting). Passing `--check` never writes to the file, exiting with 1 if the file would change and 0 if it is already formatted.
 
 ```text
 $ qxide new hello
-Created project `hello` in `hello` with `main.qx` and `README.md`
+Created project `hello` in `hello` with `qxide.toml`, `src/main.qx`, `README.md`, and `.gitignore`
 Next:
-  qxide run hello/main.qx
-  qxide fmt hello/main.qx
+  qxide run hello/src/main.qx
+  qxide fmt hello/src/main.qx
 $ cat messy.qx
 void main(){
 Qubit q=qubit();h( q );

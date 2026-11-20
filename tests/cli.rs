@@ -223,15 +223,43 @@ fn new_creates_a_project_that_checks_and_is_formatted() {
     let dir_arg = dir.to_string_lossy().into_owned();
     let out = qxide(&["new", &dir_arg]);
     assert!(out.status.success(), "{out:?}");
-    let main = dir.join("main.qx");
+    // A package project: manifest, entry point under `src/`, and `target/` ignored by git.
+    let main = dir.join("src").join("main.qx");
     let main_arg = main.to_string_lossy().into_owned();
-    assert!(String::from_utf8(out.stdout).unwrap().contains(&main_arg));
+    assert!(main.is_file());
+    assert!(!dir.join("main.qx").exists());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("qxide.toml"), "{stdout}");
+    let manifest = std::fs::read_to_string(dir.join("qxide.toml")).unwrap();
+    // `_` is not allowed in package names, so the folder name is adapted.
+    assert!(
+        manifest.contains("name = \"new-project-demo\"\n"),
+        "{manifest}"
+    );
+    assert!(manifest.contains("version = \"0.1.0\"\n"), "{manifest}");
+    let major_minor: Vec<&str> = env!("CARGO_PKG_VERSION").split('.').take(2).collect();
+    assert!(
+        manifest.contains(&format!("qxide = \">={}\"\n", major_minor.join("."))),
+        "{manifest}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".gitignore")).unwrap(),
+        "target/\n"
+    );
     let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
     assert!(readme.starts_with("# new_project_demo\n"), "{readme}");
     assert!(qxide(&["check", &main_arg]).status.success());
     assert!(qxide(&["fmt", "--check", &main_arg]).status.success());
+    // Inside the project, `qxide run` finds `src/main.qx` by itself.
+    let in_project = Command::new(env!("CARGO_BIN_EXE_qxide"))
+        .args(["run", "--shots", "50"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(in_project.status.success(), "{in_project:?}");
     let run = qxide(&["run", &main_arg, "--shots", "50"]);
-    assert!(run.status.success());
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(run.stdout, in_project.stdout);
     let table = String::from_utf8(run.stdout).unwrap();
     assert!(
         table.contains("a=0 b=0") || table.contains("a=1 b=1"),
@@ -264,6 +292,62 @@ fn new_never_overwrites_an_existing_path() {
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "x");
     assert_eq!(qxide(&["new"]).status.code(), Some(2));
+}
+
+#[test]
+fn new_package_names_are_derived_from_any_folder_name() {
+    for (folder, package) in [
+        ("New Project", "new-project"),
+        ("큐비트", "app"),
+        ("2fast", "app-2fast"),
+        ("a__b--c-", "a-b-c"),
+    ] {
+        let dir = fresh_dir(&format!("new_names/{folder}"));
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        let out = qxide(&["new", &dir.to_string_lossy()]);
+        assert!(out.status.success(), "{folder}: {out:?}");
+        let manifest = std::fs::read_to_string(dir.join("qxide.toml")).unwrap();
+        assert!(
+            manifest.contains(&format!("name = \"{package}\"\n")),
+            "{folder}: {manifest}"
+        );
+        let check = qxide(&["check", &dir.join("src/main.qx").to_string_lossy()]);
+        assert!(check.status.success(), "{folder}: {check:?}");
+    }
+}
+
+#[test]
+fn new_rejects_flags_as_names() {
+    for flag in ["--help", "-weird", "--name"] {
+        // Older versions created these folders; start clean.
+        let _ =
+            std::fs::remove_dir_all(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(flag));
+        let out = Command::new(env!("CARGO_BIN_EXE_qxide"))
+            .args(["new", flag])
+            .current_dir(env!("CARGO_TARGET_TMPDIR"))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert!(!std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(flag)
+            .exists());
+    }
+}
+
+// Windows drops a trailing space when creating `sp `, so writing `sp \src` fails; the folder
+// `new` just created must not be left behind.
+#[cfg(windows)]
+#[test]
+fn new_removes_its_folder_when_writing_fails() {
+    let base = fresh_dir("new_cleanup");
+    std::fs::create_dir_all(&base).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_qxide"))
+        .args(["new", "sp "])
+        .current_dir(&base)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
 }
 
 #[test]

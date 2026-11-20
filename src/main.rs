@@ -140,7 +140,33 @@ fn lf(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
+// A valid package name (`[a-z][a-z0-9-]*`, see `pkg::valid_name`) for a project folder name:
+// other characters become single hyphens, and a name that cannot start with a letter gets `app`.
+fn package_name(folder: &str) -> String {
+    let mut name = String::new();
+    for c in folder.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            name.push(c);
+        } else if !name.is_empty() && !name.ends_with('-') {
+            name.push('-');
+        }
+    }
+    let mut name = match name.trim_end_matches('-') {
+        "" => "app".to_string(),
+        n if n.starts_with(|c: char| c.is_ascii_digit()) => format!("app-{n}"),
+        n => n.to_string(),
+    };
+    name.truncate(64);
+    let name = name.trim_end_matches('-').to_string();
+    debug_assert!(pkg::valid_name(&name), "{name}");
+    name
+}
+
 fn new_command(args: &[String]) -> ExitCode {
+    if let Some(flag) = args.iter().find(|a| a.starts_with('-')) {
+        eprintln!("qxide: unexpected argument `{flag}` for `new`");
+        return ExitCode::from(2);
+    }
     let [dir] = args else {
         match args.get(1) {
             Some(extra) => eprintln!("qxide: unexpected argument `{extra}` for `new`"),
@@ -165,21 +191,33 @@ fn new_command(args: &[String]) -> ExitCode {
         eprintln!("qxide: failed to create directory `{dir}`: {e}");
         return ExitCode::from(1);
     }
+    let (major, minor) = VERSION.split_once('.').map_or((VERSION, "0"), |(a, rest)| {
+        (a, rest.split('.').next().unwrap_or("0"))
+    });
+    let manifest = format!(
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nqxide = \">={major}.{minor}\"\n\n[dependencies]\n",
+        package_name(&name)
+    );
     let files = [
-        ("main.qx", lf(TEMPLATE_MAIN)),
+        ("qxide.toml", manifest),
+        ("src/main.qx", lf(TEMPLATE_MAIN)),
         ("README.md", lf(TEMPLATE_README).replace("{name}", &name)),
+        (".gitignore", "target/\n".to_string()),
     ];
-    for (file, text) in files {
-        let path = root.join(file);
-        if let Err(e) = std::fs::write(&path, text) {
-            let path = path.display();
-            eprintln!("qxide: failed to write `{path}`: {e}");
-            return ExitCode::from(1);
-        }
+    let written = std::fs::create_dir(root.join("src")).and_then(|()| {
+        files
+            .iter()
+            .try_for_each(|(file, text)| std::fs::write(root.join(file), text))
+    });
+    if let Err(e) = written {
+        // Everything in `root` was created just now, so removing it loses nothing of the user's.
+        let _ = std::fs::remove_dir_all(root);
+        eprintln!("qxide: failed to create directory `{dir}`: {e}");
+        return ExitCode::from(1);
     }
-    let main = root.join("main.qx");
+    let main = root.join("src").join("main.qx");
     let main = main.display();
-    print!("Created project `{name}` in `{dir}` with `main.qx` and `README.md`\nNext:\n  qxide run {main}\n  qxide fmt {main}\n");
+    print!("Created project `{name}` in `{dir}` with `qxide.toml`, `src/main.qx`, `README.md`, and `.gitignore`\nNext:\n  qxide run {main}\n  qxide fmt {main}\n");
     ExitCode::SUCCESS
 }
 
