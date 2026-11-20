@@ -8,6 +8,7 @@ const GHZ: &str = include_str!("../../examples/qx/ghz.qx");
 const TELEPORT: &str = include_str!("../../examples/qx/teleport.qx");
 const FUNCTIONS: &str = include_str!("../../examples/qx/functions.qx");
 const ROTATION: &str = include_str!("../../examples/qx/rotation.qx");
+const TELEPORT_FN: &str = include_str!("../../examples/qx/teleport_fn.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -75,7 +76,7 @@ fn table(out: &str) -> Vec<(String, u64, Vec<String>)> {
 
 #[test]
 fn examples_and_doc_samples_pass_the_checker() {
-    for src in [BELL, GHZ, TELEPORT, FUNCTIONS, ROTATION] {
+    for src in [BELL, GHZ, TELEPORT, FUNCTIONS, ROTATION, TELEPORT_FN] {
         ok(src);
     }
     ok("boolean parity(int n) {\n    return n % 2 == 1;\n}\n\nvoid main() {\n    int total = 0;\n    for i in 0..10 {\n        if parity(i) {\n            total = total + i;\n        }\n    }\n    println(\"total={}\", total);\n}\n");
@@ -292,13 +293,12 @@ fn bit_if_restrictions() {
     assert_eq!(codes(&with("if m { println(\"x\"); }")), ["Q0308"]);
     assert_eq!(
         codes(&with("if m { Qubit q = qubit(); discard(q); }")),
-        ["Q0308", "Q0308", "Q0308"]
+        // `qubit()` and `discard`; the declaration is not reported again.
+        ["Q0308", "Q0308"]
     );
     assert_eq!(codes(&with("if m { return; }")), ["Q0308"]);
-    assert_eq!(
-        codes(&format!("void f() {{}}\n{}", with("if m { f(); }"))),
-        ["Q0308"]
-    );
+    // Functions that only apply gates may be called inside (section 14 of the design doc).
+    ok(&format!("void f() {{}}\n{}", with("if m { f(); }")));
     assert_eq!(codes(&with("int k = 0; if m { k = 1; }")), ["Q0309"]);
     // Locals declared inside the body may be assigned there.
     ok(&with("if m { int k = 0; k = k + 1; }"));
@@ -337,12 +337,9 @@ fn types_and_names() {
     assert_eq!(codes("void helper() {}"), ["Q0206"]);
     assert_eq!(codes("void main(int x) {}"), ["Q0206"]);
     assert_eq!(codes("void h() {}\nvoid main() {}"), ["Q0217"]);
-    // Qubit parameters are supported (borrowed by default); quantum return types are not yet.
+    // Qubit parameters and quantum return types are supported; Q0219 is retired.
     ok("void f(Qubit q) {}\nvoid main() {}");
-    assert_eq!(
-        codes("Qubit f() {\n    return qubit();\n}\nvoid main() {}"),
-        ["Q0219"]
-    );
+    ok("Qubit f() {\n    return qubit();\n}\nvoid main() {\n    discard(f());\n}");
     assert_eq!(
         codes("int f() { if true { return 1; } }\nvoid main() {}"),
         ["Q0213"]
@@ -573,6 +570,7 @@ fn diagnostics_are_english_with_help_lines() {
         "void f(Qubit q) {\n    discard(q);\n}\nvoid main() {}\n".to_string(),
         "void f(consume int n, var x) {}\nvoid main() {}\n".to_string(),
         main_body("var q = qubit();\nboolean b = (boolean) 1;\ndouble PI = 1.0;"),
+        format!("void f(Qubit q) {{\n    Bit m = measure(q);\n}}\n{}", main_body("Qubit a = qubit();\nBit m = measure(a);\nQubit t = qubit();\nif m {\n    f(t);\n}\ndiscard(t);")),
     ];
     for src in &samples {
         let d = rendered(src);
@@ -811,4 +809,130 @@ fn new_examples_run() {
     assert_eq!(run_ok(ROTATION, 1), "ry total 90 degrees (90.0), m=0\n");
     let q = qasm("t.qx", ROTATION).ok().unwrap();
     assert_eq!(q.matches("ry(").count(), 4, "{q}");
+}
+
+const CONDITIONAL_FN: &str = include_str!("../../examples/qx/conditional_fn.qx");
+const MAKE: &str = "Qubit make() {\n    Qubit q = qubit();\n    h(q);\n    return q;\n}\n\n";
+
+fn same_qasm(a: &str, b: &str) {
+    assert_eq!(qasm("t.qx", a).ok().unwrap(), qasm("t.qx", b).ok().unwrap());
+}
+
+#[test]
+fn functions_return_qubits_to_the_caller() {
+    let ghz = "QReg ghz(int n) {\n    QReg r = qreg(n);\n    h(r[0]);\n    for i in 1..n {\n        cx(r[0], r[i]);\n    }\n    return r;\n}\n\nvoid main() {\n    QReg r = ghz(5);\n    BitReg m = measure(r);\n    println(\"{}  {} = {}\", m, m.to_binary(), m.as_int());\n}\n";
+    // Building the register in a function gives the same circuit as examples/qx/ghz.qx.
+    same_qasm(ghz, GHZ);
+    let rows = table(&run_ok(ghz, 200));
+    let mut heads: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    heads.sort_unstable();
+    assert_eq!(
+        heads,
+        [
+            "[0, 0, 0, 0, 0]  0b00000 = 0",
+            "[1, 1, 1, 1, 1]  0b11111 = 31"
+        ]
+    );
+    // `consume` in, return out: ownership passes through the function.
+    ok("Qubit hadamard(consume Qubit q) {\n    h(q);\n    return q;\n}\nvoid main() {\n    Qubit q = hadamard(qubit());\n    Bit m = measure(q);\n}\n");
+    ok(&format!(
+        "{MAKE}void main() {{\n    Bit m = measure(make());\n}}\n"
+    ));
+}
+
+#[test]
+fn returned_qubits_follow_the_linear_rules() {
+    let main = |body: &str| format!("{MAKE}void main() {{\n{body}\n}}\n");
+    // The caller must consume the result, exactly once.
+    assert_eq!(errors(&main("Qubit q = make();")), vec![("Q0302", 8, 7)]);
+    assert_eq!(errors(&main("make();")), vec![("Q0312", 8, 1)]);
+    assert_eq!(
+        errors(&main(
+            "Qubit q = make();\nBit a = measure(q);\nBit b = measure(q);"
+        )),
+        vec![("Q0301", 10, 17)]
+    );
+    assert_eq!(codes(&main("QReg r = make();\ndiscard(r);")), ["Q0204"]);
+    assert_eq!(codes(&main("h(make());")), ["Q0311"]);
+    // Qubits the function keeps instead of returning are still leaks.
+    let kept = "Qubit f() {\n    Qubit a = qubit();\n    Qubit b = qubit();\n    return a;\n}\nvoid main() {}\n";
+    assert_eq!(errors(kept), vec![("Q0302", 3, 11)]);
+    // Borrowed parameters and single register elements cannot be returned.
+    assert_eq!(
+        errors("Qubit f(Qubit q) {\n    return q;\n}\nvoid main() {}\n"),
+        vec![("Q0313", 2, 12)]
+    );
+    assert_eq!(
+        codes("Qubit f() {\n    QReg r = qreg(2);\n    return r[0];\n}\nvoid main() {}\n"),
+        ["Q0302", "Q0306"]
+    );
+    assert_eq!(
+        codes("Qubit f() {\n    return 1;\n}\nvoid main() {}\n"),
+        ["Q0204"]
+    );
+    assert_eq!(
+        codes("Qubit f() {\n    Qubit q = qubit();\n    discard(q);\n}\nvoid main() {}\n"),
+        ["Q0213"]
+    );
+}
+
+#[test]
+fn gate_only_functions_run_inside_bit_conditions() {
+    // The function version lowers to the same conditional blocks as the inline teleport.
+    same_qasm(TELEPORT_FN, TELEPORT);
+    for (_, _, lines) in table(&run_ok(TELEPORT_FN, 200)) {
+        assert_eq!(lines, ["bob=1"]);
+    }
+    // `else`, loops with rotations, a nested `if` on a `Bit` parameter and a classical helper.
+    let inline = "void main() {\n    Qubit coin = qubit();\n    h(coin);\n    Bit m = measure(coin);\n    Qubit other = qubit();\n    h(other);\n    Bit f = measure(other);\n    QReg r = qreg(2);\n    if m {\n        for i in 0..len(r) {\n            rz(r[i], PI / 4);\n        }\n        if f {\n            x(r[0]);\n        }\n    } else {\n        for i in 0..2 {\n            x(r[1]);\n        }\n    }\n    BitReg out = measure(r);\n    println(\"m={} f={} r={}\", m, f, out);\n}\n";
+    same_qasm(CONDITIONAL_FN, inline);
+    let q = qasm("t.qx", CONDITIONAL_FN).ok().unwrap();
+    assert!(q.contains("if (c[0] == false) {"), "{q}");
+    assert!(q.contains("  if (c[1] == true) {\n    x q[0];\n  }"), "{q}");
+    for (_, _, lines) in table(&run_ok(CONDITIONAL_FN, 300)) {
+        // r[0] is flipped only when both coins are 1; the two `x(r[1])` cancel out.
+        assert!(
+            matches!(
+                lines[0].as_str(),
+                "m=1 f=1 r=[1, 0]" | "m=1 f=0 r=[0, 0]" | "m=0 f=1 r=[0, 0]" | "m=0 f=0 r=[0, 0]"
+            ),
+            "{lines:?}"
+        );
+    }
+    // Recursion is fine as long as every reachable body only applies gates.
+    let rec = "void flipN(Qubit q, int n) {\n    if n > 0 {\n        x(q);\n        flipN(q, n - 1);\n    }\n}\nvoid main() {\n    Qubit a = qubit();\n    h(a);\n    Bit m = measure(a);\n    Qubit t = qubit();\n    if m {\n        flipN(t, 3);\n    }\n    Bit out = measure(t);\n}\n";
+    let q = qasm("t.qx", rec).ok().unwrap();
+    assert!(
+        q.contains("if (c[0] == true) {\n  x q[0];\n  x q[0];\n  x q[0];\n}"),
+        "{q}"
+    );
+}
+
+#[test]
+fn conditional_calls_reject_what_blocks_cannot_hold() {
+    let pre =
+        "void main() {\n    Qubit a = qubit();\n    Bit m = measure(a);\n    Qubit t = qubit();\n";
+    // `f` calls `g`, which prints; the note points at the call inside `f`.
+    let transitive = format!("void g() {{\n    println(\"x\");\n}}\nvoid f(Qubit q) {{\n    h(q);\n    g();\n}}\n{pre}    if m {{\n        f(t);\n    }}\n    discard(t);\n}}\n");
+    assert_eq!(errors(&transitive), vec![("Q0314", 13, 9)]);
+    let d = rendered(&transitive);
+    assert!(
+        d.contains("--> t.qx:6:5") && d.contains("`g`") && d.contains("\nhelp: "),
+        "{d}"
+    );
+    // A `consume` parameter would consume the qubit on only some shots; reported once, no leak.
+    let consume = format!("void eat(consume Qubit q) {{\n    discard(q);\n}}\n{pre}    if m {{\n        eat(t);\n    }}\n}}\n");
+    assert_eq!(errors(&consume), vec![("Q0314", 9, 9)]);
+    assert!(rendered(&consume).contains("--> t.qx:1:24"));
+    // A function returning a qubit would allocate inside the block; reported once.
+    let make =
+        format!("{MAKE}{pre}    if m {{\n        Qubit p = make();\n    }}\n    discard(t);\n}}\n");
+    assert_eq!(errors(&make), vec![("Q0314", 12, 19)]);
+    // Measuring inside the callee, also through recursion.
+    let measured = format!("void probe() {{\n    Bit b = measure(qubit());\n}}\n{pre}    if m {{\n        probe();\n    }}\n    discard(t);\n}}\n");
+    assert_eq!(codes(&measured), ["Q0314"]);
+    let rec = format!("void bad(int n) {{\n    if n > 0 {{\n        bad(n - 1);\n    }} else {{\n        println(\"done\");\n    }}\n}}\n{pre}    if m {{\n        bad(2);\n    }}\n    discard(t);\n}}\n");
+    assert_eq!(codes(&rec), ["Q0314"]);
+    // Outside the `if` the same calls are fine.
+    ok(&format!("void g() {{\n    println(\"x\");\n}}\nvoid f(Qubit q) {{\n    h(q);\n    g();\n}}\n{pre}    f(t);\n    discard(t);\n}}\n"));
 }

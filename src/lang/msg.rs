@@ -134,10 +134,6 @@ pub fn bit_at_build_time(ty: &str) -> String {
     format!("measurement result `{ty}` is only known per shot and cannot be used here")
 }
 
-pub fn quantum_signature() -> String {
-    "functions returning `Qubit` or `QReg` are not yet supported".into()
-}
-
 pub fn use_after_consume(name: &str) -> String {
     format!("use of consumed qubit `{name}`")
 }
@@ -268,7 +264,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::BranchMismatch => "consume the qubit in both branches or in neither".into(),
         Code::ConsumedInLoop => "allocate the qubit inside the loop body instead".into(),
         Code::PartialMove => "measure or discard the whole register; gates may still use `r[i]`".into(),
-        Code::ForbiddenInBitIf => "move this operation before or after the `if`; only gates, `reset`, `for`, nested `if`, and classical variable declarations are allowed inside".into(),
+        Code::ForbiddenInBitIf => "move this operation before or after the `if`; only gates, `reset`, `for`, nested `if`, classical variable declarations, and calls to gate-only functions are allowed inside".into(),
         Code::OuterAssignInBitIf => "this assignment would not depend on the shot; use a variable declared inside the `if` body instead".into(),
         Code::ShadowLive => "consume the qubit first or choose another name".into(),
         Code::TempDropped => "store it in a variable such as `Qubit q = qubit();`, then call `measure` or `discard`".into(),
@@ -281,6 +277,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::VarInfer => "use `var` only for `int`, `double`, and `boolean` values; otherwise write the type explicitly, such as `Qubit q = qubit();` or `Bit m = measure(q);`".into(),
         Code::InvalidCast => "only `int` and `double` can be cast to each other, such as `(int) x` or `(double) n`".into(),
         Code::BorrowedConsume => "add `consume` before the parameter type, such as `void f(consume Qubit q)`, to take ownership and become responsible for measuring or discarding it".into(),
+        Code::ConditionalCall => "a function called inside an `if` on a measurement result may only apply gates and `reset` to borrowed qubits, so it cannot allocate, measure, discard, print, take a `consume` parameter, or return a qubit; call it before or after the `if`".into(),
         Code::AsIntTooWide => "print it with `to_binary()` or as an array using a plain placeholder instead".into(),
         _ => return None,
     })
@@ -357,4 +354,24 @@ pub fn help_constant_redefined() -> String {
 
 pub fn help_borrow_temp() -> String {
     "store the qubit in a variable first (e.g., `Qubit q = qubit();`), pass `q`, and measure or discard it after the call".into()
+}
+
+pub fn conditional_call(name: &str) -> String {
+    format!("cannot call function `{name}` inside an `if` on a measurement result")
+}
+
+pub fn note_cond_consume(param: &str) -> String {
+    format!("parameter `{param}` takes ownership via `consume`, which a conditional call cannot do")
+}
+
+pub fn note_cond_returns(ty: &str) -> String {
+    format!("returns a quantum value (`{ty}`), which cannot be created inside a conditional block")
+}
+
+pub fn note_cond_op(op: &str) -> String {
+    format!("uses `{op}`, which cannot run inside a conditional block")
+}
+
+pub fn note_cond_calls(callee: &str) -> String {
+    format!("calls `{callee}`, which cannot run inside a conditional block")
 }

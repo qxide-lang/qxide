@@ -54,8 +54,106 @@ enum Idx {
     Dynamic,
 }
 
+// Why a function cannot be called inside an `if` on a `Bit`: its body would run conditionally,
+// and qxide's conditional blocks only record gates and `reset`.
+#[derive(Clone)]
+enum Unconditional {
+    Consume(String),
+    ReturnsQuantum(Ty),
+    Op(String),
+    Calls(String),
+}
+
+impl Unconditional {
+    fn note(&self) -> String {
+        match self {
+            Unconditional::Consume(param) => msg::note_cond_consume(param),
+            Unconditional::ReturnsQuantum(ty) => msg::note_cond_returns(ty.name()),
+            Unconditional::Op(op) => msg::note_cond_op(op),
+            Unconditional::Calls(callee) => msg::note_cond_calls(callee),
+        }
+    }
+}
+
+// Built-ins that cannot run inside a conditional block.
+const NOT_CONDITIONAL: &[&str] = &["qubit", "qreg", "measure", "discard", "println"];
+
+#[derive(Default)]
+struct Scan {
+    op: Option<(Span, String)>,
+    calls: Vec<(String, Span)>,
+}
+
+fn scan_block(b: &Block, out: &mut Scan) {
+    for s in &b.stmts {
+        match s {
+            Stmt::Decl { init, .. } => scan_expr(init, out),
+            Stmt::Assign { value, .. } => scan_expr(value, out),
+            Stmt::If(i) => scan_if(i, out),
+            Stmt::For {
+                start, end, body, ..
+            } => {
+                scan_expr(start, out);
+                scan_expr(end, out);
+                scan_block(body, out);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(e) = value {
+                    scan_expr(e, out);
+                }
+            }
+            Stmt::Expr(e) => scan_expr(e, out),
+        }
+    }
+}
+
+fn scan_if(i: &IfStmt, out: &mut Scan) {
+    scan_expr(&i.cond, out);
+    scan_block(&i.then, out);
+    match &i.els {
+        Some(Else::Block(b)) => scan_block(b, out),
+        Some(Else::If(inner)) => scan_if(inner, out),
+        None => {}
+    }
+}
+
+fn scan_expr(e: &Expr, out: &mut Scan) {
+    match &e.kind {
+        ExprKind::Call { name, args } => {
+            let n = name.name.as_str();
+            if NOT_CONDITIONAL.contains(&n) {
+                if out.op.is_none() {
+                    out.op = Some((e.span, n.to_string()));
+                }
+            } else if !BUILTINS.contains(&n) {
+                out.calls.push((n.to_string(), e.span));
+            }
+            for a in args {
+                scan_expr(a, out);
+            }
+        }
+        ExprKind::Index { base, index } => {
+            scan_expr(base, out);
+            scan_expr(index, out);
+        }
+        ExprKind::Method { recv, .. } => scan_expr(recv, out),
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => scan_expr(expr, out),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            scan_expr(lhs, out);
+            scan_expr(rhs, out);
+        }
+        ExprKind::Int(_)
+        | ExprKind::Double(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Var(_) => {}
+    }
+}
+
 struct Checker {
     fns: HashMap<String, Sig>,
+    // Functions that cannot run inside an `if` on a `Bit`, with the first reason found.
+    unconditional: HashMap<String, (Span, Unconditional)>,
     vars: Vec<Var>,
     scopes: Vec<Vec<usize>>,
     // Condition spans of the enclosing `if`-on-`Bit` statements.
@@ -67,6 +165,7 @@ struct Checker {
 pub fn check(p: &Program) -> Vec<Diagnostic> {
     let mut c = Checker {
         fns: HashMap::new(),
+        unconditional: HashMap::new(),
         vars: Vec::new(),
         scopes: Vec::new(),
         bit_ifs: Vec::new(),
@@ -74,6 +173,7 @@ pub fn check(p: &Program) -> Vec<Diagnostic> {
         errors: Vec::new(),
     };
     c.signatures(p);
+    c.conditional_safety(p);
     for f in &p.fns {
         c.function(f);
     }
@@ -123,9 +223,6 @@ impl Checker {
                     }
                 }
             }
-            if f.ret.is_quantum() {
-                self.err(Code::QuantumSignature, f.ret_span, msg::quantum_signature());
-            }
             if name == "main" {
                 main = Some(f);
             }
@@ -153,10 +250,54 @@ impl Checker {
         }
     }
 
+    // A greatest fixpoint over the call graph: a function is unconditional if it has a direct
+    // reason or calls an unconditional function.
+    fn conditional_safety(&mut self, p: &Program) {
+        let mut edges = Vec::new();
+        for f in &p.fns {
+            let mut scan = Scan::default();
+            scan_block(&f.body, &mut scan);
+            let consume = f
+                .params
+                .iter()
+                .find(|p| p.ty.is_quantum() && p.consume.is_some());
+            let direct = if let Some(p) = consume {
+                Some((p.name.span, Unconditional::Consume(p.name.name.clone())))
+            } else if f.ret.is_quantum() {
+                Some((f.ret_span, Unconditional::ReturnsQuantum(f.ret)))
+            } else {
+                scan.op.map(|(at, op)| (at, Unconditional::Op(op)))
+            };
+            if let Some(d) = direct {
+                self.unconditional.entry(f.name.name.clone()).or_insert(d);
+            }
+            edges.push((f.name.name.clone(), scan.calls));
+        }
+        loop {
+            let mut changed = false;
+            for (name, calls) in &edges {
+                if self.unconditional.contains_key(name) {
+                    continue;
+                }
+                let hit = calls
+                    .iter()
+                    .find(|(callee, _)| self.unconditional.contains_key(callee));
+                if let Some((callee, at)) = hit {
+                    let why = Unconditional::Calls(callee.clone());
+                    self.unconditional.insert(name.clone(), (*at, why));
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     fn function(&mut self, f: &FnDecl) {
         self.vars.clear();
         self.scopes = vec![Vec::new()];
-        self.ret = if f.ret.is_quantum() { Ty::Error } else { f.ret };
+        self.ret = f.ret;
         for p in &f.params {
             if self.scopes[0]
                 .iter()
@@ -311,7 +452,8 @@ impl Checker {
                         t
                     }
                 };
-                if var_ty.is_quantum() && !self.bit_ifs.is_empty() {
+                let call_reported = matches!(init.kind, ExprKind::Call { .. });
+                if var_ty.is_quantum() && !self.bit_ifs.is_empty() && !call_reported {
                     let at = *self.bit_ifs.last().unwrap();
                     self.err(
                         Code::ForbiddenInBitIf,
@@ -432,11 +574,13 @@ impl Checker {
                     // Already rejected; skip the leak analysis so it does not cascade.
                     return false;
                 }
+                let want = self.ret;
+                // Returning a qubit moves it to the caller, which becomes responsible for it.
                 let found = match value {
+                    Some(e) if want.is_quantum() => self.consume(e, *span, want),
                     Some(e) => self.expr(e),
                     None => Ty::Void,
                 };
-                let want = self.ret;
                 self.expect_ty(value.as_ref().map_or(*span, |e| e.span), want, found);
                 let live: Vec<usize> = self
                     .scopes
@@ -774,8 +918,18 @@ impl Checker {
             }
             return Ty::Error;
         };
-        let (params, ret) = (sig.params.clone(), sig.ret);
-        self.forbid_in_bit_if(span, &format!("{n}()"));
+        let (params, mut ret) = (sig.params.clone(), sig.ret);
+        if let Some(&cond) = self.bit_ifs.last() {
+            if let Some((at, why)) = self.unconditional.get(n).cloned() {
+                let d = self.err(Code::ConditionalCall, span, msg::conditional_call(n));
+                d.notes.push(note(at, why.note()));
+                d.notes.push(note(cond, msg::note_bit_if_here()));
+                // Already rejected; a returned qubit should not also be reported as leaked.
+                if ret.is_quantum() {
+                    ret = Ty::Error;
+                }
+            }
+        }
         if self.arity(name, args, params.len(), span) {
             // Quantum arguments already passed, as (argument index, place).
             let mut passed: Vec<(usize, (usize, Idx))> = Vec::new();
@@ -807,11 +961,7 @@ impl Checker {
                 }
             }
         }
-        if ret.is_quantum() {
-            Ty::Error
-        } else {
-            ret
-        }
+        ret
     }
 
     fn builtin(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {

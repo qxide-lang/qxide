@@ -1,0 +1,39 @@
+// Teleportation of |1> built from functions: `prepareOne` returns a qubit,
+// and the corrections are borrowed-qubit functions called inside `if` on a measured `Bit`.
+Qubit prepareOne() {
+    Qubit q = qubit();
+    x(q);
+    return q;
+}
+
+void entangle(Qubit a, Qubit b) {
+    h(a);
+    cx(a, b);
+}
+
+void correctX(Qubit q) {
+    x(q);
+}
+
+void correctZ(Qubit q) {
+    z(q);
+}
+
+void main() {
+    Qubit msg = prepareOne();
+    Qubit alice = qubit();
+    Qubit bob = qubit();
+    entangle(alice, bob);
+    cx(msg, alice);
+    h(msg);
+    Bit m0 = measure(msg);
+    Bit m1 = measure(alice);
+    if m1 {
+        correctX(bob);
+    }
+    if m0 {
+        correctZ(bob);
+    }
+    Bit out = measure(bob);
+    println("bob={}", out);
+}

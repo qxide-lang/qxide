@@ -1,0 +1,38 @@
+// Gate-only functions called inside `if` / `else` on measured bits, including a nested
+// conditional (`flipIf`), a loop with rotations (`rotateAll`) and a classical helper (`twice`).
+void rotateAll(QReg r, double angle) {
+    for i in 0..len(r) {
+        rz(r[i], angle);
+    }
+}
+
+void flipIf(Bit b, Qubit q) {
+    if b {
+        x(q);
+    }
+}
+
+int twice(int n) {
+    return n * 2;
+}
+
+void main() {
+    Qubit coin = qubit();
+    h(coin);
+    Bit m = measure(coin);
+    Qubit other = qubit();
+    h(other);
+    Bit f = measure(other);
+    QReg r = qreg(2);
+    if m {
+        rotateAll(r, PI / 4);
+        flipIf(f, r[0]);
+    } else {
+        int k = twice(1);
+        for i in 0..k {
+            x(r[1]);
+        }
+    }
+    BitReg out = measure(r);
+    println("m={} f={} r={}", m, f, out);
+}
