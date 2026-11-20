@@ -394,6 +394,18 @@ fn runtime_errors_have_positions() {
         )),
         ("Q0410", 3, 15)
     );
+    // NaN or ±inf would poison the whole state vector (every outcome 0) and print `rx(NaN)`.
+    for angle in ["0.0 / 0.0", "1.0 / 0.0", "-1.0 / 0.0", "1e308 * 10.0"] {
+        for gate in ["rx", "ry", "rz"] {
+            let body = format!("Qubit q = qubit();\n{gate}(q, {angle});\ndiscard(q);");
+            assert_eq!(
+                runtime_error(&main_body(&body)),
+                ("Q0411", 3, 7),
+                "{gate}({angle})"
+            );
+            assert!(qasm("t.qx", &main_body(&body)).is_err(), "{gate}({angle})");
+        }
+    }
 }
 
 // `[0, 1, 1]` lists r[0] first; `0b110` and `as_int() == 6` read r[0] as the least significant bit.

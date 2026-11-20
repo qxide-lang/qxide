@@ -1369,6 +1369,34 @@ void main() {
 }
 ```
 
+## Q0411: non-finite rotation angle
+
+A runtime error is reported while building the circuit when `rx`, `ry`, or `rz` receives an angle that is NaN or infinite. In `.qx`, `double` arithmetic follows IEEE 754 like Java, so `0.0 / 0.0` evaluates to NaN and `1.0 / 0.0` evaluates to infinity instead of raising an error. A non-finite rotation angle would make every amplitude of the simulated state NaN and cannot be written as OpenQASM 3. The library methods `Circuit::rx`, `Circuit::ry`, and `Circuit::rz` panic for the same input.
+
+Erroneous code example:
+
+```qx
+void main() {
+    Qubit q = qubit();
+    double steps = 0.0;
+    rx(q, PI / steps);  // error[Q0411]
+    Bit m = measure(q);
+    println("{}", m);
+}
+```
+
+To fix this error, make sure the divisor is not zero or otherwise ensure the angle passed to `rx`, `ry`, or `rz` is finite.
+
+```qx
+void main() {
+    Qubit q = qubit();
+    double steps = 4.0;
+    rx(q, PI / steps);
+    Bit m = measure(q);
+    println("{}", m);
+}
+```
+
 ## Q0501: unknown package in an import
 
 The first segment of an `import` path names a package that is neither the current package nor a dependency declared in `[dependencies]` in `qxide.toml`. Package names with hyphens, such as `bell-utils`, are imported using underscores (`bell_utils`). Requiring every external package to be declared in `qxide.toml` keeps builds reproducible and ensures dependencies are explicitly resolved before compilation.

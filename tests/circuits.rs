@@ -568,3 +568,40 @@ fn ccx_ctrl_rejects_the_same_control_twice() {
     let mut t = c.qubit();
     c.ccx_ctrl(&a, &a, &mut t);
 }
+
+// NaN/±inf angles would turn every amplitude into NaN (all outcomes silently 0) and emit
+// `rx(NaN)`, which is not valid OpenQASM.
+#[test]
+fn non_finite_rotation_angles_are_rejected() {
+    for theta in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for gate in ["rx", "ry", "rz"] {
+            let r = std::panic::catch_unwind(|| {
+                let mut c = Circuit::new();
+                let mut q = c.qubit();
+                match gate {
+                    "rx" => c.rx(&mut q, theta),
+                    "ry" => c.ry(&mut q, theta),
+                    _ => c.rz(&mut q, theta),
+                }
+            });
+            let err = r.expect_err(&format!("{gate}({theta}) must panic"));
+            let text = err
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            assert!(text.contains("finite"), "{gate}({theta}): {text}");
+        }
+    }
+}
+
+#[test]
+fn finite_extreme_rotation_angles_are_accepted() {
+    let mut c = Circuit::new();
+    let mut q = c.qubit();
+    c.rx(&mut q, f64::MAX);
+    c.ry(&mut q, -f64::MAX);
+    c.rz(&mut q, f64::MIN_POSITIVE);
+    let m = c.measure(q);
+    let _ = c.simulate(0).get(m);
+}

@@ -446,17 +446,32 @@ impl Circuit {
     }
 
     /// Rotates around the X axis by `theta` radians (exp(-iθX/2), equivalent to OpenQASM 3 `rx`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `theta` is NaN or infinite, since such an angle would make the simulated state NaN and cannot be written as OpenQASM.
     pub fn rx(&mut self, q: &mut Qubit, theta: f64) {
+        check_angle("rx", theta);
         self.gate(Gate::Rx(theta), q);
     }
 
     /// Rotates around the Y axis by `theta` radians (exp(-iθY/2)).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `theta` is NaN or infinite, since such an angle would make the simulated state NaN and cannot be written as OpenQASM.
     pub fn ry(&mut self, q: &mut Qubit, theta: f64) {
+        check_angle("ry", theta);
         self.gate(Gate::Ry(theta), q);
     }
 
     /// Rotates around the Z axis by `theta` radians (exp(-iθZ/2)), changing only the phase.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `theta` is NaN or infinite, since such an angle would make the simulated state NaN and cannot be written as OpenQASM.
     pub fn rz(&mut self, q: &mut Qubit, theta: f64) {
+        check_angle("rz", theta);
         self.gate(Gate::Rz(theta), q);
     }
 
@@ -686,6 +701,14 @@ pub fn shot_seed(seed: u64, shot: u64) -> u64 {
 }
 
 // Shared-reference controls can alias; OpenQASM rejects a gate with a repeated qubit.
+// NaN/inf would make every amplitude NaN and print `rx(NaN)`, which OpenQASM cannot parse.
+fn check_angle(gate: &str, theta: f64) {
+    assert!(
+        theta.is_finite(),
+        "the rotation angle of {gate} must be finite, got {theta}"
+    );
+}
+
 fn check_distinct_controls(a: usize, b: usize) {
     assert_ne!(a, b, "the two control qubits of ccx must be distinct");
 }

@@ -452,6 +452,13 @@ impl<'p> Interp<'p> {
                     Value::Double(v) => v,
                     _ => return Err(internal(args[1].span)),
                 };
+                if !theta.is_finite() {
+                    return Err(Diagnostic::new(
+                        Code::NonFiniteAngle,
+                        args[1].span,
+                        msg::non_finite_angle(n, theta),
+                    ));
+                }
                 let [q] = self.qubits([i], span, n)?;
                 match n {
                     "rx" => c.rx(q, theta),

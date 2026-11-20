@@ -310,6 +310,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::InvalidCast => "only `int` and `double` can be cast to each other, such as `(int) x` or `(double) n`".into(),
         Code::BorrowedConsume => "add `consume` before the parameter type, such as `void f(consume Qubit q)`, to take ownership and become responsible for measuring or discarding it".into(),
         Code::ConditionalCall => "a function called inside an `if` on a measurement result may only apply gates and `reset` to borrowed qubits, so it cannot allocate, measure, discard, print, take a `consume` parameter, or return a qubit; call it before or after the `if`".into(),
+        Code::NonFiniteAngle => "check the arithmetic computing the angle, such as division by zero".into(),
         Code::AsIntTooWide => "print it with `to_binary()` or as an array using a plain placeholder instead".into(),
         Code::UnknownPackage => "declare the dependency by running `qxide add <package>`, which edits `qxide.toml`".into(),
         Code::PrivateFunction => "add `public` before the function declaration, e.g. `public void prepare(Qubit q)`".into(),
@@ -337,6 +338,10 @@ pub fn void_variable() -> String {
 
 pub fn unknown_method(name: &str, ty: &str) -> String {
     format!("no method named `{name}` found for type `{ty}`")
+}
+
+pub fn non_finite_angle(gate: &str, value: f64) -> String {
+    format!("rotation angle for `{gate}` must be a finite number, got {value}")
 }
 
 pub fn as_int_too_wide(len: usize) -> String {

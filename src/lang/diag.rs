@@ -97,6 +97,7 @@ codes! {
     NegativeSize => "Q0408",
     TooManyQubits => "Q0409",
     AsIntTooWide => "Q0410",
+    NonFiniteAngle => "Q0411",
     UnknownPackage => "Q0501",
     ModuleNotFound => "Q0502",
     UnknownImport => "Q0503",
