@@ -3,7 +3,7 @@ import {Fragment, useState, type ReactNode} from 'react';
 
 const RUST_KEYWORDS = new Set(['use', 'fn', 'let', 'mut', 'for', 'in', 'as', 'if', 'else', 'move', 'pub', 'struct', 'impl']);
 const QX_KEYWORDS = new Set([
-  'void', 'int', 'double', 'boolean', 'final', 'for', 'in', 'if', 'else', 'return', 'true', 'false',
+  'void', 'int', 'double', 'boolean', 'final', 'var', 'consume', 'for', 'in', 'if', 'else', 'return', 'true', 'false',
 ]);
 
 // Minimal highlighter for Rust and .qx: comments, strings, keywords and capitalised types. Enough for the short snippets here.

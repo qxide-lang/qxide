@@ -79,7 +79,13 @@ export function Layout() {
   const paperRef = useRef<HTMLDivElement>(null);
   useMotion(paperRef, pathname);
   useEffect(() => {
-    const target = hash ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
+    let id = hash.slice(1);
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // Malformed escapes (e.g. a hand-edited playground link) are not an element id.
+    }
+    const target = id ? document.getElementById(id) : null;
     if (target) target.scrollIntoView();
     else window.scrollTo(0, 0);
   }, [pathname, hash]);

@@ -4,8 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "npm run build:wasm && vite",
+    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "test:parity": "npm run build:wasm && node scripts/parity.mjs",
     "preview": "vite preview",
     "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },

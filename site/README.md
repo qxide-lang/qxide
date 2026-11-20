@@ -16,9 +16,15 @@ Run all commands inside `site/`:
 
 - `npm install` — Install dependencies
 - `npm run dev` — Start the Vite dev server (`http://localhost:5173`)
-- `npm run build` — Run `tsc --noEmit` then `vite build` (output directory: `dist/`)
+- `npm run build` — Run `build:wasm`, then `tsc --noEmit`, then `vite build` (output directory: `dist/`)
+- `npm run build:wasm` — Build `crates/qxide-wasm` with `cargo` for `wasm32-unknown-unknown` (cargo profile `wasm`), copy it to `src/playground/generated/qxide.wasm`, and print its size; `npm run dev` and `npm run build` run it first
+- `npm run test:parity` — Build the wasm module and the release `qxide` binary and check that every `examples/qx` program and a set of error cases give byte-identical stdout, stderr, and exit codes in both
 - `npm run preview` — Serve `dist/` locally
 - `npm run astryx -- <cmd>` — Run the Astryx CLI (e.g., `component Button`, `template --list`, `doctor --built dist`)
+
+## Playground engine
+
+The `/playground` page runs the `qxide` `.qx` interpreter compiled to WebAssembly in a Web Worker. Building it needs Rust (`cargo`) plus the `wasm32-unknown-unknown` target, installed once with `rustup target add wasm32-unknown-unknown`. The generated module is git-ignored; because the Pages project is deployed by direct upload, the machine that runs `npm run build` needs that toolchain, and a Git-connected Cloudflare build image would need it too. The module is about 260 KB (about 100 KB gzip), far below the 25 MiB per-file limit of Cloudflare Pages. Browser limits (20 state-vector qubits, 100,000 shots, 30 s per run) are defined in `crates/qxide-wasm/src/lib.rs` and `src/playground/client.ts`.
 
 ## Deploy to Cloudflare Pages
 

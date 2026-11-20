@@ -1,5 +1,6 @@
 node_modules/
 dist/
+src/playground/generated/
 *.tsbuildinfo
 .env
 .env.*
