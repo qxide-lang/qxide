@@ -75,6 +75,8 @@ const errorCases = {
   'div_zero.qx': 'void main() {\n    int z = 0;\n    println("{}", 1 / z);\n}\n',
   'deep.qx': `void main() {\n    int a = ${'('.repeat(300)}1${')'.repeat(300)};\n}\n`,
   'tab.qx': 'void main() {\n\tint a = c;\n}\n',
+  // 2^32 + 1 must not wrap to one qubit on wasm32, where `usize` is 32 bits.
+  'qreg_2p32.qx': 'void main() {\n    QReg r = qreg(4294967297);\n    discard(r);\n}\n',
 };
 for (const [name, src] of Object.entries(errorCases)) {
   const path = write(name, src);

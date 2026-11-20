@@ -158,6 +158,15 @@ fn fmt_keeps_literal_spelling_bom_and_crlf() {
     );
 }
 
+// A CRLF file may contain a raw line break inside a string literal; it must stay `\r\n`.
+#[test]
+fn fmt_keeps_crlf_line_breaks_inside_strings() {
+    let src = "void main() {\r\n    println(\"a\r\nb\");\r\n}\r\n";
+    assert_eq!(fmt_ok(src), src);
+    let messy = "void main() {\r\n  println(\"a\r\nb\");\r\n}\r\n";
+    assert_eq!(fmt_ok(messy), src);
+}
+
 #[test]
 fn fmt_refuses_sources_that_do_not_parse() {
     let Err(Failure(d)) = format("t.qx", "void main() {\n    int x = ;\n}\n") else {

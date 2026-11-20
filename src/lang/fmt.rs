@@ -34,11 +34,25 @@ pub fn format(src: &str) -> Result<String, Vec<Diagnostic>> {
     parser::parse(toks.clone()).map_err(|d| vec![d])?;
     let out = Printer::new(body, &toks).run(&comments);
     let out = if body.contains("\r\n") {
-        out.replace('\n', "\r\n")
+        crlf(&out)
     } else {
         out
     };
     Ok(format!("{bom}{out}"))
+}
+
+// LF -> CRLF, leaving existing `\r\n` (such as a line break inside a string literal) alone.
+fn crlf(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 16);
+    let mut prev = '\0';
+    for c in text.chars() {
+        if c == '\n' && prev != '\r' {
+            out.push('\r');
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
 }
 
 /// Token kinds and comment texts, the parts of a program that formatting must not change.

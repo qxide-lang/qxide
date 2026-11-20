@@ -606,7 +606,8 @@ impl Checker {
                 true
             }
             Stmt::Expr(e) => {
-                if self.expr(e).is_quantum() {
+                // Naming an existing qubit (`q;`, `r[0];`) is a no-op; only a new allocation leaks.
+                if self.expr(e).is_quantum() && self.place_key(e).is_none() {
                     self.err(Code::TempDropped, e.span, msg::temp_dropped());
                 }
                 false

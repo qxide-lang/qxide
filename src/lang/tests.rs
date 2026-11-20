@@ -241,6 +241,9 @@ fn unbound_quantum_temporaries_are_rejected() {
         codes(&main_body("Qubit q = qreg(2)[1]; discard(q);")),
         ["Q0312"]
     );
+    // A statement that only names an existing qubit neither allocates nor consumes anything.
+    ok(&main_body("Qubit q = qubit();\nq;\nh(q);\ndiscard(q);"));
+    ok(&main_body("QReg r = qreg(2);\nr;\nr[1];\ndiscard(r);"));
     // Reading a register variable is fine.
     ok(&main_body(
         "QReg r = qreg(3); int n = len(r); h(r[n - 1]); discard(r);",
@@ -394,6 +397,14 @@ fn runtime_errors_have_positions() {
         )),
         ("Q0410", 3, 15)
     );
+    // Sizes beyond `usize` on 32-bit targets (the wasm playground) must not wrap around.
+    for n in ["4294967296", "4294967297", "9223372036854775807"] {
+        assert_eq!(
+            runtime_error(&main_body(&format!("QReg r = qreg({n});\ndiscard(r);"))).0,
+            "Q0409",
+            "{n}"
+        );
+    }
     // NaN or ±inf would poison the whole state vector (every outcome 0) and print `rx(NaN)`.
     for angle in ["0.0 / 0.0", "1.0 / 0.0", "-1.0 / 0.0", "1e308 * 10.0"] {
         for gate in ["rx", "ry", "rz"] {
@@ -406,6 +417,23 @@ fn runtime_errors_have_positions() {
             assert!(qasm("t.qx", &main_body(&body)).is_err(), "{gate}({angle})");
         }
     }
+}
+
+// `int.MIN % -1` is 0 (as in Java); only `int.MIN / -1` overflows.
+#[test]
+fn remainder_of_min_by_minus_one_is_zero() {
+    let min = "int a = -9223372036854775807 - 1;";
+    assert_eq!(
+        run_ok(
+            &main_body(&format!("{min}\nprintln(\"{{}} {{}}\", a % -1, a % 1);")),
+            1
+        ),
+        "0 0\n"
+    );
+    assert_eq!(
+        runtime_error(&main_body(&format!("{min}\nint b = a / -1;"))).0,
+        "Q0401"
+    );
 }
 
 // `[0, 1, 1]` lists r[0] first; `0b110` and `as_int() == 6` read r[0] as the least significant bit.

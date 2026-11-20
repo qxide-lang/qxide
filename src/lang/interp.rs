@@ -364,7 +364,9 @@ impl<'p> Interp<'p> {
                         msg::negative_size(k),
                     ));
                 }
-                Ok(Value::QReg(self.alloc(c, k as usize, span)?))
+                // `as usize` would wrap sizes of 2^32 and above on 32-bit targets (wasm).
+                let n = usize::try_from(k).unwrap_or(usize::MAX);
+                Ok(Value::QReg(self.alloc(c, n, span)?))
             }
             "cx" => {
                 let [a, b] = [self.place(c, f, &args[0])?, self.place(c, f, &args[1])?];
@@ -591,7 +593,8 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
                 return Err(Diagnostic::new(Code::DivByZero, at, msg::div_by_zero()))
             }
             Div => Value::Int(a.checked_div(b).ok_or_else(overflow)?),
-            Rem => Value::Int(a.checked_rem(b).ok_or_else(overflow)?),
+            // `int.MIN % -1` is 0, as in Java; `checked_rem` would call it an overflow.
+            Rem => Value::Int(a.wrapping_rem(b)),
             Eq => Value::Bool(a == b),
             Ne => Value::Bool(a != b),
             Lt => Value::Bool(a < b),
