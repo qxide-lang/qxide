@@ -247,6 +247,31 @@ fn checksums_are_enforced() {
 }
 
 #[test]
+fn build_metadata_versions_are_never_published_or_selected() {
+    let env = Env::new("buildmeta");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let evil = env.package("bell-utils", Some("0.1.0+evil"));
+    env.fails(&evil, &["publish"], "Q0614");
+    // A look-alike line appended by hand, with another checksum.
+    let index = env.registry.join("index/be/ll/bell-utils");
+    let original = read(&index);
+    let cksum = original.split("\"cksum\":\"").nth(1).unwrap()[..64].to_string();
+    let fake = "f".repeat(64);
+    let line = original
+        .trim_end()
+        .replace(&cksum, &fake)
+        .replace("\"vers\":\"0.1.0\"", "\"vers\":\"0.1.0+evil\"");
+    std::fs::write(&index, format!("{original}{line}\n")).unwrap();
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils@=0.1.0"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock.contains(&format!("sha256:{cksum}")), "{lock}");
+    assert!(!lock.contains("+evil"), "{lock}");
+    env.ok(&app, &["run"]);
+}
+
+#[test]
 fn failed_add_restores_manifest_and_lock() {
     let env = Env::new("rollback");
     let lib = env.package("bell-utils", None);

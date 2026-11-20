@@ -120,6 +120,71 @@ fn index_entries_round_trip() {
     assert!(Entry::parse(&line.replace("bell-utils", "Bell")).is_err());
 }
 
+// A directory registry holding one index file with these lines.
+fn dir_registry(dir: &Path, name: &str, lines: &[String]) -> index::Registry {
+    let file = dir.join("registry").join(index::index_path(name));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+    let home = cache::Home {
+        root: dir.join("home"),
+    };
+    let reg = dir.join("registry").display().to_string();
+    index::Registry::open(Some(&reg), false, home).unwrap()
+}
+
+#[test]
+fn index_lines_the_client_cannot_use_are_skipped() {
+    let good = entry("evil", "1.0.0", &[]);
+    let newer = entry("evil", "1.1.0", &[]);
+    let line = good.to_json();
+    let with = |extra: &str| line.replacen('{', &format!("{{{extra},"), 1);
+    let mut twin = good.clone();
+    twin.cksum = sha256_hex(b"twin");
+    let bad = [
+        // Build metadata ties with `1.0.0` in precedence.
+        entry("evil", "1.0.0+evil", &[]).to_json(),
+        line.replace("\"1.0.0\"", "\"1.0.99999999999999999999\""),
+        line.replace("\"1.0.0\"", "\"1.0.1-01\""),
+        entry("evil", "1.0.2", &[("other", "^1")])
+            .to_json()
+            .replace("^1", "not a req"),
+        with("\"qxide\":\"bogus!\""),
+        with("\"qxide\":99"),
+        with("\"dl\":5"),
+        with("\"description\":[]"),
+        line.replace("\"deps\":[]", "\"deps\":{}"),
+        "not json".to_string(),
+        entry("other", "1.0.3", &[]).to_json(),
+    ];
+    for b in &bad[..bad.len() - 1] {
+        assert!(Entry::parse(b).is_err(), "{b}");
+    }
+    let mut lines = vec![line.clone()];
+    lines.extend(bad.iter().cloned());
+    // A second line for a published version is ignored: the first one wins.
+    lines.push(twin.to_json());
+    lines.push(newer.to_json());
+    let dir = tmp_dir("skip");
+    let reg = dir_registry(&dir, "evil", &lines);
+    assert_eq!(reg.entries("evil").unwrap(), [good.clone(), newer]);
+    // `=1.0.0` resolves to the original line, never to a look-alike.
+    let mut reg = reg;
+    let lock = Resolver::new(
+        &root("evil = \"=1.0.0\"\n"),
+        None,
+        &mut reg,
+        URL,
+        Version::new(0, 6, 0),
+    )
+    .resolve()
+    .unwrap();
+    assert_eq!(lock.get("evil").unwrap().checksum, Some(good.cksum));
+    // An index without a single usable line is malformed, not missing.
+    let dir = tmp_dir("allbad");
+    let reg = dir_registry(&dir, "evil", &bad[..2]);
+    assert_eq!(reg.entries("evil").unwrap_err().code, Code::InvalidIndex);
+}
+
 #[test]
 fn manifests_parse_and_validate() {
     let m = root("a = \"0.1\"\nb = { version = \"1\", path = \"../b\" }\nc = { path = \"c\" }\n");
@@ -484,4 +549,30 @@ fn installs_verify_the_checksum_first() {
     assert!(path.join("src/sub/x.qx").is_file());
     assert_eq!(home.installed("r", "demo", &v, &cksum), Some(path));
     assert!(home.cached_archive("r", "demo", &v, &cksum).is_some());
+}
+
+// Shared with ci/test_registry_scripts.py, so the registry checker accepts exactly what we parse.
+const SEMVER_CASES: &str = include_str!("../../tests/data/semver_cases.json");
+
+#[test]
+fn semver_cases_match_the_registry_checker() {
+    let cases: serde_json::Value = serde_json::from_str(SEMVER_CASES).unwrap();
+    let list = |k: &str| -> Vec<(String, bool)> {
+        cases[k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c[0].as_str().unwrap().into(), c[1].as_bool().unwrap()))
+            .collect()
+    };
+    let cksum = sha256_hex(b"x");
+    for (text, ok) in list("versions") {
+        let line = serde_json::json!({"name": "a", "vers": text, "deps": [], "cksum": cksum});
+        assert_eq!(Entry::parse(&line.to_string()).is_ok(), ok, "vers {text:?}");
+    }
+    for (text, ok) in list("reqs") {
+        let dep = serde_json::json!([{"name": "b", "req": text}]);
+        let line = serde_json::json!({"name": "a", "vers": "1.0.0", "deps": dep, "cksum": cksum, "qxide": text});
+        assert_eq!(Entry::parse(&line.to_string()).is_ok(), ok, "req {text:?}");
+    }
 }
