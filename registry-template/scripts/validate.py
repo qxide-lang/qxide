@@ -253,8 +253,14 @@ def main() -> int:
                 for other in names:
                     if other != name and squash(other) == squash(name) and base_lines(args.base, f"index/{prefix(other)}/{other}"):
                         error(rel, f"`{name}` is too similar to the existing package `{other}`")
-        for line in git("diff", "--name-status", f"{args.base}...HEAD").splitlines():
-            status, *paths = line.split("\t")
+        diff = [l.split("\t") for l in git("diff", "--name-status", f"{args.base}...HEAD").splitlines()]
+        touched = [p for _, *paths in diff for p in paths]
+        # Publishing and yanking pull requests change registry data only, never scripts or workflows.
+        if any(p.startswith(("index/", "packages/")) for p in touched):
+            for p in touched:
+                if not p.startswith(("index/", "packages/")):
+                    error(p, "a pull request that changes index/ or packages/ may not change other files")
+        for status, *paths in diff:
             for p in paths:
                 if p.startswith("packages/") and status[0] in "MDR":
                     error(p, "published archives cannot be modified or deleted")

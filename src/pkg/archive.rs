@@ -69,11 +69,10 @@ pub fn pack(m: &Manifest) -> Result<(Vec<u8>, Vec<String>)> {
     let mut tar = tar::Builder::new(gz);
     for (rel, path) in &files {
         let mut data = std::fs::read(path).map_err(|e| Error::io(path, &e))?;
-        // Archives are byte-for-byte the same on every OS: text files use `\n`.
-        if rel.ends_with(".qx") || rel == MANIFEST {
-            data = String::from_utf8_lossy(&data)
-                .replace("\r\n", "\n")
-                .into_bytes();
+        // Archives are byte-for-byte the same on every OS: text files (every shipped file that is
+        // valid UTF-8) use `\n`.
+        if let Ok(text) = std::str::from_utf8(&data) {
+            data = text.replace("\r\n", "\n").into_bytes();
         }
         let mut h = tar::Header::new_gnu();
         h.set_size(data.len() as u64);

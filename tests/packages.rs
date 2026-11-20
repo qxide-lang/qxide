@@ -247,6 +247,55 @@ fn checksums_are_enforced() {
 }
 
 #[test]
+fn failed_add_restores_manifest_and_lock() {
+    let env = Env::new("rollback");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils@0.1"]);
+    let (manifest, lock) = (read(&app.join("qxide.toml")), read(&app.join("qxide.lock")));
+    // 0.2.0 resolves, so the manifest and lock get rewritten, but its archive is corrupt.
+    let newer = env.package("bell-utils", Some("0.2.0"));
+    env.ok(&newer, &["publish"]);
+    let archive = env
+        .registry
+        .join("packages/be/ll/bell-utils/bell-utils-0.2.0.tar.gz");
+    let mut bytes = std::fs::read(&archive).unwrap();
+    bytes[10] ^= 0xff;
+    std::fs::write(&archive, bytes).unwrap();
+    env.fails(&app, &["add", "bell-utils@0.2"], "Q0607");
+    assert_eq!(read(&app.join("qxide.toml")), manifest);
+    assert_eq!(read(&app.join("qxide.lock")), lock);
+    env.ok(&app, &["run"]);
+    // Without an earlier lock, a failed add leaves no lock behind.
+    let fresh = env.app("fresh", BELL_MAIN);
+    let before = read(&fresh.join("qxide.toml"));
+    env.fails(&fresh, &["add", "bell-utils@0.2"], "Q0607");
+    assert_eq!(read(&fresh.join("qxide.toml")), before);
+    assert!(!fresh.join("qxide.lock").exists());
+}
+
+#[test]
+fn file_url_registries_work() {
+    let env = Env::new("fileurl");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let path = env.registry.display().to_string().replace('\\', "/");
+    let url = if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    };
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils", "--registry", &url]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock.contains("source = \"registry+file:///"), "{lock}");
+    env.ok(&app, &["run"]);
+    // The lock records the same canonical URL whether the registry was given as a path or a URL.
+    env.ok(&app, &["install", "--locked"]);
+}
+
+#[test]
 fn missing_packages_and_versions() {
     let env = Env::new("missing");
     let lib = env.package("bell-utils", None);

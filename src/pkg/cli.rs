@@ -162,21 +162,50 @@ fn add(o: &Opts) -> Result<()> {
         ));
     }
     let mut registry = open_registry(o)?;
+    // Both files are restored byte for byte if anything below fails.
+    let manifest_file = root.dir.join(manifest::FILE);
+    let lock_file = root.dir.join(lock::FILE);
+    let saved_manifest =
+        std::fs::read(&manifest_file).map_err(|e| Error::io(&manifest_file, &e))?;
+    let saved_lock = std::fs::read(&lock_file).ok();
+    let result = add_and_install(o, &root, &name, req, req_text, &mut registry);
+    if result.is_err() {
+        let _ = std::fs::write(&manifest_file, &saved_manifest);
+        match &saved_lock {
+            Some(bytes) => {
+                let _ = std::fs::write(&lock_file, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&lock_file);
+            }
+        }
+    }
+    result
+}
+
+fn add_and_install(
+    o: &Opts,
+    root: &Manifest,
+    name: &str,
+    req: Option<VersionReq>,
+    req_text: Option<String>,
+    registry: &mut Registry,
+) -> Result<()> {
     if let Some(path) = &o.path {
         let dep = manifest::load(&root.dir.join(path))?;
         if dep.name != name {
             return Err(Error::new(
                 Code::InvalidManifest,
-                msg::path_dep_wrong_name(path, &name, &dep.name),
+                msg::path_dep_wrong_name(path, name, &dep.name),
             ));
         }
-        manifest::add_dependency(&root.dir, &name, req_text.as_deref(), Some(path))?;
+        manifest::add_dependency(&root.dir, name, req_text.as_deref(), Some(path))?;
         status(
             msg::verb_adding(),
             &format!("{name} v{} ({path})", dep.version),
         );
     } else {
-        let entries = registry.entries(&name)?;
+        let entries = registry.entries(name)?;
         let lang = language_version();
         let req = req.unwrap_or(VersionReq::STAR);
         let best = entries
@@ -187,26 +216,18 @@ fn add(o: &Opts) -> Result<()> {
             .ok_or_else(|| {
                 Error::new(
                     Code::NoMatchingVersion,
-                    msg::no_matching_version(&name, &req.to_string()),
+                    msg::no_matching_version(name, &req.to_string()),
                 )
             })?;
         // Like Cargo: a bare version means a caret requirement (`0.1.0` = `^0.1.0`).
         let written = req_text.unwrap_or_else(|| best.vers.to_string());
-        manifest::add_dependency(&root.dir, &name, Some(&written), None)?;
+        manifest::add_dependency(&root.dir, name, Some(&written), None)?;
         status(msg::verb_adding(), &format!("{name} v{}", best.vers));
     }
     let root = manifest::load(&root.dir)?;
-    match project::install(&root, &mut registry, false) {
-        Ok((_, installed)) => {
-            report(&installed);
-            Ok(())
-        }
-        Err(e) => {
-            // Leave the manifest as it was when the new dependency cannot be installed.
-            let _ = manifest::remove_dependency(&root.dir, &name);
-            Err(e)
-        }
-    }
+    let (_, installed) = project::install(&root, registry, false)?;
+    report(&installed);
+    Ok(())
 }
 
 fn remove(o: &Opts) -> Result<()> {
@@ -294,16 +315,26 @@ fn check_library(m: &Manifest) -> Result<()> {
     let src = std::fs::read_to_string(&lib).map_err(|e| Error::io(&lib, &e))?;
     let project = project::for_entry(&lib)?;
     let name = lib.display().to_string();
-    let input = crate::lang::Input {
-        name: &name,
-        src: &src,
-        project: project.as_ref(),
-        read: &crate::lang::read_file,
-    };
-    crate::lang::check_input(&input).map_err(|crate::lang::Failure(d)| {
-        eprint!("{d}");
-        reject(msg::reason_check_failed())
-    })
+    // Same large stack as `qxide check`, so deep nesting ends in a diagnostic, not a crash.
+    let worker = std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(move || {
+            let input = crate::lang::Input {
+                name: &name,
+                src: &src,
+                project: project.as_ref(),
+                read: &crate::lang::read_file,
+            };
+            crate::lang::check_input(&input)
+        });
+    match worker.map(|h| h.join()) {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(crate::lang::Failure(d)))) => {
+            eprint!("{d}");
+            Err(reject(msg::reason_check_failed()))
+        }
+        _ => Err(reject(msg::reason_check_failed())),
+    }
 }
 
 fn publish(o: &Opts) -> Result<()> {
@@ -467,7 +498,9 @@ fn open_pull_request(entry: &Entry, bytes: &[u8]) -> Result<()> {
     ));
     let _ = std::fs::remove_dir_all(&work);
     run(Command::new("gh")
+        // `--no-upstream`: the `upstream` remote is added explicitly below.
         .args(["repo", "clone", &format!("{user}/registry")])
+        .arg("--no-upstream")
         .arg(&work)
         .args(["--", "--depth", "1"]))?;
     let git = |args: &[&str]| {

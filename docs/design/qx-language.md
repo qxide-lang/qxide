@@ -111,11 +111,12 @@ void main() {
 }
 ```
 
-다음은 MVP 문법의 EBNF 정의다. 연산자 우선순위는 낮은 순서에서 높은 순서로 `||`, `&&`, 비교 연산자(비결합), `+ -`, `* / %`, 단항 `- !` 및 캐스트 `(type) expr`, 인덱싱 순이다. 범위 연산자 `..`는 `for` 헤더에서만 허용된다. 문자열 리터럴(`\n`, `\t`, `\\`, `\"` 이스케이프와 리터럴 중괄호용 `{{`/`}}` 지원)은 `println`의 첫 번째 인자로만 사용할 수 있다. `var`와 `consume`은 정식 키워드이며, `PI`는 내장 `double` 상수 식별자다. 타입 이름(`int`, `double`, `boolean`, `void`, `Bit`, `BitReg`, `Qubit`, `QReg`)은 식별자로 사용할 수 없다(`Q0112`). 향후 확장을 위해 예약된 키워드 `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, `apply`는 사용 시 오류로 거부한다.
+다음은 MVP 문법의 EBNF 정의다. 연산자 우선순위는 낮은 순서에서 높은 순서로 `||`, `&&`, 비교 연산자(비결합), `+ -`, `* / %`, 단항 `- !` 및 캐스트 `(type) expr`, 인덱싱 순이다. 범위 연산자 `..`는 `for` 헤더에서만 허용된다. 문자열 리터럴(`\n`, `\t`, `\\`, `\"` 이스케이프와 리터럴 중괄호용 `{{`/`}}` 지원)은 `println`의 첫 번째 인자로만 사용할 수 있다. `var`, `consume`, `import`, `public`은 정식 키워드이며(패키지 시스템의 `import`와 `public` 문법은 `qx-packages.md` 참고), `PI`는 내장 `double` 상수 식별자다. 타입 이름(`int`, `double`, `boolean`, `void`, `Bit`, `BitReg`, `Qubit`, `QReg`)은 식별자로 사용할 수 없다(`Q0112`). 향후 확장을 위해 예약된 키워드 `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, `apply`는 사용 시 오류로 거부한다.
 
 ```ebnf
-program    = { fn_decl } ;
-fn_decl    = type IDENT "(" [ param { "," param } ] ")" block ;   (* type may be "void" *)
+program    = { import } { fn_decl } ;                          (* imports: qx-packages.md *)
+import     = "import" IDENT { "." IDENT } ( "." IDENT | "." "*" ) ";" ;
+fn_decl    = [ "public" ] type IDENT "(" [ param { "," param } ] ")" block ;   (* type may be "void" *)
 param      = [ "consume" ] type IDENT ;                      (* "consume" only on Qubit / QReg *)
 type       = "int" | "double" | "boolean" | "void" | "Bit" | "BitReg" | "Qubit" | "QReg" ;
 block      = "{" { stmt } "}" ;
