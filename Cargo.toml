@@ -9,6 +9,8 @@ homepage = "https://qxide.dev"
 readme = "README.md"
 keywords = ["quantum", "qubit", "openqasm", "simulator"]
 categories = ["science", "simulation"]
+# Keep the website, brand assets, CI files and design docs out of the published crate.
+include = ["/src/**", "/tests/**", "/examples/**", "/README.md", "/README.ko.md", "/CHANGELOG.md", "/LICENSE-*", "/Cargo.lock"]
 
 [features]
 # GPU state-vector backend (prototype). Pulls in CubeCL + wgpu, so it is off by default.

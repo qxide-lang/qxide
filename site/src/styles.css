@@ -14,7 +14,9 @@
   --paper-ink: #16161a;
   --paper-muted: #55555e;
   --paper-line: #d9d5ca;
-  --paper-accent: #b93a15;
+  --paper-accent: #0e8a8a; /* fills, lines, decoration, large text */
+  --paper-accent-text: #0b6e6e; /* body-size text and text on accent fills (>= 4.5:1) */
+  --paper-accent-dark: #3cc8c4; /* on dark backgrounds */
   --paper-code-bg: #16161a;
   --paper-code-ink: #f1eee6;
   --paper-panel: #ffffff;
@@ -76,7 +78,7 @@
   height: 1.625rem;
 }
 .brand .dot {
-  color: var(--paper-accent);
+  color: var(--paper-accent-text);
 }
 .nav {
   display: flex;
@@ -151,8 +153,8 @@
   color: var(--paper-bg) !important;
 }
 .pill-solid:hover {
-  background: var(--paper-accent);
-  border-color: var(--paper-accent);
+  background: var(--paper-accent-text);
+  border-color: var(--paper-accent-text);
 }
 .pill-line:hover {
   background: var(--paper-ink);
@@ -209,7 +211,7 @@
   padding-bottom: 0.25rem;
 }
 .cmd .prompt {
-  color: #ff9e7a;
+  color: var(--paper-accent-dark);
   user-select: none;
 }
 .copy {
@@ -281,8 +283,8 @@
   font-size: 0.875rem;
   line-height: 1.7;
 }
-.tk-kw { color: #ff9e7a; }
-.tk-ty { color: #8fd0c0; }
+.tk-kw { color: var(--paper-accent-dark); }
+.tk-ty { color: #c4b5f4; }
 .tk-cm { color: #a8a59b; }
 .result-panel {
   padding: 0 0 1rem;
@@ -359,7 +361,7 @@
   font-family: var(--font-mono);
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--paper-accent);
+  color: var(--paper-accent-text);
 }
 .feature h2 {
   margin: 0.5rem 0 0.75rem;

@@ -148,6 +148,10 @@
 //!     },
 //! );
 //! ```
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/qxide-lang/qxide/main/assets/brand/png/qxide-icon-512.png",
+    html_favicon_url = "https://raw.githubusercontent.com/qxide-lang/qxide/main/assets/brand/png/qxide-icon-32.png"
+)]
 
 #[cfg(feature = "gpu")]
 mod gpu;
