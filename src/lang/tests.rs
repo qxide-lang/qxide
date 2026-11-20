@@ -6,6 +6,8 @@ use super::*;
 const BELL: &str = include_str!("../../examples/qx/bell.qx");
 const GHZ: &str = include_str!("../../examples/qx/ghz.qx");
 const TELEPORT: &str = include_str!("../../examples/qx/teleport.qx");
+const FUNCTIONS: &str = include_str!("../../examples/qx/functions.qx");
+const ROTATION: &str = include_str!("../../examples/qx/rotation.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -73,7 +75,7 @@ fn table(out: &str) -> Vec<(String, u64, Vec<String>)> {
 
 #[test]
 fn examples_and_doc_samples_pass_the_checker() {
-    for src in [BELL, GHZ, TELEPORT] {
+    for src in [BELL, GHZ, TELEPORT, FUNCTIONS, ROTATION] {
         ok(src);
     }
     ok("boolean parity(int n) {\n    return n % 2 == 1;\n}\n\nvoid main() {\n    int total = 0;\n    for i in 0..10 {\n        if parity(i) {\n            total = total + i;\n        }\n    }\n    println(\"total={}\", total);\n}\n");
@@ -335,7 +337,12 @@ fn types_and_names() {
     assert_eq!(codes("void helper() {}"), ["Q0206"]);
     assert_eq!(codes("void main(int x) {}"), ["Q0206"]);
     assert_eq!(codes("void h() {}\nvoid main() {}"), ["Q0217"]);
-    assert_eq!(codes("void f(Qubit q) {}\nvoid main() {}"), ["Q0219"]);
+    // Qubit parameters are supported (borrowed by default); quantum return types are not yet.
+    ok("void f(Qubit q) {}\nvoid main() {}");
+    assert_eq!(
+        codes("Qubit f() {\n    return qubit();\n}\nvoid main() {}"),
+        ["Q0219"]
+    );
     assert_eq!(
         codes("int f() { if true { return 1; } }\nvoid main() {}"),
         ["Q0213"]
@@ -563,6 +570,9 @@ fn diagnostics_are_english_with_help_lines() {
         main_body("QReg r = qreg(200000);\nBitReg m = measure(r);\nprintln(\"{}\", m);"),
         main_body("BitReg m = measure(qreg(65));\nprintln(\"{}\", m.as_int());"),
         "int f(int n) {\n    return f(n + 1);\n}\nvoid main() {\n    int x = f(0);\n}\n".to_string(),
+        "void f(Qubit q) {\n    discard(q);\n}\nvoid main() {}\n".to_string(),
+        "void f(consume int n, var x) {}\nvoid main() {}\n".to_string(),
+        main_body("var q = qubit();\nboolean b = (boolean) 1;\ndouble PI = 1.0;"),
     ];
     for src in &samples {
         let d = rendered(src);
@@ -580,4 +590,225 @@ fn diagnostics_are_english_with_help_lines() {
         d.contains("error[Q0406]") && d.contains("16.0 GiB") && d.contains("\nhelp: "),
         "{d}"
     );
+}
+
+const BELL_PAIR: &str = "void bellPair(Qubit a, Qubit b) {\n    h(a);\n    cx(a, b);\n}\n\n";
+const SINK: &str = "void sink(consume Qubit q) {\n    discard(q);\n}\n\n";
+
+#[test]
+fn qubit_parameters_are_borrowed_by_default() {
+    let src = format!("{BELL_PAIR}void main() {{\n    Qubit a = qubit();\n    Qubit b = qubit();\n    bellPair(a, b);\n    Bit ma = measure(a);\n    Bit mb = measure(b);\n    println(\"a={{}} b={{}}\", ma, mb);\n}}\n");
+    // A borrowed call lowers to the same circuit as writing the gates inline.
+    assert_eq!(
+        qasm("t.qx", &src).ok().unwrap(),
+        qasm("t.qx", BELL).ok().unwrap()
+    );
+    let rows = table(&run_ok(&src, 200));
+    assert_eq!(rows.len(), 2);
+    for (bits, _, lines) in &rows {
+        let want = if bits.starts_with("[0, 0]") {
+            "a=0 b=0"
+        } else {
+            "a=1 b=1"
+        };
+        assert_eq!(lines, &[want.to_string()], "{bits}");
+    }
+    // Whole registers and register elements can be borrowed, also through nested calls.
+    let reg = format!("{BELL_PAIR}void flipAll(QReg r) {{\n    for i in 0..len(r) {{\n        x(r[i]);\n    }}\n}}\n\nvoid twice(QReg r) {{\n    flipAll(r);\n    flipAll(r);\n    x(r[1]);\n}}\n\nvoid main() {{\n    QReg r = qreg(3);\n    twice(r);\n    flipAll(r);\n    BitReg m = measure(r);\n    println(\"{{}}\", m);\n}}\n");
+    assert_eq!(run_ok(&reg, 1), "[1, 0, 1]\n");
+    // A `return` in a function with borrowed parameters does not leak them.
+    ok("void f(Qubit q) {\n    if true {\n        return;\n    }\n    h(q);\n}\nvoid main() {}\n");
+}
+
+#[test]
+fn borrowed_parameters_cannot_be_consumed() {
+    let measured = "void f(Qubit q) {\n    Bit m = measure(q);\n}\nvoid main() {}\n";
+    assert_eq!(errors(measured), vec![("Q0313", 2, 21)]);
+    let discarded = "void f(QReg r) {\n    discard(r);\n}\nvoid main() {}\n";
+    assert_eq!(errors(discarded), vec![("Q0313", 2, 13)]);
+    let moved = "void f(Qubit q) {\n    Qubit p = q;\n    discard(p);\n}\nvoid main() {}\n";
+    assert_eq!(errors(moved), vec![("Q0313", 2, 15)]);
+    // Passing a borrowed qubit on to a `consume` parameter would consume it too.
+    let passed = format!("{SINK}void f(Qubit q) {{\n    sink(q);\n}}\nvoid main() {{}}\n");
+    assert_eq!(errors(&passed), vec![("Q0313", 6, 10)]);
+    let d = rendered(measured);
+    assert!(
+        d.contains("error[Q0313]") && d.contains("\nnote: ") && d.contains("consume Qubit q"),
+        "{d}"
+    );
+}
+
+#[test]
+fn consume_parameters_transfer_ownership() {
+    let src = "void measureAll(consume QReg r) {\n    BitReg m = measure(r);\n    println(\"{}\", m);\n}\n\nvoid main() {\n    QReg r = qreg(2);\n    x(r[0]);\n    measureAll(r);\n}\n";
+    assert_eq!(run_ok(src, 1), "[1, 0]\n");
+    // A fresh value can be handed over directly.
+    ok("void sink(consume QReg r) {\n    discard(r);\n}\nvoid main() {\n    sink(qreg(2));\n}\n");
+    // The callee must measure or discard what it consumes, on every path.
+    let kept = "void keep(consume Qubit q) {\n    h(q);\n}\nvoid main() {}\n";
+    assert_eq!(errors(kept), vec![("Q0302", 1, 25)]);
+    let early = "void keep(consume Qubit q) {\n    if true {\n        return;\n    }\n    discard(q);\n}\nvoid main() {}\n";
+    assert_eq!(errors(early), vec![("Q0302", 1, 25)]);
+    // The caller cannot use it afterwards, nor hand it over inside a loop.
+    let after =
+        format!("{SINK}void main() {{\n    Qubit q = qubit();\n    sink(q);\n    h(q);\n}}\n");
+    assert_eq!(errors(&after), vec![("Q0301", 8, 7)]);
+    let looped = format!("{SINK}void main() {{\n    Qubit q = qubit();\n    for i in 0..2 {{\n        sink(q);\n    }}\n}}\n");
+    assert_eq!(codes(&looped), ["Q0302", "Q0305"]);
+    assert_eq!(codes("void f(consume int n) {}\nvoid main() {}"), ["Q0221"]);
+    // Moving one element out of a register is still a partial move.
+    let partial = format!(
+        "{SINK}void main() {{\n    QReg r = qreg(2);\n    sink(r[0]);\n    discard(r);\n}}\n"
+    );
+    assert_eq!(codes(&partial), ["Q0306"]);
+}
+
+#[test]
+fn quantum_arguments_must_not_alias() {
+    let main = |body: &str| format!("{BELL_PAIR}void main() {{\n{body}\n}}\n");
+    assert_eq!(
+        errors(&main("Qubit a = qubit();\nbellPair(a, a);\ndiscard(a);")),
+        vec![("Q0303", 8, 13)]
+    );
+    ok(&main(
+        "QReg r = qreg(2);\nbellPair(r[0], r[1]);\ndiscard(r);",
+    ));
+    assert_eq!(
+        codes(&main(
+            "QReg r = qreg(2);\nbellPair(r[1], r[1]);\ndiscard(r);"
+        )),
+        ["Q0303"]
+    );
+    // A whole register overlaps each of its elements.
+    let whole = "void g(QReg r, Qubit q) {}\nvoid main() {\n    QReg r = qreg(2);\n    g(r, r[0]);\n    discard(r);\n}\n";
+    assert_eq!(codes(whole), ["Q0303"]);
+    // Borrowing and consuming the same qubit in one call is rejected once.
+    let mixed = "void g(Qubit a, consume Qubit b) {\n    discard(b);\n}\nvoid main() {\n    Qubit q = qubit();\n    g(q, q);\n}\n";
+    assert_eq!(codes(mixed), ["Q0303"]);
+    // Run-time indices are checked when the call runs.
+    let dynamic = main("QReg r = qreg(2);\nint i = 1;\nbellPair(r[i], r[1]);\ndiscard(r);");
+    assert_eq!(runtime_error(&dynamic), ("Q0303", 9, 1));
+    // Borrowed arguments must be variables or register elements of the right type.
+    assert_eq!(
+        codes(&main(
+            "Qubit b = qubit();\nbellPair(qubit(), b);\ndiscard(b);"
+        )),
+        ["Q0311"]
+    );
+    assert_eq!(
+        codes(&main(
+            "QReg r = qreg(2);\nQubit b = qubit();\nbellPair(r, b);\ndiscard(r);\ndiscard(b);"
+        )),
+        ["Q0204"]
+    );
+}
+
+#[test]
+fn var_infers_classical_local_types() {
+    let src = main_body("var n = 3;\nvar t = 0.5;\nvar big = n > 2;\nfinal var k = n * 2;\nvar d = 1.0;\nd = 2;\nprintln(\"{} {} {} {} {}\", n, t, big, k, d);");
+    assert_eq!(run_ok(&src, 1), "3 0.5 true 6 2.0\n");
+    // The inferred type is fixed afterwards.
+    assert_eq!(codes(&main_body("var n = 1;\nn = 2.5;")), ["Q0204"]);
+    assert_eq!(codes(&main_body("final var k = 1;\nk = 2;")), ["Q0207"]);
+    // Quantum values, measurement results and `void` need an explicit type.
+    assert_eq!(
+        errors(&main_body("var q = qubit();")),
+        vec![("Q0222", 2, 1)]
+    );
+    assert_eq!(
+        codes(&main_body("Qubit q = qubit();\nvar m = measure(q);")),
+        ["Q0222"]
+    );
+    assert_eq!(
+        codes(&main_body(
+            "BitReg m = measure(qreg(2));\nvar v = m.as_int();"
+        )),
+        ["Q0222"]
+    );
+    assert_eq!(codes(&main_body("var v = println(\"\");")), ["Q0222"]);
+    // `var` is for local variables with an initializer only.
+    assert_eq!(codes("void f(var x) {}\nvoid main() {}"), ["Q0111"]);
+    assert_eq!(
+        codes("var f() {\n    return 1;\n}\nvoid main() {}"),
+        ["Q0111"]
+    );
+    assert_eq!(codes(&main_body("var x;")), ["Q0105"]);
+}
+
+#[test]
+fn casts_between_int_and_double() {
+    let src = main_body("double x = 2.9;\nint n = 7;\nprintln(\"{} {} {} {} {} {} {} {}\", (int) x, (int) -x, -(int) x, (double) n / 2, (int) x * 2, (int) (x * 2), (int) 3, (double) 1.5);");
+    assert_eq!(run_ok(&src, 1), "2 -2 -2 3.5 4 5 3 1.5\n");
+    // Java's rules: NaN becomes 0, out-of-range values saturate (2^63 does too).
+    let edge = main_body("double z = 0.0;\nprintln(\"{} {} {} {}\", (int) (z / z), (int) 1e300, (int) -1e300, (int) 9223372036854775807.0);");
+    assert_eq!(
+        run_ok(&edge, 1),
+        format!("0 {} {} {}\n", i64::MAX, i64::MIN, i64::MAX)
+    );
+    assert_eq!(codes(&main_body("boolean b = (boolean) 1;")), ["Q0223"]);
+    assert_eq!(codes(&main_body("int n = (int) true;")), ["Q0223"]);
+    assert_eq!(
+        codes(&main_body(
+            "Qubit q = qubit();\nint n = (int) q;\ndiscard(q);"
+        )),
+        ["Q0223"]
+    );
+    assert_eq!(
+        codes(&main_body(
+            "Qubit q = qubit();\nBit m = measure(q);\nint n = (int) m;"
+        )),
+        ["Q0218"]
+    );
+    // Type names cannot name values, so `(int) x` is always a cast.
+    assert_eq!(codes(&main_body("int int = 1;")), ["Q0112"]);
+    assert_eq!(codes("void f(double double) {}\nvoid main() {}"), ["Q0112"]);
+    assert_eq!(
+        codes("int Qubit() {\n    return 1;\n}\nvoid main() {}"),
+        ["Q0112"]
+    );
+    assert_eq!(codes(&main_body("for int in 0..3 {}")), ["Q0112"]);
+    let deep = main_body(&format!("int x = {}1;", "(int) ".repeat(500)));
+    assert_eq!(codes(&deep), ["Q0106"]);
+}
+
+#[test]
+fn pi_is_a_builtin_double_constant() {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    assert_eq!(
+        run_ok(&main_body("println(\"{} {}\", PI, PI / 2);"), 1),
+        format!("{PI:?} {FRAC_PI_2:?}\n")
+    );
+    let src = main_body("Qubit q = qubit();\nrz(q, PI);\nBit m = measure(q);");
+    let q = qasm("t.qx", &src).ok().unwrap();
+    assert!(q.contains(&format!("rz({PI:?}) q[0];")), "{q}");
+    assert_eq!(codes(&main_body("double PI = 3.0;")), ["Q0217"]);
+    assert_eq!(codes("void f(double PI) {}\nvoid main() {}"), ["Q0217"]);
+    assert_eq!(
+        codes("double PI() {\n    return 3.0;\n}\nvoid main() {}"),
+        ["Q0217"]
+    );
+    assert_eq!(codes(&main_body("for PI in 0..2 {}")), ["Q0217"]);
+    assert_eq!(codes(&main_body("PI = 3.0;")), ["Q0207"]);
+    let d = rendered(&main_body("double PI = 3.0;"));
+    assert!(
+        d.contains("\nhelp: ") && d.contains("PI") && !d.contains("function"),
+        "{d}"
+    );
+    // Assigning to `PI` suggests a local variable, not removing `final`.
+    let d = rendered(&main_body("PI = 3.0;"));
+    assert!(
+        d.contains("\nhelp: ") && d.contains("double angle = PI;") && !d.contains("final"),
+        "{d}"
+    );
+}
+
+#[test]
+fn new_examples_run() {
+    let rows = table(&run_ok(FUNCTIONS, 200));
+    let mut heads: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    heads.sort_unstable();
+    assert_eq!(heads, ["[0, 0]  0b00 = 0", "[1, 1]  0b11 = 3"]);
+    assert_eq!(run_ok(ROTATION, 1), "ry total 90 degrees (90.0), m=0\n");
+    let q = qasm("t.qx", ROTATION).ok().unwrap();
+    assert_eq!(q.matches("ry(").count(), 4, "{q}");
 }

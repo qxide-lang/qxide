@@ -135,7 +135,7 @@ pub fn bit_at_build_time(ty: &str) -> String {
 }
 
 pub fn quantum_signature() -> String {
-    "functions taking or returning `Qubit` or `QReg` are not yet supported".into()
+    "functions returning `Qubit` or `QReg` are not yet supported".into()
 }
 
 pub fn use_after_consume(name: &str) -> String {
@@ -275,6 +275,12 @@ pub fn help(code: Code) -> Option<String> {
         Code::RecursionLimit => "check for recursion without a base case".into(),
         Code::RemovedSyntax => "declare variables like `int x = 1;` or `Qubit q = qubit();`, functions like `void main()` or `int add(int a, int b)`, and use `final` for constants".into(),
         Code::UnknownMethod => "use `to_binary()` or `as_int()`, the available methods on `BitReg` values".into(),
+        Code::VarNotAllowed => "write the type explicitly, such as `int n` or `double theta`".into(),
+        Code::TypeNameAsIdent => "choose a different name".into(),
+        Code::ConsumeNonQuantum => "remove `consume`; classical values are always copied".into(),
+        Code::VarInfer => "use `var` only for `int`, `double`, and `boolean` values; otherwise write the type explicitly, such as `Qubit q = qubit();` or `Bit m = measure(q);`".into(),
+        Code::InvalidCast => "only `int` and `double` can be cast to each other, such as `(int) x` or `(double) n`".into(),
+        Code::BorrowedConsume => "add `consume` before the parameter type, such as `void f(consume Qubit q)`, to take ownership and become responsible for measuring or discarding it".into(),
         Code::AsIntTooWide => "print it with `to_binary()` or as an array using a plain placeholder instead".into(),
         _ => return None,
     })
@@ -298,4 +304,57 @@ pub fn unknown_method(name: &str, ty: &str) -> String {
 
 pub fn as_int_too_wide(len: usize) -> String {
     format!("method `as_int()` supports at most 64 bits, but the register has {len}")
+}
+
+pub fn var_not_allowed() -> String {
+    "cannot use `var` as a parameter or return type; it is only allowed in local variable declarations".into()
+}
+
+pub fn type_name_as_ident(name: &str) -> String {
+    format!("cannot use type name `{name}` as an identifier")
+}
+
+pub fn consume_non_quantum(ty: &str) -> String {
+    format!("cannot use `consume` on classical parameter type `{ty}`; it applies only to `Qubit` or `QReg`")
+}
+
+pub fn var_infer(ty: &str) -> String {
+    format!("cannot use `var` with type `{ty}`")
+}
+
+pub fn invalid_cast(from: &str, to: &str) -> String {
+    format!("cannot cast `{from}` to `{to}`")
+}
+
+pub fn borrowed_consume(name: &str) -> String {
+    format!("cannot consume borrowed parameter `{name}`")
+}
+
+pub fn note_borrowed_here() -> String {
+    "borrowed here without `consume`".into()
+}
+
+pub fn borrow_place_required() -> String {
+    "borrowed quantum argument must be a `Qubit` or `QReg` variable or register element such as `r[i]`".into()
+}
+
+pub fn constant_redefined(name: &str) -> String {
+    format!("cannot declare `{name}`; it is a built-in constant")
+}
+
+pub fn constant_assign(name: &str) -> String {
+    format!("cannot assign to built-in constant `{name}`")
+}
+
+pub fn help_constant_assign() -> String {
+    "declare a local variable instead, such as `double angle = PI;`, and modify that variable"
+        .into()
+}
+
+pub fn help_constant_redefined() -> String {
+    "choose another name because `PI` always refers to the built-in constant".into()
+}
+
+pub fn help_borrow_temp() -> String {
+    "store the qubit in a variable first (e.g., `Qubit q = qubit();`), pass `q`, and measure or discard it after the call".into()
 }

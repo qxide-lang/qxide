@@ -86,6 +86,8 @@ pub struct FnDecl {
 
 #[derive(Debug, Clone)]
 pub struct Param {
+    // Span of the `consume` keyword: the function takes ownership of the qubit(s).
+    pub consume: Option<Span>,
     pub name: Ident,
     pub ty: Ty,
     pub ty_span: Span,
@@ -102,7 +104,8 @@ pub struct Block {
 pub enum Stmt {
     Decl {
         is_final: bool,
-        ty: Ty,
+        // `None` for `var`: inferred from the initializer (classical types only).
+        ty: Option<Ty>,
         ty_span: Span,
         name: Ident,
         init: Expr,
@@ -194,6 +197,10 @@ pub enum ExprKind {
     },
     Unary {
         op: UnOp,
+        expr: Box<Expr>,
+    },
+    Cast {
+        ty: Ty,
         expr: Box<Expr>,
     },
     Binary {

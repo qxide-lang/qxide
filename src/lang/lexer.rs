@@ -12,6 +12,8 @@ pub enum Tok {
     Str(String),
     // Keywords
     Final,
+    Var,
+    Consume,
     If,
     Else,
     For,
@@ -56,6 +58,8 @@ impl Tok {
         use Tok::*;
         Some(match self {
             Final => "final",
+            Var => "var",
+            Consume => "consume",
             If => "if",
             Else => "else",
             For => "for",
@@ -170,6 +174,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diagnostic> {
             }
             match word {
                 "final" => Tok::Final,
+                "var" => Tok::Var,
+                "consume" => Tok::Consume,
                 "if" => Tok::If,
                 "else" => Tok::Else,
                 "for" => Tok::For,
@@ -364,6 +370,15 @@ mod tests {
                 Tok::Int(0),
                 Tok::DotDot,
                 Tok::Int(3),
+                Tok::Eof
+            ]
+        );
+        assert_eq!(
+            toks("var consume variable"),
+            vec![
+                Tok::Var,
+                Tok::Consume,
+                Tok::Ident("variable".into()),
                 Tok::Eof
             ]
         );

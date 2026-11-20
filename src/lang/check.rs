@@ -16,6 +16,13 @@ pub const ONE_QUBIT_OPS: &[&str] = &["h", "x", "z", "s", "sdg", "t", "tdg", "res
 
 pub const ROTATIONS: &[&str] = &["rx", "ry", "rz"];
 
+// Built-in `double` constants; their names cannot be declared or assigned.
+pub const CONSTANTS: &[(&str, f64)] = &[("PI", std::f64::consts::PI)];
+
+pub fn constant(name: &str) -> Option<f64> {
+    CONSTANTS.iter().find(|(n, _)| *n == name).map(|&(_, v)| v)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Live,
@@ -30,10 +37,13 @@ struct Var {
     state: State,
     // Number of enclosing `if`-on-`Bit` bodies at the declaration.
     bit_if_depth: usize,
+    // A quantum parameter without `consume`: usable by gates, never consumed by the callee.
+    borrowed: Option<Span>,
 }
 
 struct Sig {
-    params: Vec<Ty>,
+    // (type, `consume`)
+    params: Vec<(Ty, bool)>,
     ret: Ty,
 }
 
@@ -89,13 +99,28 @@ impl Checker {
                 );
                 continue;
             }
+            if constant(name).is_some() {
+                self.err(
+                    Code::BuiltinRedefined,
+                    f.name.span,
+                    msg::constant_redefined(name),
+                )
+                .help = Some(msg::help_constant_redefined());
+                continue;
+            }
             if self.fns.contains_key(name) {
                 self.err(Code::Duplicate, f.name.span, msg::duplicate_def(name));
                 continue;
             }
             for p in &f.params {
-                if p.ty.is_quantum() {
-                    self.err(Code::QuantumSignature, p.ty_span, msg::quantum_signature());
+                if let Some(at) = p.consume {
+                    if !p.ty.is_quantum() {
+                        self.err(
+                            Code::ConsumeNonQuantum,
+                            at,
+                            msg::consume_non_quantum(p.ty.name()),
+                        );
+                    }
                 }
             }
             if f.ret.is_quantum() {
@@ -107,7 +132,11 @@ impl Checker {
             self.fns.insert(
                 name.clone(),
                 Sig {
-                    params: f.params.iter().map(|p| p.ty).collect(),
+                    params: f
+                        .params
+                        .iter()
+                        .map(|p| (p.ty, p.consume.is_some() && p.ty.is_quantum()))
+                        .collect(),
                     ret: f.ret,
                 },
             );
@@ -142,14 +171,27 @@ impl Checker {
             if p.ty == Ty::Void {
                 self.err(Code::TypeMismatch, p.ty_span, msg::void_variable());
             }
-            let ty = if p.ty.is_quantum() || p.ty == Ty::Void {
-                Ty::Error
-            } else {
-                p.ty
-            };
+            let ty = if p.ty == Ty::Void { Ty::Error } else { p.ty };
             self.declare(&p.name, ty, true);
+            if ty.is_quantum() && p.consume.is_none() {
+                self.vars.last_mut().unwrap().borrowed = Some(p.name.span);
+            }
         }
         let diverges = self.block(&f.body);
+        if !diverges {
+            // `consume` parameters live in the outermost scope, which `block` does not check.
+            let leaked: Vec<usize> = self.scopes[0]
+                .iter()
+                .copied()
+                .filter(|&id| self.owned_live(id))
+                .collect();
+            for id in leaked {
+                let (decl, name) = (self.vars[id].decl, self.vars[id].name.clone());
+                self.err(Code::NeverConsumed, decl, msg::never_consumed(&name))
+                    .notes
+                    .push(note(f.body.close, msg::note_scope_ends()));
+            }
+        }
         if !diverges && !matches!(f.ret, Ty::Void | Ty::Error) {
             self.err(
                 Code::MissingReturn,
@@ -159,7 +201,33 @@ impl Checker {
         }
     }
 
+    // A quantum variable this function owns and has not consumed yet.
+    fn owned_live(&self, id: usize) -> bool {
+        let v = &self.vars[id];
+        v.ty.is_quantum() && v.state == State::Live && v.borrowed.is_none()
+    }
+
+    // Reports consuming a borrowed parameter; the variable stays live so errors do not cascade.
+    fn borrowed_consumed(&mut self, id: usize, at: Span) -> bool {
+        let Some(param) = self.vars[id].borrowed else {
+            return false;
+        };
+        let name = self.vars[id].name.clone();
+        self.err(Code::BorrowedConsume, at, msg::borrowed_consume(&name))
+            .notes
+            .push(note(param, msg::note_borrowed_here()));
+        true
+    }
+
     fn declare(&mut self, name: &Ident, ty: Ty, mutable: bool) {
+        if constant(&name.name).is_some() {
+            self.err(
+                Code::BuiltinRedefined,
+                name.span,
+                msg::constant_redefined(&name.name),
+            )
+            .help = Some(msg::help_constant_redefined());
+        }
         self.vars.push(Var {
             name: name.name.clone(),
             ty,
@@ -167,6 +235,7 @@ impl Checker {
             decl: name.span,
             state: State::Live,
             bit_if_depth: self.bit_ifs.len(),
+            borrowed: None,
         });
         let id = self.vars.len() - 1;
         self.scopes.last_mut().unwrap().push(id);
@@ -201,9 +270,8 @@ impl Checker {
         let scope = self.scopes.pop().unwrap();
         if !diverges {
             for id in scope {
-                let v = &self.vars[id];
-                if v.ty.is_quantum() && v.state == State::Live {
-                    let (decl, name) = (v.decl, v.name.clone());
+                if self.owned_live(id) {
+                    let (decl, name) = (self.vars[id].decl, self.vars[id].name.clone());
                     self.err(Code::NeverConsumed, decl, msg::never_consumed(&name))
                         .notes
                         .push(note(b.close, msg::note_scope_ends()));
@@ -223,15 +291,25 @@ impl Checker {
                 init,
             } => {
                 let found = self.let_init(init);
-                let var_ty = if *ty == Ty::Void {
-                    self.err(Code::TypeMismatch, *ty_span, msg::void_variable());
-                    Ty::Error
-                } else if ty.is_quantum() && found == Ty::Error {
+                let var_ty = match *ty {
+                    // `var` infers classical types only; quantum and per-shot values need a type.
+                    None => match found {
+                        Ty::Int | Ty::Double | Ty::Boolean | Ty::Error => found,
+                        other => {
+                            self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
+                            Ty::Error
+                        }
+                    },
+                    Some(Ty::Void) => {
+                        self.err(Code::TypeMismatch, *ty_span, msg::void_variable());
+                        Ty::Error
+                    }
                     // The initializer was already rejected; do not also report a leak.
-                    Ty::Error
-                } else {
-                    self.expect_ty(init.span, *ty, found);
-                    *ty
+                    Some(t) if t.is_quantum() && found == Ty::Error => Ty::Error,
+                    Some(t) => {
+                        self.expect_ty(init.span, t, found);
+                        t
+                    }
                 };
                 if var_ty.is_quantum() && !self.bit_ifs.is_empty() {
                     let at = *self.bit_ifs.last().unwrap();
@@ -261,7 +339,16 @@ impl Checker {
             Stmt::Assign { name, value } => {
                 let found = self.expr(value);
                 let Some(id) = self.lookup(&name.name) else {
-                    self.err(Code::UnknownVar, name.span, msg::unknown_var(&name.name));
+                    if constant(&name.name).is_some() {
+                        self.err(
+                            Code::ImmutableAssign,
+                            name.span,
+                            msg::constant_assign(&name.name),
+                        )
+                        .help = Some(msg::help_constant_assign());
+                    } else {
+                        self.err(Code::UnknownVar, name.span, msg::unknown_var(&name.name));
+                    }
                     return false;
                 };
                 let (ty, mutable, depth) = {
@@ -356,10 +443,7 @@ impl Checker {
                     .iter()
                     .flatten()
                     .copied()
-                    .filter(|&id| {
-                        let v = &self.vars[id];
-                        v.ty.is_quantum() && v.state == State::Live
-                    })
+                    .filter(|&id| self.owned_live(id))
                     .collect();
                 for id in live {
                     let (decl, name) = (self.vars[id].decl, self.vars[id].name.clone());
@@ -451,6 +535,9 @@ impl Checker {
                 if let Some(id) = self.lookup(name) {
                     if self.vars[id].ty.is_quantum() {
                         self.use_var(id, init.span);
+                        if self.borrowed_consumed(id, init.span) {
+                            return Ty::Error;
+                        }
                         self.vars[id].state = State::Consumed(init.span);
                         return self.vars[id].ty;
                     }
@@ -548,6 +635,7 @@ impl Checker {
                     }
                     self.vars[id].ty
                 }
+                None if constant(name).is_some() => Ty::Double,
                 None => {
                     self.err(Code::UnknownVar, e.span, msg::unknown_var(name));
                     Ty::Error
@@ -584,6 +672,29 @@ impl Checker {
                             Code::UnknownMethod,
                             name.span,
                             msg::unknown_method(&name.name, t.name()),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
+            ExprKind::Cast { ty, expr } => {
+                let t = self.expr(expr);
+                match (t, ty) {
+                    (_, Ty::Int | Ty::Double) if t.is_numeric() || t == Ty::Error => *ty,
+                    (Ty::Error, _) => Ty::Error,
+                    _ if t.is_shot_time() => {
+                        self.err(
+                            Code::BitAtBuildTime,
+                            expr.span,
+                            msg::bit_at_build_time(t.name()),
+                        );
+                        Ty::Error
+                    }
+                    _ => {
+                        self.err(
+                            Code::InvalidCast,
+                            e.span,
+                            msg::invalid_cast(t.name(), ty.name()),
                         );
                         Ty::Error
                     }
@@ -666,10 +777,34 @@ impl Checker {
         let (params, ret) = (sig.params.clone(), sig.ret);
         self.forbid_in_bit_if(span, &format!("{n}()"));
         if self.arity(name, args, params.len(), span) {
-            for (a, want) in args.iter().zip(params) {
-                let t = self.expr(a);
-                let want = if want.is_quantum() { Ty::Error } else { want };
-                self.expect_ty(a.span, want, t);
+            // Quantum arguments already passed, as (argument index, place).
+            let mut passed: Vec<(usize, (usize, Idx))> = Vec::new();
+            for (j, (a, (want, consume))) in args.iter().zip(params).enumerate() {
+                if !want.is_quantum() {
+                    let t = self.expr(a);
+                    self.expect_ty(a.span, want, t);
+                    continue;
+                }
+                if let Some(key) = self.place_key(a) {
+                    if let Some(&(i, _)) = passed.iter().find(|(_, k)| overlaps(*k, key)) {
+                        self.err(Code::DuplicateQubit, a.span, msg::duplicate_qubit(n))
+                            .notes
+                            .push(note(args[i].span, msg::note_first_use()));
+                        // Already reported; treat a handed-over variable as moved so it does not
+                        // also leak.
+                        if consume && key.1 == Idx::Whole && self.vars[key.0].borrowed.is_none() {
+                            self.vars[key.0].state = State::Consumed(span);
+                        }
+                        continue;
+                    }
+                    passed.push((j, key));
+                }
+                if consume {
+                    let t = self.consume(a, span, want);
+                    self.expect_ty(a.span, want, t);
+                } else {
+                    self.borrow(a, want);
+                }
             }
         }
         if ret.is_quantum() {
@@ -702,7 +837,7 @@ impl Checker {
                     for j in 0..places.len() {
                         for i in 0..j {
                             if let (Some(a), Some(b)) = (places[i], places[j]) {
-                                if same_place(a, b) {
+                                if overlaps(a, b) {
                                     self.err(
                                         Code::DuplicateQubit,
                                         args[j].span,
@@ -722,7 +857,7 @@ impl Checker {
                 if !self.arity(name, args, 1, span) {
                     return if n == "measure" { Ty::Error } else { Ty::Void };
                 }
-                let t = self.consume(&args[0], span);
+                let t = self.consume(&args[0], span, Ty::Qubit);
                 match (n, t) {
                     ("discard", _) => Ty::Void,
                     (_, Ty::Qubit) => Ty::Bit,
@@ -837,14 +972,68 @@ impl Checker {
         None
     }
 
-    // A consumed operand of `measure`/`discard`: a whole `Qubit`/`QReg` variable or a fresh value.
-    fn consume(&mut self, e: &Expr, call: Span) -> Ty {
+    // Argument for a borrowed parameter: a `Qubit`/`QReg` variable or a register element.
+    fn borrow(&mut self, e: &Expr, want: Ty) {
+        match &e.kind {
+            ExprKind::Var(name) => {
+                if let Some(id) = self.lookup(name) {
+                    let t = self.vars[id].ty;
+                    if t.is_quantum() {
+                        self.use_var(id, e.span);
+                        self.expect_ty(e.span, want, t);
+                        return;
+                    }
+                }
+            }
+            ExprKind::Index { base, .. } if want == Ty::Qubit && self.is_qreg_var(base) => {
+                self.place(e);
+                return;
+            }
+            _ => {}
+        }
+        let t = self.expr(e);
+        if t == want {
+            // A fresh qubit lent to a function would never be measured or discarded.
+            self.err(Code::PlaceRequired, e.span, msg::borrow_place_required())
+                .help = Some(msg::help_borrow_temp());
+        } else {
+            self.expect_ty(e.span, want, t);
+        }
+    }
+
+    // The variable and element a quantum argument refers to, without side effects.
+    fn place_key(&self, e: &Expr) -> Option<(usize, Idx)> {
+        match &e.kind {
+            ExprKind::Var(n) => self
+                .lookup(n)
+                .filter(|&id| self.vars[id].ty.is_quantum())
+                .map(|id| (id, Idx::Whole)),
+            ExprKind::Index { base, index } => {
+                let ExprKind::Var(n) = &base.kind else {
+                    return None;
+                };
+                let id = self.lookup(n).filter(|&id| self.vars[id].ty == Ty::QReg)?;
+                let idx = match index.kind {
+                    ExprKind::Int(k) => Idx::Lit(k),
+                    _ => Idx::Dynamic,
+                };
+                Some((id, idx))
+            }
+            _ => None,
+        }
+    }
+
+    // A consumed operand of `measure`/`discard` or a `consume` argument: a whole `Qubit`/`QReg`
+    // variable or a fresh value. `want` is the type reported for a classical operand.
+    fn consume(&mut self, e: &Expr, call: Span, want: Ty) -> Ty {
         match &e.kind {
             ExprKind::Var(name) => {
                 if let Some(id) = self.lookup(name) {
                     if self.vars[id].ty.is_quantum() {
                         self.use_var(id, e.span);
-                        self.vars[id].state = State::Consumed(call);
+                        if !self.borrowed_consumed(id, e.span) {
+                            self.vars[id].state = State::Consumed(call);
+                        }
                         return self.vars[id].ty;
                     }
                 }
@@ -858,17 +1047,19 @@ impl Checker {
         }
         let t = self.expr(e);
         if !t.is_quantum() && t != Ty::Error {
-            self.expect_ty(e.span, Ty::Qubit, t);
+            self.expect_ty(e.span, want, t);
             return Ty::Error;
         }
         t
     }
 }
 
-fn same_place(a: (usize, Idx), b: (usize, Idx)) -> bool {
+// Whether two operands can be the same qubit: a whole variable overlaps any of its elements;
+// dynamic indices are left to the runtime check.
+fn overlaps(a: (usize, Idx), b: (usize, Idx)) -> bool {
     a.0 == b.0
         && match (a.1, b.1) {
-            (Idx::Whole, Idx::Whole) => true,
+            (Idx::Whole, _) | (_, Idx::Whole) => true,
             (Idx::Lit(x), Idx::Lit(y)) => x == y,
             _ => false,
         }

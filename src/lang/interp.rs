@@ -194,7 +194,13 @@ impl<'p> Interp<'p> {
         match s {
             Stmt::Decl { name, init, ty, .. } => {
                 let v = self.expr(c, f, init)?;
-                f.bind(&name.name, v, *ty);
+                // `var` is classical only, so the runtime value determines the slot type.
+                let ty = ty.unwrap_or(match v {
+                    Value::Double(_) => Ty::Double,
+                    Value::Bool(_) => Ty::Boolean,
+                    _ => Ty::Int,
+                });
+                f.bind(&name.name, v, ty);
             }
             Stmt::Assign { name, value } => {
                 let v = self.expr(c, f, value)?;
@@ -275,7 +281,10 @@ impl<'p> Interp<'p> {
             ExprKind::Double(v) => Value::Double(*v),
             ExprKind::Bool(b) => Value::Bool(*b),
             ExprKind::Str(_) => return Err(internal(e.span)),
-            ExprKind::Var(name) => f.get(name, e.span)?,
+            ExprKind::Var(name) => match super::check::constant(name) {
+                Some(v) => Value::Double(v),
+                None => f.get(name, e.span)?,
+            },
             ExprKind::Call { name, args } => return self.call(c, f, name, args, e.span),
             ExprKind::Index { base, index } => {
                 let b = self.expr(c, f, base)?;
@@ -304,6 +313,14 @@ impl<'p> Interp<'p> {
                     _ => return Err(internal(e.span)),
                 }
             }
+            ExprKind::Cast { ty, expr } => match (ty, self.expr(c, f, expr)?) {
+                (Ty::Int, Value::Int(n)) => Value::Int(n),
+                // Java's `(long)` rule, which `as` matches: toward zero, NaN -> 0, saturating.
+                (Ty::Int, Value::Double(v)) => Value::Int(v as i64),
+                (Ty::Double, Value::Int(n)) => Value::Double(n as f64),
+                (Ty::Double, Value::Double(v)) => Value::Double(v),
+                _ => return Err(internal(e.span)),
+            },
             ExprKind::Unary { op, expr } => match (op, self.expr(c, f, expr)?) {
                 (UnOp::Neg, Value::Int(n)) => Value::Int(
                     n.checked_neg()
@@ -465,6 +482,23 @@ impl<'p> Interp<'p> {
                 let mut vals = Vec::with_capacity(args.len());
                 for a in args {
                     vals.push(self.expr(c, f, a)?);
+                }
+                // Register elements with run-time indices may alias; the checker catches the rest.
+                let mut qubits: Vec<usize> = Vec::new();
+                for v in &vals {
+                    match v {
+                        Value::Qubit(i) => qubits.push(*i),
+                        Value::QReg(r) => qubits.extend_from_slice(r),
+                        _ => {}
+                    }
+                }
+                qubits.sort_unstable();
+                if qubits.windows(2).any(|w| w[0] == w[1]) {
+                    return Err(Diagnostic::new(
+                        Code::DuplicateQubit,
+                        span,
+                        msg::duplicate_qubit(n),
+                    ));
                 }
                 self.call_fn(c, func, vals, span)
             }

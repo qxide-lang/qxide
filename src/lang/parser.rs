@@ -87,8 +87,27 @@ impl Parser {
         }
     }
 
+    // Declared names: type names are rejected so that `(int) x` is always a cast.
+    fn name(&mut self) -> PResult<Ident> {
+        let id = self.ident()?;
+        if Ty::from_name(&id.name).is_some() {
+            return Err(Diagnostic::new(
+                Code::TypeNameAsIdent,
+                id.span,
+                msg::type_name_as_ident(&id.name),
+            ));
+        }
+        Ok(id)
+    }
+
     fn ty(&mut self) -> PResult<(Ty, Span)> {
         match self.peek().clone() {
+            // Local declarations handle `var` before calling `ty`.
+            Tok::Var => Err(Diagnostic::new(
+                Code::VarNotAllowed,
+                self.span(),
+                msg::var_not_allowed(),
+            )),
             Tok::Ident(name) => {
                 let span = self.bump().span;
                 match Ty::from_name(&name) {
@@ -116,16 +135,22 @@ impl Parser {
         Ok(())
     }
 
-    // `ReturnType name(Type a, Type b) { ... }`
+    // `ReturnType name(Type a, consume Type b) { ... }`
     fn fn_decl(&mut self) -> PResult<FnDecl> {
         let (ret, ret_span) = self.ty()?;
-        let name = self.ident()?;
+        let name = self.name()?;
         self.expect(Tok::LParen)?;
         let mut params = Vec::new();
         while self.peek() != &Tok::RParen {
+            let consume = if self.peek() == &Tok::Consume {
+                Some(self.bump().span)
+            } else {
+                None
+            };
             let (ty, ty_span) = self.ty()?;
-            let pname = self.ident()?;
+            let pname = self.name()?;
             params.push(Param {
+                consume,
                 name: pname,
                 ty,
                 ty_span,
@@ -152,7 +177,7 @@ impl Parser {
         loop {
             match self.peek() {
                 Tok::RBrace => break,
-                Tok::Final => stmts.push(self.decl()?),
+                Tok::Final | Tok::Var => stmts.push(self.decl()?),
                 // `Type name = ...`: two identifiers in a row start a declaration.
                 Tok::Ident(_) if matches!(self.peek_at(1), Tok::Ident(_)) => {
                     stmts.push(self.decl()?)
@@ -191,11 +216,16 @@ impl Parser {
         Ok(Block { stmts, close })
     }
 
-    // `[final] Type name = init;`
+    // `[final] Type name = init;` or `[final] var name = init;`
     fn decl(&mut self) -> PResult<Stmt> {
         let is_final = self.eat(&Tok::Final);
-        let (ty, ty_span) = self.ty()?;
-        let name = self.ident()?;
+        let (ty, ty_span) = if self.peek() == &Tok::Var {
+            (None, self.bump().span)
+        } else {
+            let (t, s) = self.ty()?;
+            (Some(t), s)
+        };
+        let name = self.name()?;
         self.expect(Tok::Eq)?;
         let init = self.expr()?;
         self.expect(Tok::Semi)?;
@@ -228,7 +258,7 @@ impl Parser {
 
     fn for_stmt(&mut self) -> PResult<Stmt> {
         self.bump();
-        let var = self.ident()?;
+        let var = self.name()?;
         self.expect(Tok::In)?;
         let start = self.expr()?;
         self.expect(Tok::DotDot)?;
@@ -298,7 +328,30 @@ impl Parser {
         }
     }
 
+    // `(Type) expr`: binds like a unary operator, as in Java.
+    fn is_cast(&self) -> bool {
+        self.peek() == &Tok::LParen
+            && matches!(self.peek_at(1), Tok::Ident(n) if Ty::from_name(n).is_some())
+            && self.peek_at(2) == &Tok::RParen
+    }
+
     fn unary(&mut self) -> PResult<Expr> {
+        if self.is_cast() {
+            self.enter()?;
+            let start = self.bump().span;
+            let (ty, _) = self.ty()?;
+            self.bump();
+            let expr = self.unary()?;
+            self.depth -= 1;
+            let span = start.to(expr.span);
+            return Ok(Expr {
+                kind: ExprKind::Cast {
+                    ty,
+                    expr: Box::new(expr),
+                },
+                span,
+            });
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Bang => UnOp::Not,
@@ -478,7 +531,7 @@ mod tests {
             panic!()
         };
         assert!(!is_final);
-        assert_eq!(*ty, Ty::Int);
+        assert_eq!(*ty, Some(Ty::Int));
         let ExprKind::Binary { op, rhs, .. } = &init.kind else {
             panic!()
         };
@@ -498,11 +551,17 @@ mod tests {
             f.body.stmts[0],
             Stmt::Decl {
                 is_final: true,
-                ty: Ty::Double,
+                ty: Some(Ty::Double),
                 ..
             }
         ));
-        assert!(matches!(f.body.stmts[1], Stmt::Decl { ty: Ty::Qubit, .. }));
+        assert!(matches!(
+            f.body.stmts[1],
+            Stmt::Decl {
+                ty: Some(Ty::Qubit),
+                ..
+            }
+        ));
         let Stmt::Expr(call) = &f.body.stmts[3] else {
             panic!()
         };
