@@ -111,35 +111,72 @@ curl -sIL https://qxide.dev/install.sh
 
 ---
 
-## PyPI Distribution (Not Yet Published)
+## PyPI Distribution (GitHub Actions)
 
-### Current State
+### How It Works
 
-- Package name: `qxide`
-- `pyproject.toml` uses `dynamic = ["version"]`, so the wheel version always follows `Cargo.toml` (currently `0.4.0`).
-  - Both `pip show qxide` and `qxide --version` report `0.4.0`.
-- Local verification completed on Windows:
-  - `maturin build --release` produced `qxide-0.4.0-py3-none-win_amd64.whl`.
-  - After installing the wheel into a fresh virtual environment, `pip show qxide` reported `0.4.0` and `qxide --version` printed `qxide 0.4.0`.
-- A locally built wheel only targets the host platform (Windows in the check above). For a real release, build wheels for Linux (`manylinux`), macOS, and Windows using `maturin-action` in CI, along with a source distribution via `maturin sdist`.
+- **Workflow:** `.github/workflows/pypi.yml` (workflow name: `PyPI`).
+- **Package:** `qxide`. `pyproject.toml` uses `maturin` with `bindings = "bin"` and `dynamic = ["version"]`, so the wheel version always equals the `Cargo.toml` version.
+- **Triggers:**
+  1. `release` (`published`) — for releases created by a person.
+  2. `workflow_run` — runs after the `cargo-dist` `Release` workflow completes successfully for a tag push. This is required because `cargo-dist` creates its GitHub Release with `GITHUB_TOKEN`, and GitHub does not start other workflows from events caused by `GITHUB_TOKEN`, so the `release` trigger alone would not fire for normal tag releases.
+  3. `workflow_dispatch` — accepts a `tag` input (default `v0.4.1`) to publish an existing tag manually.
+- **Jobs** (every job checks out the tag itself, not the branch):
+  - `resolve`: verifies that the tag matches `vX.Y.Z` and equals `v` + the `Cargo.toml` version of the tagged commit; fails otherwise.
+  - `wheels`: builds wheels with `PyO3/maturin-action@v1` for Linux `x86_64` and `aarch64` (`manylinux`), macOS `x86_64` and `aarch64`, and Windows `x86_64`.
+  - `sdist`: builds the source distribution.
+  - `publish`: downloads all artifacts and uploads them with `pypa/gh-action-pypi-publish@release/v1` using `password: ${{ secrets.PYPI_API_TOKEN }}`. Runs in the GitHub environment `pypi` with only `contents: read` and `id-token: write` permissions (`id-token: write` is unused for token uploads and is in place for Trusted Publishing).
 
-### Manual Publishing Steps
+### One-Time Setup: Register the Token
 
-1. Create a PyPI account and enable 2FA.
-2. *(Optional)* Test uploading against TestPyPI first:
-   ```sh
-   maturin upload --repository testpypi dist/*
-   ```
-3. Create a PyPI API token:
-   - The first upload for a new package requires an **account-scoped** token.
-   - Once the `qxide` project exists on PyPI, replace it with a **project-scoped** token.
-4. Export the token in your shell (never commit it to the repository):
-   ```sh
-   export MATURIN_PYPI_TOKEN="<token>"
-   ```
-5. Publish the artifacts using one of:
-   - `maturin publish`
-   - `maturin upload target/wheels/*`
-   - `twine upload`
+1. In the GitHub repository, go to **Settings → Secrets and variables → Actions → New repository secret**.
+2. Set **Name** to `PYPI_API_TOKEN` and **Value** to the PyPI API token (starts with `pypi-`). Never commit the token or paste it into issues, logs, or chat.
+3. *(Optional)* The `pypi` environment is created automatically on the first run. To require approval before each upload, add required reviewers under **Settings → Environments → `pypi`**.
 
-> **Warning:** PyPI versions are immutable. A version number cannot be re-uploaded even if the release is deleted.
+### Publish Manually (e.g., Existing `v0.4.1` Tag)
+
+The workflow file must be on the default branch (`main`) before it can be run.
+
+**Web:**
+1. Go to the **Actions** tab → `PyPI` → **Run workflow**.
+2. Keep branch `main`, enter tag `v0.4.1`, and select **Run workflow**.
+
+**CLI:**
+```sh
+gh workflow run pypi.yml -f tag=v0.4.1
+gh run watch
+```
+
+**Verify after success:**
+```sh
+pip install qxide==0.4.1
+qxide --version
+```
+`qxide --version` should print `qxide 0.4.1`.
+
+### Automatic Publishing for Later Releases
+
+1. Bump `Cargo.toml`, tag `vX.Y.Z`, and push the tag (see "Cutting a Release").
+2. After the `Release` workflow succeeds, `PyPI` starts automatically.
+
+### After the First Upload: Tighten Credentials
+
+**Option A: Project-Scoped Token**
+1. On PyPI, create a new API token scoped to the `qxide` project.
+2. In the GitHub repository, go to **Settings → Secrets and variables → Actions → `PYPI_API_TOKEN` → update** and replace the secret value with the new token.
+3. Delete the original account-wide token on PyPI.
+
+**Option B: Trusted Publishing (No Stored Secret)**
+1. On PyPI, open project `qxide` → **Manage → Publishing** and add a GitHub publisher:
+   - Owner: `qxide-lang`
+   - Repository: `qxide`
+   - Workflow filename: `pypi.yml`
+   - Environment: `pypi`
+2. In `.github/workflows/pypi.yml`, delete the `password:` line (and its `with:` block) from the publish step (`id-token: write` is already granted).
+3. Delete the `PYPI_API_TOKEN` secret in GitHub.
+4. Revoke the token on PyPI.
+
+### Notes
+
+- PyPI versions are immutable: a file for a version cannot be uploaded again, even after deletion, so re-running the workflow for an already-published tag fails at upload.
+- Local builds are for testing only: `maturin build --release` produces a wheel for the current platform only; do not upload from a local machine.
