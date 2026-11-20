@@ -1,0 +1,131 @@
+# Build the `qxide` CLI as PyPI wheels (maturin, bindings = "bin") and upload them.
+#
+# Triggers:
+# - release published: releases created by a person (web UI or `gh release create` with a personal token).
+# - workflow_run "Release": cargo-dist creates its release with GITHUB_TOKEN, and GitHub starts no new
+#   workflow runs for events caused by GITHUB_TOKEN, so `release` alone never fires for dist-made releases.
+# - workflow_dispatch: publish an existing tag by hand.
+name: PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and upload (vX.Y.Z)
+        required: true
+        default: v0.4.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.event.release.tag_name || github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # workflow_run: only successful tag pushes of Release (that workflow also runs on pull requests).
+    if: >-
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        shell: bash
+        env:
+          # Passed via env, never interpolated into the script, so tag text cannot inject shell.
+          TAG: ${{ github.event.release.tag_name || github.event.workflow_run.head_branch || inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a release tag: $TAG"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - name: Tag matches Cargo.toml version
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"; exit 1
+          fi
+
+  wheels:
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, manylinux: auto }
+          - { os: ubuntu-latest, target: aarch64, manylinux: auto }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || '' }}
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pypi-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+          persist-credentials: false
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pypi-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/qxide/
+    permissions:
+      contents: read
+      # Unused by token uploads; present so switching to Trusted Publishing needs no permission change.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pypi-*
+          merge-multiple: true
+          path: dist
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
