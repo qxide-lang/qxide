@@ -36,7 +36,7 @@ export function Playground() {
           <li>
             <strong>For the .qx language.</strong> The <code>.qx</code> language shipped in 0.5.0 and runs through the{' '}
             <code>qxide</code> command. The playground would put the same interpreter in a browser tab. See{' '}
-            <Link to="/blog/qxide-0-5-0-the-qx-language">Qxide 0.5.0</Link> for what exists today.
+            <Link to="/blog/qxide-0-6-0-functions-with-qubits">Qxide 0.6.0</Link> for what exists today.
           </li>
         </ul>
         <p>These are goals, not commitments to a date.</p>

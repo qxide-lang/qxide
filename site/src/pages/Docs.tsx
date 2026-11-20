@@ -18,8 +18,26 @@ const REPO_DOCS = [
   {
     path: 'docs/design/qx-language.md',
     title: '.qx language design',
-    desc: 'Goals, syntax, the linear qubit type system, diagnostics, the 0.5.0 Java-style syntax revision and the native-code roadmap.',
+    desc: 'Goals, syntax, the linear qubit type system, diagnostics, the 0.5.0 Java-style syntax revision, qubit parameters and returns, conditional calls, var, casts and PI (sections 13 and 14), and the native-code roadmap.',
     lang: 'Korean',
+  },
+  {
+    path: 'docs/design/qx-ir.md',
+    title: 'Typed IR design draft',
+    desc: 'Design draft of the typed IR planned to replace the tree-walking interpreter and prepare for native code generation; not implemented yet.',
+    lang: 'Korean',
+  },
+  {
+    path: 'CHANGELOG.md',
+    title: 'Change log',
+    desc: 'Per-version list of notable changes across releases, starting with 0.6.0.',
+    lang: 'English',
+  },
+  {
+    path: 'docs/release-notes/v0.6.0.md',
+    title: 'v0.6.0 release notes',
+    desc: 'What changed in 0.6.0: functions with qubit parameters and returns, conditional calls, var, casts, PI, breaking .qx keyword changes, and English Rust library docs.',
+    lang: 'English',
   },
   {
     path: 'docs/release-notes/v0.5.0.md',

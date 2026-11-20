@@ -72,8 +72,7 @@ const TELEPORT_OUT = `$ qxide run examples/qx/teleport.qx --shots 1000
 [1, 1, 1]  0b111 = 7  ×230
   bob=1`;
 
-const BAD = `// use_after_measure.qx
-void main() {
+const BAD = `void main() {
     Qubit q = qubit();
     Bit m = measure(q);
     h(q);
@@ -167,8 +166,7 @@ export function Learn() {
       <header className="page-head">
         <h1>Learn Qxide</h1>
         <p className="lede">
-          A short tutorial for people new to quantum computing. Every snippet is a <code>.qx</code> program (or Rust
-          code, where marked) that exists today, and every output shown was captured by running it with Qxide 0.5.0.
+          A short tutorial for people new to quantum computing. Every snippet is a <code>.qx</code> program (or Rust code, where marked) that exists today, and every output shown was captured by running it with Qxide 0.6.0.
         </p>
       </header>
 
@@ -376,8 +374,7 @@ export function Learn() {
             <Link to="/docs">Docs</Link>: the command line, the language design document and the API reference.
           </li>
           <li>
-            <Link to="/blog/qxide-0-5-0-the-qx-language">Qxide 0.5.0</Link>: what the <code>.qx</code> language
-            release includes.
+            <Link to="/blog/qxide-0-6-0-functions-with-qubits">Qxide 0.6.0</Link>: functions that take and return qubits, conditional calls, <code>var</code>, casts, and <code>PI</code>.
           </li>
         </ul>
       </section>

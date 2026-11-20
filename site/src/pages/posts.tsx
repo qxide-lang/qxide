@@ -12,6 +12,116 @@ export type Post = {
   body: ReactNode;
 };
 
+const RELEASE_060 = `${GITHUB}/releases/tag/v0.6.0`;
+
+const functions060 = `// Qubit parameters are borrowed by default; \`consume\` hands ownership to the callee.
+void bellPair(Qubit a, Qubit b) {
+    h(a);
+    cx(a, b);
+}
+
+void measureAll(consume QReg r) {
+    BitReg m = measure(r);
+    println("{}", m);
+}
+
+void main() {
+    QReg r = qreg(2);
+    bellPair(r[0], r[1]);
+    measureAll(r);
+}`;
+
+const functionsRun060 = `$ qxide run examples/qx/functions.qx --shots 1000
+[0, 0]  0b00 = 0  ×504
+  [0, 0]
+[1, 1]  0b11 = 3  ×496
+  [1, 1]`;
+
+const teleport060 = `// examples/qx/teleport_fn.qx (excerpt)
+void correctX(Qubit q) {
+    x(q);
+}
+
+void correctZ(Qubit q) {
+    z(q);
+}
+
+    // in main, after measuring msg (m0) and alice (m1)
+    if m1 {
+        correctX(bob);
+    }
+    if m0 {
+        correctZ(bob);
+    }`;
+
+const teleportQasm060 = `$ qxide qasm examples/qx/teleport_fn.qx
+...
+c[0] = measure q[0];
+c[1] = measure q[1];
+if (c[1] == true) {
+  x q[2];
+}
+if (c[0] == true) {
+  z q[2];
+}
+c[2] = measure q[2];`;
+
+const rotation060 = `// \`var\` for classical locals, \`PI\` for angles, \`(int)\` to truncate a double.
+void main() {
+    var steps = 4;
+    var angle = PI / 2 / steps;
+    Qubit q = qubit();
+    for i in 0..steps {
+        ry(q, angle);
+    }
+    Bit m = measure(q);
+    var degrees = angle * steps * 180 / PI;
+    println("ry total {} degrees ({}), m={}", (int) degrees, degrees, m);
+}`;
+
+const rotationRun060 = `$ qxide run examples/qx/rotation.qx
+ry total 90 degrees (90.0), m=0`;
+
+const release060 = (
+  <>
+    <p>Qxide 0.6.0 adds functions that take and return qubits, gate-only function calls inside <code>if</code> branches on measured bits, local type inference with <code>var</code>, Java-style numeric casts, and the <code>PI</code> constant. Like earlier releases, this is still an early experiment and the language may change. The Rust library API in the <code>qxide</code> crate is unchanged since 0.5.0, though its documentation and messages are now in English.</p>
+
+    <h2>Functions that take and return qubits</h2>
+    <p>In <code>examples/qx/functions.qx</code>, <code>Qubit</code> and <code>QReg</code> parameters are borrowed by default so a function can apply gates without taking ownership. Writing <code>consume</code> before the parameter type hands ownership to the function instead, requiring it to measure or discard the qubits on every path and preventing the caller from using them afterwards.</p>
+    <CodeBlock label="functions.qx" lang="qx" code={functions060} />
+    <CodeBlock label="qxide run (output)" copyable={false} code={functionsRun060} />
+    <p>If a function tries to measure, discard, or move a borrowed qubit, the checker rejects the program with error <code>Q0313</code>. Using a qubit or register in the caller after passing it to a <code>consume</code> parameter is also caught at compile time. Functions can also return <code>Qubit</code> and <code>QReg</code> values, transferring ownership to the caller, which must measure or discard the returned qubits.</p>
+
+    <h2>Calling functions inside an <code>if</code> on a measured bit</h2>
+    <p>Gate-only helper functions can now be called inside <code>if</code> statements that branch on a measured <code>Bit</code>. In the excerpt from <code>examples/qx/teleport_fn.qx</code> below, the teleportation corrections are written as separate functions and called inside <code>if m1</code> and <code>if m0</code>.</p>
+    <CodeBlock label="teleport_fn.qx" lang="qx" code={teleport060} />
+    <CodeBlock label="qxide qasm (output)" copyable={false} code={teleportQasm060} />
+    <p>Running <code>qxide qasm</code> on this program produces the exact same OpenQASM 3 output as <code>teleport.qx</code>, just as if the gates had been written inline. Only functions that apply gates to borrowed qubits are allowed inside a branch on a measured <code>Bit</code>. Calling a function that measures, allocates, discards, prints, takes <code>consume</code> parameters, or returns qubits is rejected with error <code>Q0314</code>, with a diagnostic pointing at the reason.</p>
+
+    <h2><code>var</code>, casts, and <code>PI</code></h2>
+    <p>Qxide 0.6.0 also adds <code>var</code> for inferring <code>int</code>, <code>double</code>, and <code>boolean</code> local variables, a built-in <code>double</code> constant <code>PI</code>, and Java-style numeric casts <code>(int) x</code> and <code>(double) n</code>. In <code>examples/qx/rotation.qx</code> below, four rotations by <code>PI / 8</code> add up to 90 degrees, and <code>(int)</code> truncates the angle toward zero before printing.</p>
+    <CodeBlock label="rotation.qx" lang="qx" code={rotation060} />
+    <CodeBlock label="qxide run (output)" copyable={false} code={rotationRun060} />
+
+    <h2>Breaking changes</h2>
+    <p>In <code>.qx</code> programs, <code>var</code> and <code>consume</code> are now reserved keywords, and <code>PI</code> cannot be declared or assigned. Built-in type names such as <code>int</code> and <code>Qubit</code> can no longer be used as variable, parameter, or function names. The Rust library API in the <code>qxide</code> crate is unchanged since 0.5.0, while its docs.rs documentation, panic messages, and error text are now in English.</p>
+
+    <h2>Install or upgrade</h2>
+    <p>
+      The install commands are on the <Link to="/learn#install">Learn page</Link>
+      , and the full list of changes is in the{' '}
+      <a href={RELEASE_060} target="_blank" rel="noreferrer">
+        v0.6.0 GitHub release
+      </a>
+      and in{' '}
+      <a href={`${GITHUB_BLOB}/CHANGELOG.md`} target="_blank" rel="noreferrer">
+        CHANGELOG.md
+      </a>
+      .
+    </p>
+  </>
+);
+
 const RELEASE_050 = `${GITHUB}/releases/tag/v0.5.0`;
 
 const bell = `// Bell pair: the two measured bits are always equal.
@@ -274,6 +384,13 @@ let ma = c.measure(a); // a is gone; only a classical bit remains`}
 
 // Newest first.
 export const POSTS: Post[] = [
+  {
+    slug: 'qxide-0-6-0-functions-with-qubits',
+    title: 'Qxide 0.6.0: functions with qubits',
+    date: '2026-11-20',
+    summary: 'Qxide 0.6.0 adds functions that borrow, consume, and return qubits, conditional gate-only calls on measured bits, var type inference, numeric casts, and PI.',
+    body: release060,
+  },
   {
     slug: 'qxide-0-5-0-the-qx-language',
     title: 'Qxide 0.5.0: the .qx language',

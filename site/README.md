@@ -2,7 +2,7 @@
 
 Website for `qxide.dev` in the `qxide` repository.
 
-**Status:** Live site for the `.qx` language and the `qxide` CLI (v0.5.0).
+**Status:** Live site for the `.qx` language and the `qxide` CLI (v0.6.0).
 
 ## Stack
 

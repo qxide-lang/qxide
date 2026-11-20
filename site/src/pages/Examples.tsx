@@ -10,7 +10,7 @@ type Example = {
   note?: string;
 };
 
-// .qx programs in examples/qx/ at v0.5.0. Results were captured by running the commands.
+// .qx programs in examples/qx/ at v0.6.0. Results were captured by running the commands.
 const QX_EXAMPLES: Example[] = [
   {
     name: 'bell',
@@ -42,9 +42,49 @@ const QX_EXAMPLES: Example[] = [
       note: 'The measured bits vary, but bob is 1 in every outcome.',
     },
   },
+  {
+    name: 'functions',
+    summary: 'bellPair borrows two qubits and entangles them, while measureAll takes ownership of the register with consume and measures it.',
+    command: 'qxide run examples/qx/functions.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: "[0, 0]  0b00 = 0  ×504\n  [0, 0]\n[1, 1]  0b11 = 3  ×496\n  [1, 1]",
+      note: 'This produces the same Bell correlation as bell.qx, even though main never measures the register itself.',
+    },
+  },
+  {
+    name: 'rotation',
+    summary: 'Uses var, PI, and an (int) cast: four ry rotations of PI / 8 add up to 90 degrees.',
+    command: 'qxide run examples/qx/rotation.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: "[0]  0b0 = 0  ×503\n  ry total 90 degrees (90.0), m=0\n[1]  0b1 = 1  ×497\n  ry total 90 degrees (90.0), m=1",
+      note: 'A 90-degree ry rotation produces an even split between 0 and 1, and (int) truncates the printed angle to 90.',
+    },
+  },
+  {
+    name: 'teleport_fn',
+    summary: 'Quantum teleportation built from functions: prepareOne returns a qubit, and the corrections correctX and correctZ are called inside if branches on measured bits.',
+    command: 'qxide run examples/qx/teleport_fn.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: "[1, 0, 1]  0b101 = 5  ×266\n  bob=1\n[0, 0, 1]  0b100 = 4  ×252\n  bob=1\n[0, 1, 1]  0b110 = 6  ×252\n  bob=1\n[1, 1, 1]  0b111 = 7  ×230\n  bob=1",
+      note: 'bob is always 1, and qxide qasm outputs the exact same OpenQASM 3 as teleport.qx.',
+    },
+  },
+  {
+    name: 'conditional_fn',
+    summary: 'Calls gate-only functions inside if and else branches on measured bits, including a loop of rz rotations, a nested if on a Bit parameter, and a classical helper.',
+    command: 'qxide run examples/qx/conditional_fn.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: "[1, 0, 0, 0]  0b0001 = 1  ×276\n  m=1 f=0 r=[0, 0]\n[0, 0, 0, 0]  0b0000 = 0  ×258\n  m=0 f=0 r=[0, 0]\n[0, 1, 0, 0]  0b0010 = 2  ×245\n  m=0 f=1 r=[0, 0]\n[1, 1, 1, 0]  0b0111 = 7  ×221\n  m=1 f=1 r=[1, 0]",
+      note: 'r[0] is 1 only when both coin bits are 1, because the two x gates in the else branch cancel each other out.',
+    },
+  },
 ];
 
-// Rust examples in examples/ at v0.5.0 (unchanged since v0.4.1). Results were captured by running the commands unless noted.
+// Rust examples in examples/ at v0.6.0 (output text in English since v0.6.0). Results were captured by running the commands unless noted.
 const EXAMPLES: Example[] = [
   {
     name: 'bell',
@@ -62,8 +102,8 @@ const EXAMPLES: Example[] = [
       'A GHZ state on a register of n qubits (default 5000) using the stabilizer simulator, which handles Clifford-only circuits with thousands of qubits.',
     command: 'cargo run --release --example ghz_large 5000',
     result: {
-      label: 'Output (the example prints Korean; timing varies by machine)',
-      text: '시드 0 | 5000큐비트, 측정값 1: 5000개 (483.3946ms)\n시드 1 | 5000큐비트, 측정값 1: 5000개 (424.9412ms)\n시드 2 | 5000큐비트, 측정값 1: 0개 (441.7877ms)',
+      label: 'Output (timing varies by machine)',
+      text: 'seed 0 | 5000 qubits, measured 1: 5000 (333.2127ms)\nseed 1 | 5000 qubits, measured 1: 5000 (340.9436ms)\nseed 2 | 5000 qubits, measured 1: 0 (332.8137ms)',
       note: 'Each seed gives all ones or all zeros, never a mix. Timings are from one Windows laptop.',
     },
   },
@@ -102,7 +142,7 @@ export function Examples() {
           <a href={`${GITHUB_TREE}/examples`} target="_blank" rel="noreferrer">
             examples/
           </a>{' '}
-          folder has three <code>.qx</code> programs and four Rust examples. Clone the repository and run any command
+          folder has seven <code>.qx</code> programs and four Rust examples. Clone the repository and run any command
           below from its root.
         </p>
       </header>
