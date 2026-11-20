@@ -63,6 +63,8 @@ export function Editor({id, value, onChange, errorLines, onRun, describedBy, tex
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     const ta = e.currentTarget;
+    // Leave Enter/Tab to the input method while Korean (or other IME) text is being composed.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       onRun();

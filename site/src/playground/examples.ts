@@ -14,5 +14,6 @@ const rank = (f: string) => {
 };
 
 export const EXAMPLES: Example[] = Object.entries(files)
-  .map(([path, code]) => ({file: path.slice(path.lastIndexOf('/') + 1), code}))
+  // A textarea reports LF line breaks; a CRLF checkout (core.autocrlf) must not shift caret offsets.
+  .map(([path, code]) => ({file: path.slice(path.lastIndexOf('/') + 1), code: code.replace(/\r\n?/g, '\n')}))
   .sort((a, b) => rank(a.file) - rank(b.file) || a.file.localeCompare(b.file));

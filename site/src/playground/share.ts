@@ -52,7 +52,8 @@ export async function decodeShare(hash: string): Promise<Shared | null> {
     bytes = fromBase64Url(plain!);
   }
   if (bytes.length > MAX_CODE) throw new Error('shared program too large');
-  const code = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
+  // Same LF normalisation a textarea applies, so caret offsets match the stored code.
+  const code = new TextDecoder('utf-8', {fatal: true}).decode(bytes).replace(/\r\n?/g, '\n');
   const digits = (v: string | null) => (v !== null && /^\d{1,20}$/.test(v) ? v : null);
   return {code, shots: digits(params.get('shots')), seed: digits(params.get('seed'))};
 }

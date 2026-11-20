@@ -1,5 +1,11 @@
 /* Playground page. Colours come only from Paper tokens (styles.css) and Astryx theme tokens. */
 .pg {
+  /* Astryx resolves --color-error once at the root from the OS colour preference; these derived inks keep
+     WCAG contrast on the light paper panel and on the dark editor whichever variant it picked. */
+  --pg-error-ink: color-mix(in oklab, var(--color-error) 60%, var(--paper-ink));
+  --pg-error-on-code: color-mix(in oklab, var(--color-error) 60%, var(--paper-code-ink));
+  /* Native controls stay light on the light-only Paper page. */
+  color-scheme: light;
   padding: var(--spacing-12) 0 0;
 }
 .pg-head {
@@ -55,13 +61,13 @@
   border-color: var(--paper-muted);
 }
 .pg-num[aria-invalid='true'] {
-  border-color: var(--color-error);
+  border-color: var(--pg-error-ink);
 }
 .pg-field-err {
   flex-basis: 100%;
   margin: 0;
   font-size: 0.875rem;
-  color: var(--color-error);
+  color: var(--pg-error-ink);
 }
 .pg-actions {
   display: flex;
@@ -101,7 +107,7 @@
   background: var(--paper-panel);
 }
 .pg-code-panel {
-  /* Resolves light-dark() theme tokens (e.g. --color-error) to their dark variants. */
+  /* Dark native scrollbars inside the editor. */
   color-scheme: dark;
   display: flex;
   flex-direction: column;
@@ -141,7 +147,7 @@
   overflow: visible;
   min-height: 100%;
   background: var(--paper-code-bg);
-  color: color-mix(in srgb, var(--paper-code-ink) 45%, transparent);
+  color: color-mix(in srgb, var(--paper-code-ink) 56%, transparent);
   font: inherit;
   text-align: right;
   user-select: none;
@@ -150,7 +156,7 @@
   display: block;
 }
 .pg-ln-err {
-  color: var(--color-error);
+  color: var(--pg-error-on-code);
   font-weight: 600;
 }
 .pg-ln-err::before {
@@ -182,8 +188,8 @@
   min-height: 1.7em;
 }
 .pg-line-err {
-  background: color-mix(in srgb, var(--color-error) 20%, transparent);
-  box-shadow: inset calc(2 * var(--border-width)) 0 var(--color-error);
+  background: color-mix(in srgb, var(--pg-error-on-code) 22%, transparent);
+  box-shadow: inset calc(2 * var(--border-width)) 0 var(--pg-error-on-code);
 }
 .paper .pg-input {
   position: absolute;
@@ -248,13 +254,13 @@
   white-space: pre;
 }
 .pg-stderr {
-  border-left: calc(3 * var(--border-width)) solid var(--color-error);
+  border-left: calc(3 * var(--border-width)) solid var(--pg-error-ink);
 }
 .pg-failure {
   margin: 0 0 var(--spacing-4);
   padding: var(--spacing-3) var(--spacing-4);
-  border-left: calc(3 * var(--border-width)) solid var(--color-error);
-  background: color-mix(in srgb, var(--color-error) 8%, var(--paper-panel));
+  border-left: calc(3 * var(--border-width)) solid var(--pg-error-ink);
+  background: color-mix(in srgb, var(--pg-error-ink) 8%, var(--paper-panel));
   font-size: 0.9375rem;
 }
 .pg-diags {
@@ -287,7 +293,7 @@
 .pg-diag-code {
   font-family: var(--font-mono);
   font-weight: 600;
-  color: var(--color-error);
+  color: var(--pg-error-ink);
 }
 .pg-diag-loc {
   font-family: var(--font-mono);
