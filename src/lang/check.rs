@@ -363,7 +363,9 @@ impl Checker {
                 true
             }
             Stmt::Expr(e) => {
-                self.expr(e);
+                if self.expr(e).is_quantum() {
+                    self.err(Code::TempDropped, e.span, msg::temp_dropped());
+                }
                 false
             }
         }
@@ -493,6 +495,13 @@ impl Checker {
         }
     }
 
+    // A quantum value that is only read (indexed, `len`) must live in a variable, or it is lost.
+    fn forbid_temp(&mut self, e: &Expr, ty: Ty) {
+        if ty.is_quantum() && !matches!(e.kind, ExprKind::Var(_)) {
+            self.err(Code::TempDropped, e.span, msg::temp_dropped());
+        }
+    }
+
     fn forbid_in_bit_if(&mut self, at: Span, op: &str) {
         if let Some(&cond) = self.bit_ifs.last() {
             self.err(Code::ForbiddenInBitIf, at, msg::forbidden_in_bit_if(op))
@@ -524,6 +533,7 @@ impl Checker {
             ExprKind::Call { name, args } => self.call(name, args, e.span),
             ExprKind::Index { base, index } => {
                 let b = self.expr(base);
+                self.forbid_temp(base, b);
                 let i = self.expr(index);
                 self.expect_ty(index.span, Ty::I64, i);
                 match b {
@@ -675,6 +685,7 @@ impl Checker {
             "len" => {
                 if self.arity(name, args, 1, span) {
                     let t = self.expr(&args[0]);
+                    self.forbid_temp(&args[0], t);
                     if !matches!(t, Ty::QReg | Ty::BitReg | Ty::Error) {
                         self.err(
                             Code::TypeMismatch,

@@ -234,3 +234,11 @@ pub fn negative_size(n: i64) -> String {
 pub fn too_many_qubits(limit: usize) -> String {
     format!("프로그램이 총 {limit}개를 초과하는 큐비트를 할당하려고 합니다")
 }
+
+pub fn temp_dropped() -> String {
+    "새로 생성된 큐비트나 레지스터가 여기서 소비되지 않으므로 `let`으로 바인딩한 뒤 `measure` 또는 `discard`를 호출하세요".into()
+}
+
+pub fn stabilizer_too_large(qubits: usize, required: &str, limit: &str) -> String {
+    format!("{qubits}큐비트 회로에 필요한 메모리({required})가 한도({limit})를 초과하므로 큐비트 수를 줄이거나 `qxide qasm`으로 시뮬레이션 없이 회로를 내보내세요")
+}

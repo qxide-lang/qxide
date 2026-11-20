@@ -24,6 +24,8 @@ pub enum OutPiece {
 pub struct Elaborated {
     pub circuit: Circuit,
     pub output: Vec<OutPiece>,
+    // Physical qubit slots of `circuit` (the library reuses slots freed by `measure`).
+    pub slots: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +86,9 @@ struct Interp<'p> {
     pool: Vec<Option<Qubit>>,
     output: Vec<OutPiece>,
     depth: usize,
+    // Mirrors Circuit's slot reuse: `measure` frees a slot, the next `qubit()` takes it.
+    slots: usize,
+    free_slots: usize,
 }
 
 pub fn elaborate(p: &Program) -> R<Elaborated> {
@@ -92,6 +97,8 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
         pool: Vec::new(),
         output: Vec::new(),
         depth: 0,
+        slots: 0,
+        free_slots: 0,
     };
     let main = *it
         .fns
@@ -102,6 +109,7 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
     Ok(Elaborated {
         circuit: c,
         output: it.output,
+        slots: it.slots,
     })
 }
 
@@ -315,10 +323,14 @@ impl<'p> Interp<'p> {
                 Ok(Value::Unit)
             }
             "measure" => match self.expr(c, f, &args[0])? {
-                Value::Qubit(i) => Ok(Value::Bit(c.measure(self.take(i, span)?))),
+                Value::Qubit(i) => {
+                    self.free_slots += 1;
+                    Ok(Value::Bit(c.measure(self.take(i, span)?)))
+                }
                 Value::QReg(v) => {
                     let mut bits = Vec::with_capacity(v.len());
                     for i in v {
+                        self.free_slots += 1;
                         bits.push(c.measure(self.take(i, span)?));
                     }
                     Ok(Value::Bits(bits))
@@ -411,6 +423,11 @@ impl<'p> Interp<'p> {
         }
         Ok((0..n)
             .map(|_| {
+                if self.free_slots > 0 {
+                    self.free_slots -= 1;
+                } else {
+                    self.slots += 1;
+                }
                 self.pool.push(Some(c.qubit()));
                 self.pool.len() - 1
             })

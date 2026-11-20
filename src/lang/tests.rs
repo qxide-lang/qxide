@@ -158,6 +158,55 @@ fn linear_qubit_rules() {
 }
 
 #[test]
+fn unbound_quantum_temporaries_are_rejected() {
+    assert_eq!(codes(&main_body("qubit();")), ["Q0312"]);
+    assert_eq!(codes(&main_body("qreg(3);")), ["Q0312"]);
+    assert_eq!(codes(&main_body("let n = len(qreg(3));")), ["Q0312"]);
+    assert_eq!(codes(&main_body("let m = measure(qreg(2)[0]);")), ["Q0312"]);
+    assert_eq!(
+        codes(&main_body("let q = qreg(2)[1]; discard(q);")),
+        ["Q0312"]
+    );
+    // Reading a register variable is fine.
+    ok(&main_body(
+        "let r = qreg(3); let n = len(r); h(r[n - 1]); discard(r);",
+    ));
+}
+
+#[test]
+fn byte_order_mark_is_ignored() {
+    let src = format!("\u{feff}{BELL}");
+    assert!(check("t.qx", &src).is_ok());
+    let bad = "\u{feff}fn main() {\n    let q = qubit();\n}\n";
+    let Err(Failure(d)) = check("t.qx", bad) else {
+        panic!("expected an error")
+    };
+    // Columns are counted from after the mark.
+    assert!(d.contains("--> t.qx:2:9\n"), "{d}");
+}
+
+#[test]
+fn huge_stabilizer_runs_are_refused_before_allocating() {
+    // About 20 GB of tableau; must become Q0406 instead of aborting on allocation.
+    let src = main_body("let r = qreg(200000);\nlet m = measure(r);\nprintln(\"{}\", m);");
+    let Err(Failure(d)) = run("t.qx", &src, 1, 0) else {
+        panic!("expected a simulation error")
+    };
+    assert!(d.contains("error[Q0406]"), "{d}");
+    assert!(qasm("t.qx", &src).is_ok());
+    // Slots freed by `measure` are reused, so 1000 sequential qubits need a single slot.
+    let reuse = main_body(
+        "for i in 0..1000 { let q = qubit(); h(q); let m = measure(q); if i == 999 { println(\"{}\", m); } }",
+    );
+    let q = qasm("t.qx", &reuse).ok().unwrap();
+    assert!(q.contains("qubit[1] q;"), "{}", &q[..80]);
+    let (_, e) = build(&reuse).ok().unwrap();
+    assert_eq!(e.slots, 1);
+    let out = run_ok(&reuse, 1);
+    assert!(out == "0\n" || out == "1\n", "{out}");
+}
+
+#[test]
 fn bit_if_restrictions() {
     let pre = "let a = qubit(); let t = qubit(); h(a); let m = measure(a);";
     let with = |body: &str| main_body(&format!("{pre} {body} discard(t);"));
