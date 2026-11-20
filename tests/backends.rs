@@ -38,7 +38,7 @@ fn stabilizer_same_seed_same_result() {
 
 #[test]
 fn stabilizer_phase_gates_interfere() {
-    // H S S H = X, H Z H = X: 위상을 틀리면 결과가 반반으로 나온다
+    // H S S H = X, H Z H = X: a wrong phase produces an even split
     let mut c = Circuit::new();
     let mut a = c.qubit();
     let mut b = c.qubit();
@@ -112,7 +112,7 @@ fn stabilizer_rejects_non_clifford_gates() {
 
     let mut c = Circuit::new();
     let mut q = c.qubit();
-    c.rx(&mut q, std::f64::consts::PI); // 각도가 클리퍼드여도 회전 게이트는 거부한다
+    c.rx(&mut q, std::f64::consts::PI); // reject rotation gates even at Clifford angles
     assert_eq!(
         c.simulate_with(Backend::Stabilizer, 0).unwrap_err(),
         SimError::NotClifford { gate: "rx" }
@@ -130,7 +130,7 @@ fn sdg_is_clifford_but_tdg_is_not() {
     c.h(&mut a);
     assert!(c.is_clifford());
     let m = c.measure(a);
-    // H S S† S† H = H S† H: 위상이 틀리면 결정적인 결과가 나온다
+    // H S S† S† H = H S† H: a wrong phase produces a deterministic result
     let ones = (0..2000).filter(|&seed| stab(&c, seed).get(m)).count();
     assert!((800..1200).contains(&ones), "ones = {ones}");
 
@@ -162,7 +162,7 @@ fn stabilizer_rejects_non_clifford_gate_inside_branch() {
     c.h(&mut a);
     let m = c.measure(a);
     c.if_one(m, |c| c.ry(&mut b, 0.3));
-    // 분기가 실행되지 않는 seed에서도 조용히 넘어가지 않는다
+    // must not silently pass even for a seed where the branch is not taken
     for seed in 0..10 {
         assert_eq!(
             c.simulate_with(Backend::Stabilizer, seed).unwrap_err(),
@@ -192,7 +192,7 @@ fn stabilizer_simulates_thousand_qubit_ghz() {
     assert_eq!(seen, [true, true]);
 }
 
-// ---- 두 시뮬레이터 비교: 무작위 클리퍼드 회로 (중간 측정, reset, 분기 포함) ----
+// ---- Compare both simulators: random Clifford circuits (with mid-circuit measurement, reset, and branching) ----
 
 struct Lcg(u64);
 impl Lcg {
@@ -225,7 +225,7 @@ fn random_clifford_circuit(rng: &mut Lcg) -> (Circuit, Vec<Bit>) {
             }
             7 => c.reset(&mut qs[i]),
             8 => {
-                // 중간 측정 후 같은 자리를 새 큐비트로 다시 쓰고, 결과로 분기
+                // Measure mid-circuit, reuse the freed slot with a fresh qubit, and branch on the result
                 let m = c.measure(qs.swap_remove(i));
                 qs.push(c.qubit());
                 bits.push(m);
@@ -255,7 +255,7 @@ fn random_clifford_circuits_agree_between_backends() {
     for case in 0..60 {
         let (c, bits) = random_clifford_circuit(&mut rng);
         let k = bits.len();
-        // 비트별 1의 비율, 이웃한 두 비트의 XOR 비율
+        // Fraction of 1s per bit and XOR fraction of adjacent bits
         let stats = |backend: Backend| {
             let mut ones = vec![0u32; k];
             let mut xors = vec![0u32; k.saturating_sub(1)];
@@ -275,7 +275,7 @@ fn random_clifford_circuits_agree_between_backends() {
         let (st_ones, st_xors) = stats(Backend::Stabilizer);
         let close = |a: u32, b: u32| {
             let (pa, pb) = (a as f64 / shots as f64, b as f64 / shots as f64);
-            // 클리퍼드 회로의 확률은 0, 1/2, 1뿐이라 결정적인 값은 정확히 같아야 한다
+            // Clifford circuit probabilities are only 0, 1/2, or 1, so deterministic outcomes must match exactly
             if pa == 0.0 || pa == 1.0 || pb == 0.0 || pb == 1.0 {
                 a == b
             } else {
@@ -301,7 +301,7 @@ fn random_clifford_circuits_agree_between_backends() {
     }
 }
 
-// ---- 자동 선택과 메모리 한도 ----
+// ---- Auto-selection and memory limit ----
 
 use qxide::{state_vector_bytes, DEFAULT_MEMORY_LIMIT};
 
@@ -367,7 +367,7 @@ fn state_vector_memory_is_sixteen_bytes_per_amplitude() {
     assert_eq!(state_vector_bytes(20), 16 << 20);
     assert_eq!(state_vector_bytes(30), 16 << 30);
     assert_eq!(state_vector_bytes(123), 16 << 123);
-    assert_eq!(state_vector_bytes(124), u128::MAX); // 넘치면 포화
+    assert_eq!(state_vector_bytes(124), u128::MAX); // saturates on overflow
     assert_eq!(DEFAULT_MEMORY_LIMIT, 1 << 30);
 }
 
@@ -420,7 +420,7 @@ fn forcing_state_vector_on_large_clifford_circuit_still_checks_memory() {
 }
 
 #[test]
-#[should_panic(expected = "제한(1.0 GiB)을 초과합니다")]
+#[should_panic(expected = "exceeding the limit (1.0 GiB)")]
 fn simulate_panics_with_memory_error_instead_of_allocating() {
     big_non_clifford(40).simulate(0);
 }

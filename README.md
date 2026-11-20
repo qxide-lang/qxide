@@ -4,11 +4,11 @@
 
 # Qxide
 
-[한국어](README.ko.md) · [qxide.dev](https://qxide.dev)
+[Korean](README.ko.md) · [qxide.dev](https://qxide.dev)
 
 Qxide is a programming language for classical and quantum computers with Java/C-style syntax and compile-time qubit safety that compiles quantum code to OpenQASM 3.
 
-The `qxide` command-line tool simulates `.qx` programs with built-in state-vector and stabilizer simulators (`qxide run`), checks them (`qxide check`), and exports them to OpenQASM 3 (`qxide qasm`). The same `qxide` crate can also be used directly as a Rust library. Version 0.5.0 is an early experiment introducing Java-style syntax, and both the language and APIs may still change.
+The `qxide` command-line tool simulates `.qx` programs with built-in state-vector and stabilizer simulators (`qxide run`), checks them (`qxide check`), and exports them to OpenQASM 3 (`qxide qasm`). The same `qxide` crate can also be used directly as a Rust library. Version 0.6.0 is still an early experiment adding qubit-passing and qubit-returning functions, `var`, casts, and `PI`; both the language and APIs may still change.
 
 ## Install
 

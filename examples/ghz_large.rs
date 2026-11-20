@@ -23,6 +23,6 @@ fn main() {
         let shot = c.simulate_with(Backend::Stabilizer, seed).unwrap();
         let elapsed = start.elapsed();
         let ones = bits.iter().filter(|&&b| shot.get(b)).count();
-        println!("시드 {seed} | {n}큐비트, 측정값 1: {ones}개 ({elapsed:?})");
+        println!("seed {seed} | {n} qubits, measured 1: {ones} ({elapsed:?})");
     }
 }

@@ -9,7 +9,7 @@ use cubecl::Device;
 use std::sync::OnceLock;
 
 const BLOCK: u32 = 256;
-const READBACK_FAILED: &str = "GPU 상태를 CPU로 읽어오지 못했습니다";
+const READBACK_FAILED: &str = "failed to read GPU state back to CPU";
 // wgpu caps each dispatch dimension at 65535 workgroups.
 const MAX_GRID_X: u32 = 65535;
 

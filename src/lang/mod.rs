@@ -50,7 +50,7 @@ fn gib(bytes: u128) -> String {
     format!("{:.1} GiB", bytes as f64 / f64::from(1u32 << 30))
 }
 
-// The library formats `SimError` in Korean; .qx diagnostics are English.
+// Re-words `SimError::OutOfMemory` with GiB sizes and a `.qx`-specific help line.
 fn sim_error(err: SimError, at: diag::Span) -> Diagnostic {
     match err {
         SimError::OutOfMemory {

@@ -1,4 +1,4 @@
-//! 벨 상태(얽힘) 예제: `cargo run --example bell`
+//! Bell state (entanglement) example: `cargo run --example bell`
 
 use qxide::Circuit;
 
@@ -7,16 +7,16 @@ fn main() {
     let mut a = c.qubit();
     let mut b = c.qubit();
 
-    c.h(&mut a); // a를 0과 1의 중첩으로
-    c.cx(&mut a, &mut b); // a와 b를 얽음
+    c.h(&mut a); // put a into a superposition of 0 and 1
+    c.cx(&mut a, &mut b); // entangle a and b
 
-    let ma = c.measure(a); // 여기서 a, b는 사라지고 고전 비트만 남음
+    let ma = c.measure(a); // a and b are consumed here, leaving only classical bits
     let mb = c.measure(b);
 
-    println!("--- OpenQASM 3 (실제 양자컴퓨터로 보낼 수 있는 형식) ---");
+    println!("--- OpenQASM 3 (format that can be sent to a real quantum computer) ---");
     print!("{}", c.to_qasm());
 
-    println!("\n--- 시뮬레이터로 1000번 실행 ---");
+    println!("\n--- Running 1000 times on the simulator ---");
     let mut counts = [0u32; 4];
     for seed in 0..1000 {
         let shot = c.simulate(seed);
@@ -26,5 +26,5 @@ fn main() {
     for (k, n) in counts.iter().enumerate() {
         println!("{}{}: {n}", k >> 1, k & 1);
     }
-    println!("(얽혀 있어서 01, 10은 한 번도 나오지 않아요)");
+    println!("(Because the qubits are entangled, 01 and 10 never appear)");
 }

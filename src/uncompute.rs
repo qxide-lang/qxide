@@ -13,9 +13,9 @@
 
 use crate::{Circuit, Op, Qubit};
 
-/// `Circuit::with_ancilla`와 `Circuit::with_ancillas`의 계산 단계에 전달되는 제한된 회로 빌더다.
-/// 계산 기저 상태만 치환하는 `x`, `cx`, `ccx`만 제공하므로 계산 단계는 |x⟩|0⟩을 |x⟩|f(x)⟩로 옮기고, 이를 역순으로 다시 실행하면 모든 보조 큐비트가 정확히 |0⟩으로 돌아온다.
-/// `measure`, `reset`, 분기, 기저를 바꾸는 게이트(`h`, `rx`, `ry` 등)는 보조 큐비트가 `t`와 얽힌 채 남을 수 있어(예: `h(anc)` 후 `cx_ctrl(anc, t)` 뒤 `h(anc)`) 제공하지 않고 대각 위상 게이트도 정확히 상쇄되므로 빠져 있어, 이런 실수는 컴파일 오류로 차단된다.
+/// A restricted circuit builder passed to the compute phase of `Circuit::with_ancilla` and `Circuit::with_ancillas`.
+/// Because it exposes only `x`, `cx`, and `ccx`—which only permute computational basis states—the compute phase maps |x⟩|0⟩ to |x⟩|f(x)⟩, and replaying it in reverse returns all ancilla qubits to |0⟩ exactly.
+/// `measure`, `reset`, branching, and basis-changing gates (`h`, `rx`, `ry`, etc.) are not provided because they could leave an ancilla entangled with `t` (e.g., `h(anc)`, then `cx_ctrl(anc, t)`, then `h(anc)`), and diagonal phase gates are also omitted because they cancel out exactly, so such mistakes are caught as compile errors.
 #[derive(Debug)]
 pub struct ReversibleCircuit {
     circuit: usize,
@@ -26,25 +26,25 @@ impl ReversibleCircuit {
     fn own(&self, q: &Qubit) -> usize {
         assert_eq!(
             q.circuit, self.circuit,
-            "보조 큐비트 계산 단계에서 다른 회로의 큐비트를 사용했습니다"
+            "qubit from another circuit used in the ancilla compute phase"
         );
         q.index
     }
 
-    /// 계산 단계에 기록하는 파울리 X(양자 NOT) 게이트로, 자기 자신이 역게이트다.
+    /// Pauli-X (quantum NOT) gate recorded in the compute phase; it is self-inverse.
     pub fn x(&mut self, q: &mut Qubit) {
         let i = self.own(q);
         self.ops.push(Op::Gate(crate::Gate::X, i));
     }
 
-    /// 계산 단계에 기록하는 제어 NOT 게이트로 자기 자신이 역게이트이며, 제어를 공유 참조(`&Qubit`)로만 빌리므로 여기서 읽기만 한 데이터 큐비트는 적용 단계에서도 `&Qubit`으로 읽을 수는 있지만 수정할 수는 없다.
+    /// Controlled-NOT gate recorded in the compute phase; it is self-inverse and borrows the control only by shared reference (`&Qubit`), so data qubits read here can still be read as `&Qubit` in the apply phase, but cannot be mutated.
     pub fn cx(&mut self, control: &Qubit, target: &mut Qubit) {
         let (c, t) = (self.own(control), self.own(target));
         self.ops.push(Op::Cx(c, t));
     }
 
-    /// 계산 단계에 기록되는 자기 역원(self-inverse) Toffoli 게이트로, 계산 단계가 AND형(비선형) 불 함수를 보조 큐비트에 계산할 수 있게 한다.
-    /// 두 제어 큐비트가 같으면 패닉한다.
+    /// Self-inverse Toffoli gate recorded in the compute phase, allowing the compute phase to compute AND-like (nonlinear) Boolean functions into an ancilla qubit.
+    /// Panics if the two control qubits are the same.
     pub fn ccx(&mut self, control1: &Qubit, control2: &Qubit, target: &mut Qubit) {
         let (a, b, t) = (self.own(control1), self.own(control2), self.own(target));
         crate::check_distinct_controls(a, b);
@@ -53,19 +53,19 @@ impl ReversibleCircuit {
 }
 
 impl Circuit {
-    /// 제어를 공유 참조(`&Qubit`)로 받는다는 점만 빼면 `cx`와 같은 게이트다.
-    /// CX는 제어 큐비트의 계산 기저 값을 바꾸지 않으므로, `with_ancilla`의 적용 단계가 `&Qubit`으로만 볼 수 있는 보조 큐비트나 입력 큐비트를 제어로 쓸 수 있다.
+    /// Same as `cx`, except that it takes the control by shared reference (`&Qubit`).
+    /// Because CX does not change the computational-basis value of the control qubit, the apply phase of `with_ancilla` can use an ancilla or input qubit visible only as `&Qubit` as a control.
     pub fn cx_ctrl(&mut self, control: &Qubit, target: &mut Qubit) {
         let (c, t) = (self.own(control), self.own(target));
         self.push_cx(c, t);
     }
 
-    /// `|0⟩` 상태의 새 보조 큐비트 하나를 할당해 범위 기반 자동 되돌림(uncomputation)을 수행한다.
-    /// `compute(&mut ReversibleCircuit, &mut Qubit)`으로 가역 게이트를 기록해 내보낸 뒤 `apply(&mut Circuit, &Qubit) -> R`을 실행하며, 적용 단계에서는 보조 큐비트를 `cx_ctrl` 같은 제어로만 쓸 수 있다.
-    /// 이어서 계산 단계 게이트를 역순으로 다시 내보내(되돌림) 보조 큐비트를 `|0⟩`으로 복원하고, 슬롯을 재사용하도록 해제하며 얽힘 그룹에서 제거한 뒤 `apply`의 값을 반환한다.
-    /// 계산 단계에서 읽은 큐비트는 범위가 끝날 때까지 빌려져 있으므로 적용 단계에서 읽기만 가능하고 바꾸거나 측정할 수 없으며, 이는 빌림 검사기가 강제한다.
-    /// 다만 `RefCell`·`Mutex` 같은 내부 가변성 뒤의 큐비트는 빌림 검사기를 통과할 수 있으므로 같은 규칙을 런타임에도 검사하며, 적용 단계에서 계산 단계가 건드린 큐비트(입력·보조 큐비트)를 제어나 대각 위상 게이트(`z`, `s`, `sdg`, `t`, `tdg`, `rz`) 외의 용도(예: `h`/`x`/`rx`/`ry`, `cx`/`ccx`의 타깃, `measure`, `reset`, 중첩된 범위의 계산 단계가 쓰는 경우)로 사용하면 패닉한다.
-    /// 여러 보조 큐비트가 필요하면 `with_ancillas`를 사용한다.
+    /// Allocates a new ancilla qubit in the `|0⟩` state and performs scoped automatic uncomputation.
+    /// Records and emits reversible gates via `compute(&mut ReversibleCircuit, &mut Qubit)`, then runs `apply(&mut Circuit, &Qubit) -> R`, where the ancilla qubit can only be used as a control such as in `cx_ctrl`.
+    /// Then re-emits the compute-phase gates in reverse order (uncomputation) to restore the ancilla qubit to `|0⟩`, releases its slot for reuse, removes it from its entanglement group, and returns the value from `apply`.
+    /// Qubits read in the compute phase remain borrowed until the end of the scope, so they can only be read—and cannot be mutated or measured—in the apply phase, enforced by the borrow checker.
+    /// However, because qubits behind interior mutability such as `RefCell` or `Mutex` can bypass the borrow checker, the same rule is also checked at runtime: using any qubit touched by the compute phase (input or ancilla qubits) in the apply phase for anything other than a control or a diagonal phase gate (`z`, `s`, `sdg`, `t`, `tdg`, `rz`)—such as `h`/`x`/`rx`/`ry`, the target of `cx`/`ccx`, `measure`, `reset`, or writes from a nested scope's compute phase—panics.
+    /// Use `with_ancillas` when multiple ancilla qubits are needed.
     pub fn with_ancilla<R>(
         &mut self,
         compute: impl FnOnce(&mut ReversibleCircuit, &mut Qubit),
@@ -77,8 +77,8 @@ impl Circuit {
         )
     }
 
-    /// `with_ancilla`와 같지만 `N`개의 보조 큐비트를 `compute`에는 `&mut [Qubit; N]`으로, `apply`에는 `&[Qubit; N]`으로 넘겨 함께 되돌리고 해제한다.
-    /// `N`을 추론할 수 있도록 `compute` 클로저에 `[_; N]` 형식 표기(예: `|u, [x, y]: &mut [_; 2]|`)가 필요할 수 있다.
+    /// Same as `with_ancilla`, except that `N` ancilla qubits are passed as `&mut [Qubit; N]` to `compute` and as `&[Qubit; N]` to `apply`, and are uncomputed and released together.
+    /// The `compute` closure may need a `[_; N]` type annotation (e.g., `|u, [x, y]: &mut [_; 2]|`) so that `N` can be inferred.
     pub fn with_ancillas<const N: usize, R>(
         &mut self,
         compute: impl FnOnce(&mut ReversibleCircuit, &mut [Qubit; N]),

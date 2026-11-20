@@ -548,8 +548,8 @@ fn rendered(src: &str) -> String {
     }
 }
 
-// Diagnostics are English: no Hangul in any message, note or help (the library's SimError
-// text is Korean, so out-of-memory errors are re-worded here).
+// Diagnostics are English: no Hangul in any message, note or help (out-of-memory errors are
+// re-worded with GiB sizes and a help line).
 #[test]
 fn diagnostics_are_english_with_help_lines() {
     let hangul = |s: &str| s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c));

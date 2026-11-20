@@ -32,7 +32,7 @@ fn x_then_measure_is_always_one() {
 
 #[test]
 fn h_z_h_acts_like_x() {
-    // HZH = X, 간섭 때문에 확률이 아니라 항상 1이 나와야 함
+    // HZH = X; due to interference, the outcome must always be 1 rather than probabilistic
     let mut c = Circuit::new();
     let mut q = c.qubit();
     c.h(&mut q);
@@ -72,7 +72,7 @@ fn qasm_output() {
 }
 
 #[test]
-#[should_panic(expected = "다른 회로의 큐비트")]
+#[should_panic(expected = "qubit from another circuit")]
 fn qubit_from_another_circuit_is_rejected() {
     let mut c1 = Circuit::new();
     let mut c2 = Circuit::new();
@@ -80,7 +80,7 @@ fn qubit_from_another_circuit_is_rejected() {
     c2.h(&mut q);
 }
 
-// ---- 회전 게이트와 s, t ----
+// ---- Rotation gates and s, t ----
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -113,7 +113,7 @@ fn ry_half_pi_is_fair() {
 
 #[test]
 fn h_rz_pi_h_acts_like_x() {
-    // 위상만 바꾸는 rz는 H 사이에 끼워야 간섭으로 드러난다
+    // rz only changes phase, so it must be sandwiched between H gates to be revealed by interference
     let mut c = Circuit::new();
     let mut q = c.qubit();
     c.h(&mut q);
@@ -150,7 +150,7 @@ fn t_four_times_is_z() {
 
 #[test]
 fn t_twice_is_not_z() {
-    // 위상 오류를 잡기 위한 대조군: T² = S이므로 HSH 결과는 반반이어야 한다
+    // Control test to catch phase bugs: since T² = S, HSH must yield a 50/50 split
     let mut c = Circuit::new();
     let mut q = c.qubit();
     c.h(&mut q);
@@ -205,7 +205,7 @@ fn sdg_twice_is_z_and_tdg_four_times_is_z() {
 
 #[test]
 fn sdg_has_opposite_phase_to_s() {
-    // S·S† = I 이지만 S·S = Z: sdg가 s와 같은 행렬이면 이 회로는 항상 1이 된다
+    // S·S† = I whereas S·S = Z: if sdg used the same matrix as s, this circuit would always yield 1
     let mut c = Circuit::new();
     let mut q = c.qubit();
     c.h(&mut q);
@@ -235,7 +235,7 @@ fn rotation_qasm_output() {
     );
 }
 
-// ---- reset과 큐비트 재사용 ----
+// ---- reset and qubit reuse ----
 
 #[test]
 fn reset_returns_qubit_to_zero() {
@@ -272,7 +272,7 @@ fn measured_qubit_slot_is_reused_after_reset() {
     let mut q = c.qubit();
     c.x(&mut q);
     let first = c.measure(q);
-    let fresh = c.qubit(); // 측정으로 비워진 자리를 다시 씀
+    let fresh = c.qubit(); // reuses the slot freed by measurement
     let second = c.measure(fresh);
     assert_eq!(
         c.to_qasm(),
@@ -297,7 +297,7 @@ fn reset_qasm_output() {
     );
 }
 
-// ---- 측정 결과에 따른 분기 ----
+// ---- Branching on measurement results ----
 
 #[test]
 fn teleportation_moves_state_with_classical_corrections() {
@@ -306,16 +306,16 @@ fn teleportation_moves_state_with_classical_corrections() {
     let mut msg = c.qubit();
     let mut alice = c.qubit();
     let mut bob = c.qubit();
-    c.ry(&mut msg, theta); // 보낼 상태
+    c.ry(&mut msg, theta); // state to send
     c.h(&mut alice);
-    c.cx(&mut alice, &mut bob); // 벨 쌍 공유
+    c.cx(&mut alice, &mut bob); // share a Bell pair
     c.cx(&mut msg, &mut alice);
     c.h(&mut msg);
     let m0 = c.measure(msg);
     let m1 = c.measure(alice);
     c.if_one(m1, |c| c.x(&mut bob));
     c.if_one(m0, |c| c.z(&mut bob));
-    c.ry(&mut bob, -theta); // 되돌리면 항상 |0⟩이어야 함
+    c.ry(&mut bob, -theta); // Should always be |0⟩ after reversing
     let out = c.measure(bob);
     assert!((0..500).all(|seed| !c.simulate(seed).get(out)));
 }
@@ -366,7 +366,7 @@ fn branch_qasm_output_nests() {
 
 #[test]
 fn qubit_allocated_inside_branch_gets_fresh_slot() {
-    // 분기 안의 reset은 조건부라서, 측정으로 비운 자리를 거기서 재사용하면 안 된다
+    // A reset inside a branch is conditional, so a slot freed by measurement must not be reused there
     let mut c = Circuit::new();
     let q = c.qubit();
     let m = c.measure(q);
@@ -379,7 +379,7 @@ fn qubit_allocated_inside_branch_gets_fresh_slot() {
 }
 
 #[test]
-#[should_panic(expected = "분기 내부 측정")]
+#[should_panic(expected = "measurement inside a conditional branch")]
 fn measuring_inside_branch_is_rejected() {
     let mut c = Circuit::new();
     let a = c.qubit();
@@ -391,7 +391,7 @@ fn measuring_inside_branch_is_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "다른 회로의 비트")]
+#[should_panic(expected = "bit belongs to a different circuit")]
 fn branch_on_bit_from_another_circuit_is_rejected() {
     let mut c1 = Circuit::new();
     let mut c2 = Circuit::new();
@@ -400,7 +400,7 @@ fn branch_on_bit_from_another_circuit_is_rejected() {
     c2.if_one(m, |_| {});
 }
 
-// ---- 레지스터 ----
+// ---- Registers ----
 
 use qxide::{BitReg, QReg};
 
@@ -444,7 +444,7 @@ fn gates_can_be_broadcast_over_a_register() {
         c.x(q);
     }
     let [a, b] = r.get_disjoint_mut([0, 3]).unwrap();
-    c.cx(a, b); // 0번이 1이므로 3번이 다시 0이 됨
+    c.cx(a, b); // Qubit 0 is 1, so qubit 3 flips back to 0
     let bits = c.measure_reg(r);
     assert_eq!(c.simulate(0).value(&bits), 0b0111);
 }
@@ -468,7 +468,7 @@ fn measured_register_slots_are_reused() {
 }
 
 #[test]
-#[should_panic(expected = "64비트")]
+#[should_panic(expected = "64 bits")]
 fn register_value_wider_than_64_bits_is_rejected() {
     let mut c = Circuit::new();
     let mut bits = Vec::new();
