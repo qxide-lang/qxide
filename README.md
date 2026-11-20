@@ -36,6 +36,29 @@ assert_eq!(shot.get(ma), shot.get(mb));
 cargo add qxide
 ```
 
+### 명령줄 도구로 설치
+
+- **GitHub Release 설치 (릴리스 배포 후):** `qxide.dev/install.sh`, `install.ps1` 단축 URL은 예정이며 아직 연결되지 않았습니다.
+  - Linux / macOS:
+    ```sh
+    curl --proto '=https' --tlsv1.2 -LsSf https://github.com/qxide-lang/qxide/releases/latest/download/qxide-installer.sh | sh
+    ```
+  - Windows:
+    ```powershell
+    powershell -ExecutionPolicy Bypass -c "irm https://github.com/qxide-lang/qxide/releases/latest/download/qxide-installer.ps1 | iex"
+    ```
+- **소스에서 설치:**
+  ```sh
+  cargo install --git https://github.com/qxide-lang/qxide
+  ```
+- **명령어:** `qxide --version`으로 버전을 확인하고, `qxide bell [SHOTS]`로 벨 회로의 OpenQASM 3을 출력하고 시뮬레이션합니다.
+  ```sh
+  qxide --version
+  qxide bell [SHOTS]
+  ```
+
+PyPI 패키지는 아직 배포되지 않았습니다. 릴리스 및 PyPI 배포 절차는 [docs/release.md](docs/release.md)에 있습니다.
+
 이 저장소에서 직접 실행하려면:
 
 ```

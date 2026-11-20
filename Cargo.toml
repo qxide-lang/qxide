@@ -1,6 +1,6 @@
 [package]
 name = "qxide"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Early Qxide experiment, a Rust-like quantum/classical language: qubit ownership as Rust types, OpenQASM 3 output, auto-selected state-vector/stabilizer simulators, optional GPU backend (prototype)"
 license = "MIT OR Apache-2.0"
@@ -24,3 +24,8 @@ required-features = ["gpu"]
 # The simulator comparison tests run hundreds of thousands of shots; unoptimized builds make them ~50x slower.
 [profile.test]
 opt-level = 2
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
