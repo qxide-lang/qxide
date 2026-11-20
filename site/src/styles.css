@@ -388,6 +388,25 @@
   color: var(--paper-ink);
 }
 
+/* qxide bell output in the result panel */
+.result-cmd {
+  color: var(--paper-ink);
+  margin: 0 0 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.result-qasm {
+  margin: 0 0 1.25rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  background: #f1eee6;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

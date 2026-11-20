@@ -77,9 +77,9 @@ function Install() {
       <p className="sr-only" role="status">
         {copied ? 'Install command copied to clipboard' : ''}
       </p>
-      {/* TODO: qxide is not on PyPI yet, and the crates.io crate has no binary to install. */}
+      {/* PyPI package is not published yet; /install.sh and /install.ps1 redirect via public/_redirects. */}
       <p className="install-alt">
-        Or <code>pip install qxide</code> · <code>cargo install qxide</code>
+        Or <code>pip install qxide</code> (coming soon)
       </p>
     </section>
   );
@@ -133,7 +133,16 @@ function BellCode() {
   );
 }
 
-// Output captured by running `cargo run --example bell` (1000 simulated shots).
+// Output captured by running `cargo run -- bell` (same as `qxide bell`, 1000 simulated shots).
+const QASM = `OPENQASM 3.0;
+include "stdgates.inc";
+qubit[2] q;
+bit[2] c;
+h q[0];
+cx q[0], q[1];
+c[0] = measure q[0];
+c[1] = measure q[1];`;
+
 const OUTCOMES = [
   {bits: '00', n: 503},
   {bits: '01', n: 0},
@@ -157,6 +166,12 @@ function Example() {
             <span>Example output</span>
           </div>
           <div className="result-body">
+            <p className="result-cmd">
+              <span aria-hidden="true">$ </span>qxide bell
+            </p>
+            <pre className="result-qasm" tabIndex={0} aria-label="OpenQASM 3 output">
+              {QASM}
+            </pre>
             <ul className="bars" aria-label="Measurement counts over 1000 simulated shots">
               {OUTCOMES.map(({bits, n}) => (
                 <li className="bar-row" key={bits}>
@@ -169,8 +184,8 @@ function Example() {
               ))}
             </ul>
             <p className="result-note">
-              Real output of <code>cargo run --example bell</code>: 1000 simulated shots. Because the two qubits are
-              entangled, 01 and 10 never appear.
+              Real output of <code>qxide bell</code>: the circuit as OpenQASM 3, then 1000 simulated shots. Because
+              the two qubits are entangled, 01 and 10 never appear.
             </p>
           </div>
         </div>
@@ -206,8 +221,9 @@ const FEATURES = [
     title: 'Learn by running',
     body: (
       <>
-        The repository ships runnable examples. <code>cargo run --example bell</code> prints the OpenQASM 3 for an
-        entangled pair and the results of 1000 simulated shots.
+        After installing, <code>qxide bell</code> prints the OpenQASM 3 for an entangled pair and the results of 1000
+        simulated shots. The repository also ships runnable Rust examples such as <code>bell</code> and{' '}
+        <code>ghz_large</code>.
       </>
     ),
   },
@@ -246,7 +262,8 @@ export function App() {
             </span>
           </h1>
           <p className="hero-sub">
-            Qxide is a Rust-like programming language for classical and quantum computers.
+            Today, Qxide is a Rust library and command-line tool for quantum circuits. A Rust-like .qx language for
+            classical and quantum computers is planned.
           </p>
           <div className="cta">
             {/* TODO: point at the tutorial once the Learn page exists. */}
