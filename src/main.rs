@@ -234,26 +234,19 @@ fn explain_command(args: &[String]) -> ExitCode {
 
 // Runs one `.qx` command: `run`, `check` or `qasm`.
 fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
-    // Without a file, use `src/main.qx` of the project around the current directory.
-    let (path, flags) = match args.first() {
-        Some(p) if !p.starts_with("--") => (p.clone(), &args[1..]),
-        _ => match pkg::project::default_entry() {
-            Ok(p) => (p.display().to_string(), args),
-            Err(_) => {
-                eprintln!("qxide: command `{cmd}` requires a .qx file path");
-                eprint!("{}", usage());
-                return ExitCode::from(2);
+    // Flags may come before or after the file (`run --shots 9 a.qx` or `run a.qx --shots 9`).
+    let (mut shots, mut seed, mut file) = (1, 0, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let parsed = match (cmd, arg.as_str()) {
+            ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
+            ("run", "--seed") => parse_count(arg, rest.next(), 0).map(|n| seed = n),
+            (_, p) if file.is_none() && !p.starts_with('-') => {
+                file = Some(p.to_string());
+                Ok(())
             }
-        },
-    };
-    let (mut shots, mut seed) = (1, 0);
-    let mut rest = flags.iter();
-    while let Some(flag) = rest.next() {
-        let parsed = match (cmd, flag.as_str()) {
-            ("run", "--shots") => parse_count(flag, rest.next(), 1).map(|n| shots = n),
-            ("run", "--seed") => parse_count(flag, rest.next(), 0).map(|n| seed = n),
             _ => {
-                eprintln!("qxide: unexpected argument `{flag}` for `{cmd}`");
+                eprintln!("qxide: unexpected argument `{arg}` for `{cmd}`");
                 Err(ExitCode::from(2))
             }
         };
@@ -261,6 +254,18 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             return code;
         }
     }
+    // Without a file, use `src/main.qx` of the project around the current directory.
+    let path = match file {
+        Some(p) => p,
+        None => match pkg::project::default_entry() {
+            Ok(p) => p.display().to_string(),
+            Err(_) => {
+                eprintln!("qxide: command `{cmd}` requires a .qx file path");
+                eprint!("{}", usage());
+                return ExitCode::from(2);
+            }
+        },
+    };
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
@@ -313,6 +318,10 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some(flag @ ("--version" | "-V" | "--help" | "-h")) if args.len() > 1 => {
+            eprintln!("qxide: unexpected argument `{}` for `{flag}`", args[1]);
+            return ExitCode::from(2);
+        }
         Some("--version" | "-V") => println!("qxide {VERSION}"),
         Some("--help" | "-h") | None => print!("{}", usage()),
         Some(cmd @ ("run" | "check" | "qasm")) => return lang_command(cmd, &args[1..]),
@@ -321,6 +330,10 @@ fn main() -> ExitCode {
         Some("new") => return new_command(&args[1..]),
         Some("repl") => return repl_command(&args[1..]),
         Some(cmd) if pkg::cli::COMMANDS.contains(&cmd) => return pkg::cli::main(cmd, &args[1..]),
+        Some("bell") if args.len() > 2 => {
+            eprintln!("qxide: unexpected argument `{}` for `bell`", args[2]);
+            return ExitCode::from(2);
+        }
         Some("bell") => {
             let shots = match args.get(1) {
                 None => 1000,

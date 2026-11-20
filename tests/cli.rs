@@ -123,6 +123,36 @@ fn deep_recursion_is_a_diagnostic_not_a_crash() {
         .contains("error[Q0405]"));
 }
 
+#[test]
+fn run_flags_may_come_before_the_file() {
+    let bell = example("bell.qx");
+    let after = qxide(&["run", &bell, "--shots", "50", "--seed", "3"]);
+    let before = qxide(&["run", "--shots", "50", "--seed", "3", &bell]);
+    let between = qxide(&["run", "--seed", "3", &bell, "--shots", "50"]);
+    assert!(after.status.success());
+    assert_eq!(before.stdout, after.stdout);
+    assert_eq!(between.stdout, after.stdout);
+    // A second file is still an error.
+    let two = qxide(&["run", &bell, &bell]);
+    assert_eq!(two.status.code(), Some(2));
+}
+
+#[test]
+fn extra_arguments_are_rejected_everywhere() {
+    for args in [
+        &["bell", "3", "extra"][..],
+        &["--version", "extra"],
+        &["-V", "x"],
+        &["--help", "x"],
+    ] {
+        let out = qxide(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+    assert!(qxide(&["bell", "3"]).status.success());
+    assert!(qxide(&["-V"]).status.success());
+}
+
 // Left-associative chains (`a + b + ...`, `r[0][0]...`) build trees as deep as they are long;
 // they count against the nesting limit, so even the deepest accepted chain inside the deepest
 // allowed recursion must run without overflowing the stack.
