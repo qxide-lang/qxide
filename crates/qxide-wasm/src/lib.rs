@@ -4,6 +4,8 @@
 //! stdout, stderr and exit code, except for the browser limits in [`LIMITS`] and [`MAX_SHOTS`].
 //! The raw ABI (`qx_alloc`, `qx_exec`) avoids wasm-bindgen; see `site/src/playground/engine.ts`.
 
+// The CLI-only tools in `lang` (fmt, explain, repl) are compiled here but unused; LTO drops them.
+#[allow(dead_code)]
 #[path = "../../../src/lang/mod.rs"]
 mod lang;
 
