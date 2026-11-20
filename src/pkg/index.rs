@@ -226,7 +226,7 @@ impl Registry {
                 if self.offline {
                     return Err(Error::new(Code::Offline, msg::offline_uncached(rel)));
                 }
-                curl(&format!("{root}{rel}"))
+                curl(&format!("{root}{rel}"), &self.home.download_dir())
             }
         }
     }
@@ -332,7 +332,7 @@ impl Registry {
             if self.offline {
                 return Err(Error::new(Code::Offline, msg::offline_uncached(&url)));
             }
-            curl(&url)?
+            curl(&url, &self.home.download_dir())?
         } else if url.starts_with("file://") {
             read_optional(&file_url_path(&url))?
         } else if url.contains("://") {
@@ -448,20 +448,48 @@ pub fn file_url(path: &Path) -> String {
     }
 }
 
-/// GET with the system `curl`: `None` on 404, an error on any other failure.
-fn curl(url: &str) -> Result<Option<Vec<u8>>> {
+/// What a finished `curl` run produced, from its exit status and the `%{http_code}` it printed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetched {
+    Body,
+    NotFound,
+    Failed,
+}
+
+/// A body counts only when curl exited successfully: a dropped connection still prints `200`
+/// but exits non-zero (18) with a truncated file.
+pub fn fetched(exit_ok: bool, http_code: &str) -> Fetched {
+    match http_code {
+        "404" => Fetched::NotFound,
+        "200" if exit_ok => Fetched::Body,
+        _ => Fetched::Failed,
+    }
+}
+
+/// GET with the system `curl` into a file under `dir`: `None` on 404, an error on any other
+/// failure.
+fn curl(url: &str, dir: &Path) -> Result<Option<Vec<u8>>> {
     let unavailable =
         |reason: String| Error::new(Code::RegistryUnavailable, msg::fetch_failed(url, &reason));
-    let tmp = std::env::temp_dir().join(format!(
-        "qxide-dl-{}-{}",
+    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, &e))?;
+    let tmp = dir.join(format!(
+        "dl-{}-{}",
         std::process::id(),
         &super::sha256_hex(url.as_bytes())[..12]
     ));
+    // Created fresh and exclusively, so curl never writes through a file planted beforehand.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| Error::io(&tmp, &e))?;
     let out = Command::new("curl")
         .args([
             "--silent",
             "--show-error",
             "--location",
+            "--globoff",
             "--proto",
             "=https",
             "--tlsv1.2",
@@ -474,15 +502,21 @@ fn curl(url: &str) -> Result<Option<Vec<u8>>> {
         .arg(&tmp)
         .args(["--write-out", "%{http_code}"])
         .arg(url)
-        .output()
-        .map_err(|e| unavailable(msg::reason_curl_missing(&e.to_string())))?;
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(unavailable(msg::reason_curl_missing(&e.to_string())));
+        }
+    };
     let status = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let body = std::fs::read(&tmp);
     let _ = std::fs::remove_file(&tmp);
-    match status.as_str() {
-        "200" => body.map(Some).map_err(|e| Error::io(&tmp, &e)),
-        "404" => Ok(None),
-        _ => Err(unavailable(
+    match fetched(out.status.success(), &status) {
+        Fetched::Body => body.map(Some).map_err(|e| Error::io(&tmp, &e)),
+        Fetched::NotFound => Ok(None),
+        Fetched::Failed => Err(unavailable(
             String::from_utf8_lossy(&out.stderr).trim().to_string() + " " + &status,
         )),
     }

@@ -186,6 +186,19 @@ fn index_lines_the_client_cannot_use_are_skipped() {
 }
 
 #[test]
+fn curl_results_need_a_clean_exit() {
+    use index::{fetched, Fetched};
+    assert_eq!(fetched(true, "200"), Fetched::Body);
+    assert_eq!(fetched(true, "404"), Fetched::NotFound);
+    assert_eq!(fetched(false, "404"), Fetched::NotFound);
+    // Exit 18 (partial file) and similar failures after a 200 status line.
+    assert_eq!(fetched(false, "200"), Fetched::Failed);
+    for code in ["000", "500", "403", "", "200 "] {
+        assert_eq!(fetched(true, code), Fetched::Failed, "{code:?}");
+    }
+}
+
+#[test]
 fn manifests_parse_and_validate() {
     let m = root("a = \"0.1\"\nb = { version = \"1\", path = \"../b\" }\nc = { path = \"c\" }\n");
     assert_eq!(

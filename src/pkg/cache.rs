@@ -2,6 +2,7 @@
 //   registry/index/<registry id>/...           copies of fetched index files, for `--offline`
 //   registry/cache/<registry id>/<n>-<v>.tar.gz downloaded archives
 //   registry/src/<registry id>/<n>-<v>/         unpacked packages, read by run/check/qasm
+//   registry/tmp/                               downloads in progress
 
 use std::path::{Path, PathBuf};
 
@@ -34,6 +35,12 @@ impl Home {
 
     fn registry(&self) -> PathBuf {
         self.root.join("registry")
+    }
+
+    /// Where downloads are written while `curl` runs: private to this user, unlike the system
+    /// temporary directory.
+    pub fn download_dir(&self) -> PathBuf {
+        self.registry().join("tmp")
     }
 
     pub fn index_dir(&self, id: &str) -> PathBuf {

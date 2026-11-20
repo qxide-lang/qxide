@@ -271,6 +271,113 @@ fn build_metadata_versions_are_never_published_or_selected() {
     env.ok(&app, &["run"]);
 }
 
+// Builds tests/support/fake_curl.rs as `curl` next to a copy of `qxide`: Windows looks for
+// programs in the executable's own directory before System32 (which has a real curl.exe), and
+// on Unix the directory also goes first on PATH. Returns the copied `qxide`.
+fn fake_curl_qxide(env: &Env) -> PathBuf {
+    let bin = env.root.join("fakebin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = std::env::consts::EXE_SUFFIX;
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_curl.rs");
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let out = Command::new(rustc)
+        .args(["--edition", "2021", "-o"])
+        .arg(bin.join(format!("curl{exe}")))
+        .arg(&src)
+        .output()
+        .expect("run rustc");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let qxide = bin.join(format!("qxide{exe}"));
+    std::fs::copy(env!("CARGO_BIN_EXE_qxide"), &qxide).unwrap();
+    qxide
+}
+
+#[test]
+fn failed_downloads_are_never_accepted_or_cached() {
+    let env = Env::new("curl");
+    for v in [None, Some("0.1.1")] {
+        let lib = env.package("bell-utils", v);
+        env.ok(&lib, &["publish"]);
+    }
+    let qxide = fake_curl_qxide(&env);
+    let app = env.app("demo", BELL_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nbell-utils = \"0.1\"\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    let log = env.root.join("curl.log");
+    let path = std::env::join_paths(
+        std::iter::once(qxide.parent().unwrap().to_path_buf()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )),
+    )
+    .unwrap();
+    let run = |home: &Path, trunc: &str| {
+        Command::new(&qxide)
+            .arg("install")
+            .current_dir(&app)
+            .env("PATH", &path)
+            .env("QXIDE_HOME", home)
+            .env("QXIDE_REGISTRY", "https://fake.invalid/")
+            .env_remove("QXIDE_OFFLINE")
+            .env("FAKE_ROOT", &env.registry)
+            .env("FAKE_LOG", &log)
+            .env("FAKE_TRUNC", trunc)
+            .output()
+            .unwrap()
+    };
+    // curl exits 18 after a truncated body but still prints http_code 200.
+    for (trunc, home) in [("index/", "home-index"), ("packages/", "home-archive")] {
+        let home = env.root.join(home);
+        let out = run(&home, trunc);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{trunc}: {err}");
+        assert!(err.contains("error[Q0608]"), "{trunc}: {err}");
+        assert!(!home.join("registry/src").exists(), "{trunc}: {err}");
+        let cached_index = std::fs::read_dir(home.join("registry/index"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|d| d.path().join("index/be/ll/bell-utils").exists());
+        assert_eq!(cached_index, trunc != "index/", "{trunc}");
+    }
+    // The stand-in really ran: same requests, complete bodies, install succeeds.
+    let home = env.root.join("home-ok");
+    let out = run(&home, "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_dir(home.join("registry/tmp"))
+            .unwrap()
+            .count(),
+        0,
+        "downloads are removed"
+    );
+    let calls = read(&log);
+    let args: Vec<&str> = calls.lines().collect();
+    assert!(args.contains(&"--globoff"), "{calls}");
+    // Downloads go to a file under QXIDE_HOME, never to a shared temporary directory.
+    let outputs: Vec<&str> = args
+        .windows(2)
+        .filter(|w| w[0] == "--output")
+        .map(|w| w[1])
+        .collect();
+    assert!(outputs.len() >= 4, "{calls}");
+    for o in outputs {
+        assert!(
+            Path::new(o).starts_with(env.root.join("home-index"))
+                || Path::new(o).starts_with(env.root.join("home-archive"))
+                || Path::new(o).starts_with(&home),
+            "{o}"
+        );
+    }
+}
+
 #[test]
 fn failed_add_restores_manifest_and_lock() {
     let env = Env::new("rollback");
