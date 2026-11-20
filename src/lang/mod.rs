@@ -14,7 +14,7 @@ mod tests;
 
 use std::collections::HashMap;
 
-use qxide::{Backend, Shot, DEFAULT_MEMORY_LIMIT};
+use qxide::{Backend, Shot, SimError, DEFAULT_MEMORY_LIMIT};
 
 use diag::{Code, Diagnostic, SourceMap};
 use interp::{Elaborated, OutPiece};
@@ -48,6 +48,28 @@ fn stabilizer_bytes(n: usize) -> u128 {
 
 fn gib(bytes: u128) -> String {
     format!("{:.1} GiB", bytes as f64 / f64::from(1u32 << 30))
+}
+
+// The library formats `SimError` in Korean; .qx diagnostics are English.
+fn sim_error(err: SimError, at: diag::Span) -> Diagnostic {
+    match err {
+        SimError::OutOfMemory {
+            qubits,
+            required_bytes,
+            limit_bytes,
+        } => {
+            let reason =
+                msg::state_vector_too_large(qubits, &gib(required_bytes), &gib(limit_bytes));
+            Diagnostic::new(Code::Simulation, at, msg::simulation_failed(&reason))
+                .with_help(msg::help_too_large())
+        }
+        // `Backend::Auto` never picks the stabilizer for non-Clifford circuits; keep any other reason verbatim.
+        other => Diagnostic::new(
+            Code::Simulation,
+            at,
+            msg::simulation_failed(&other.to_string()),
+        ),
+    }
 }
 
 fn render(name: &str, src: &str, errors: &[Diagnostic]) -> Failure {
@@ -119,11 +141,10 @@ pub fn run(name: &str, src: &str, shots: u64, seed: u64) -> Result<String, Failu
         return Err(render(
             name,
             src,
-            &[Diagnostic::new(
-                Code::Simulation,
-                main_span,
-                msg::simulation_failed(&reason),
-            )],
+            &[
+                Diagnostic::new(Code::Simulation, main_span, msg::simulation_failed(&reason))
+                    .with_help(msg::help_too_large()),
+            ],
         ));
     }
     let mut counts: HashMap<String, u64> = HashMap::new();
@@ -132,18 +153,7 @@ pub fn run(name: &str, src: &str, shots: u64, seed: u64) -> Result<String, Failu
             let shot = e
                 .circuit
                 .simulate_with(Backend::Auto, seed.wrapping_add(k))
-                .map_err(|err| {
-                    let at = main_span;
-                    render(
-                        name,
-                        src,
-                        &[Diagnostic::new(
-                            Code::Simulation,
-                            at,
-                            msg::simulation_failed(&err.to_string()),
-                        )],
-                    )
-                })?;
+                .map_err(|err| render(name, src, &[sim_error(err, main_span)]))?;
             *counts
                 .entry(render_output(&e.output, Some(&shot)))
                 .or_default() += 1;

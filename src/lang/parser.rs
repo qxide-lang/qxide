@@ -300,7 +300,9 @@ impl Parser {
             if level == 2 {
                 if let Some(sym) = self.peek().symbol() {
                     if matches!(sym, "==" | "!=" | "<" | "<=" | ">" | ">=") {
-                        return Err(self.unexpected(msg::chained_comparison()));
+                        return Err(self
+                            .unexpected(msg::chained_comparison())
+                            .with_help(msg::help_chained_comparison()));
                     }
                 }
                 return Ok(lhs);

@@ -136,6 +136,7 @@ pub struct Diagnostic {
     pub span: Span,
     pub message: String,
     pub notes: Vec<Note>,
+    pub help: Option<String>,
 }
 
 impl Diagnostic {
@@ -145,7 +146,13 @@ impl Diagnostic {
             span,
             message,
             notes: Vec::new(),
+            help: super::msg::help(code),
         }
+    }
+
+    pub fn with_help(mut self, help: String) -> Self {
+        self.help = Some(help);
+        self
     }
 }
 
@@ -216,6 +223,9 @@ impl<'a> SourceMap<'a> {
             if let Some(s) = n.span {
                 self.snippet(&mut out, s);
             }
+        }
+        if let Some(h) = &d.help {
+            let _ = writeln!(out, "help: {h}");
         }
         out
     }

@@ -407,3 +407,46 @@ fn rendering_shows_position_snippet_and_notes() {
     );
     assert!(!d.contains('\r'), "{d:?}");
 }
+
+fn rendered(src: &str) -> String {
+    match run("t.qx", src, 1, 0) {
+        Ok(out) => panic!("expected errors, got output {out:?}"),
+        Err(Failure(d)) => d,
+    }
+}
+
+// Diagnostics are English: no Hangul in any message, note or help (the library's SimError
+// text is Korean, so out-of-memory errors are re-worded here).
+#[test]
+fn diagnostics_are_english_with_help_lines() {
+    let hangul = |s: &str| s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c));
+    let samples = [
+        "fn main() { let x = 1 # 2; }".to_string(),
+        "fn main() { let x = \"\\q\"; }".to_string(),
+        "fn main() { let x: int = 1; }".to_string(),
+        "fn main() { let b = 1 < 2 < 3; }".to_string(),
+        main_body("let q = qubit();\nh(q);"),
+        main_body("let q = qubit();\nlet m = measure(q);\nh(q);"),
+        main_body("let x = 1;\nx = 2;\nlet y = z;\nqubit();"),
+        main_body("let a = qubit(); let t = qubit(); let m = measure(a); if m { println(\"x\"); } discard(t);"),
+        main_body("let r = qreg(30);\nt(r[0]);\nlet m = measure(r);\nprintln(\"{}\", m);"),
+        main_body("let r = qreg(200000);\nlet m = measure(r);\nprintln(\"{}\", m);"),
+        "fn f(n: i64) -> i64 {\n    f(n + 1)\n}\nfn main() {\n    let x = f(0);\n}\n".to_string(),
+    ];
+    for src in &samples {
+        let d = rendered(src);
+        assert!(d.starts_with("error[Q"), "{d}");
+        assert!(!hangul(&d), "non-English diagnostic:\n{d}");
+    }
+    let d = rendered(&main_body("let q = qubit();\nh(q);"));
+    assert!(d.contains("\nhelp: "), "{d}");
+    let d = rendered("fn main() { let b = 1 < 2 < 3; }");
+    assert!(d.contains("\nhelp: ") && d.contains("&&"), "{d}");
+    let d = rendered(&main_body(
+        "let r = qreg(30);\nt(r[0]);\nlet m = measure(r);\nprintln(\"{}\", m);",
+    ));
+    assert!(
+        d.contains("error[Q0406]") && d.contains("16.0 GiB") && d.contains("\nhelp: "),
+        "{d}"
+    );
+}
