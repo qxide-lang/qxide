@@ -14,10 +14,18 @@ const NAV: {label: string; href: string; external?: boolean}[] = [
 
 type Os = 'unix' | 'windows';
 
-// TODO: https://qxide.dev/install.sh and /install.ps1 are not published yet.
+// /install.sh and /install.ps1 redirect to the GitHub release installers via public/_redirects (see docs/release.md).
 const INSTALL: Record<Os, {tab: string; prompt: string; cmd: string}> = {
-  unix: {tab: 'macOS / Linux', prompt: '$', cmd: 'curl -fsSL https://qxide.dev/install.sh | sh'},
-  windows: {tab: 'Windows', prompt: 'PS>', cmd: 'irm https://qxide.dev/install.ps1 | iex'},
+  unix: {
+    tab: 'macOS / Linux',
+    prompt: '$',
+    cmd: "curl --proto '=https' --tlsv1.2 -LsSf https://qxide.dev/install.sh | sh",
+  },
+  windows: {
+    tab: 'Windows',
+    prompt: 'PS>',
+    cmd: 'powershell -ExecutionPolicy Bypass -c "irm https://qxide.dev/install.ps1 | iex"',
+  },
 };
 
 function detectOs(): Os {
@@ -79,7 +87,7 @@ function Install() {
       </p>
       {/* PyPI package is not published yet; /install.sh and /install.ps1 redirect via public/_redirects. */}
       <p className="install-alt">
-        Or <code>pip install qxide</code> (coming soon)
+        Or <code>cargo install qxide</code> · <code>pip install qxide</code> (coming soon)
       </p>
     </section>
   );
