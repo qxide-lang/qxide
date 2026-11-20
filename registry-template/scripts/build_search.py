@@ -10,16 +10,22 @@ import json
 import re
 from pathlib import Path
 
-SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?")
+SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?")
 
 
 def key(vers: str):
-    m = SEMVER.match(vers)
+    """Semver precedence (build metadata ignored); None for a version that does not parse."""
+    m = SEMVER.fullmatch(vers.split("+", 1)[0]) if isinstance(vers, str) else None
     if not m:
-        return (0, 0, 0, 0, "")
+        return None
     major, minor, patch, pre = m.groups()
-    # A release sorts after its pre-releases.
-    return (int(major), int(minor), int(patch), 0 if pre else 1, pre or "")
+    if pre is None:
+        # A release sorts after all of its pre-releases.
+        return (int(major), int(minor), int(patch), 1, ())
+    # Numeric identifiers compare as numbers and before alphanumeric ones; a longer list of
+    # otherwise equal identifiers is newer (1.0.0-rc.2 < 1.0.0-rc.10 < 1.0.0-rc.10.1).
+    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+    return (int(major), int(minor), int(patch), 0, ids)
 
 
 def main() -> None:
@@ -29,7 +35,7 @@ def main() -> None:
     packages = []
     for path in sorted(p for p in (root / "index").rglob("*") if p.is_file() and p.name != ".gitkeep"):
         entries = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
-        live = [e for e in entries if not e.get("yanked")]
+        live = [e for e in entries if not e.get("yanked") and key(e.get("vers")) is not None]
         if not live:
             continue
         best = max(live, key=lambda e: key(e["vers"]))

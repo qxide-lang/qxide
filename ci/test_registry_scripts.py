@@ -163,14 +163,18 @@ class ValidateArchives(unittest.TestCase):
         self.assert_rejected(files, "evil 1.0.0")
 
 
-def load_validate():
+def load_script(path: Path):
     import importlib.util
 
     sys.dont_write_bytecode = True  # keep registry-template/scripts free of __pycache__
-    spec = importlib.util.spec_from_file_location("registry_validate", VALIDATE)
+    spec = importlib.util.spec_from_file_location(f"registry_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_validate():
+    return load_script(VALIDATE)
 
 
 class ValidateEntries(unittest.TestCase):
@@ -263,6 +267,47 @@ class ValidatePullRequests(unittest.TestCase):
         r = self.commit_and_validate()
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("config.json", r.stdout)
+
+
+class BuildSearch(unittest.TestCase):
+    def newest(self, versions: list[str], yanked: tuple[str, ...] = ()) -> str:
+        reg = Registry(self)
+        for v in versions:
+            reg.add("evil", v, archive=False, yanked=v in yanked)
+        r = subprocess.run(
+            [sys.executable, "-I", str(BUILD_SEARCH), "--root", str(reg.root)], capture_output=True, text=True
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        search = json.loads((reg.root / "search.json").read_text(encoding="utf-8"))
+        return search["packages"][0]["version"]
+
+    def test_semver_precedence(self):
+        # Ordered by semver 2.0.0 precedence (its own example list, plus numeric identifiers).
+        ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0-rc.2",
+            "1.0.0-rc.10",
+            "1.0.0",
+            "1.0.1-0",
+            "1.0.1-1",
+            "1.0.1-1.0",
+        ]
+        key = load_script(BUILD_SEARCH).key
+        for i in range(len(ordered)):
+            for j in range(len(ordered)):
+                with self.subTest(a=ordered[i], b=ordered[j]):
+                    self.assertEqual(key(ordered[i]) < key(ordered[j]), i < j)
+        self.assertEqual(self.newest(["1.0.0-rc.10", "1.0.0-rc.2"]), "1.0.0-rc.10")
+        self.assertEqual(self.newest(["1.0.0-rc.2", "1.0.0-rc.10"]), "1.0.0-rc.10")
+
+    def test_yanked_versions_are_skipped(self):
+        self.assertEqual(self.newest(["1.0.0", "1.1.0-rc.10", "1.1.0-rc.2"], yanked=("1.1.0-rc.10",)), "1.1.0-rc.2")
 
 
 if __name__ == "__main__":
