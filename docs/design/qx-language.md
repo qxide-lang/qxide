@@ -1,6 +1,6 @@
 # .qx 언어 설계 초안 (ROADMAP 1단계)
 
-> **상태**: 초안/부분 확정. 3~5절의 MVP는 `main` 브랜치에 병합되었으나 아직 릴리스에는 포함되지 않았다(2026-11-20). 10절에 기록된 주요 사항은 2026-11-20에 메인테이너가 결정하였으며 일부 항목은 미결로 남아 있다. 구현 결과와 설계 대비 수정 사항은 11절에 기록한다.
+> **상태**: MVP는 `main`에 병합되었고, 0.5.0 문법 개정(Java 스타일 선언, 12절)도 `main`에 구현되어 있으나 아직 배포되지 않았다(버전 0.5.0 준비 완료, 2026-11-20). 결정 사항은 10절과 12절에 기록하며, 11절은 0.4 시점 MVP 구현의 이력 기록이다.
 
 ## 1. 배경 및 목표
 
@@ -11,8 +11,8 @@ ROADMAP 1단계 과제는 전용 `.qx` 문법의 도입이다. `.qx` 언어의 �
 이 문서는 언어의 목표, 문법 초안, 선형 큐비트 기반 타입 시스템, 실행 모델, 구현 전략 비교, 단계별 로드맵, 미결정 사항을 다룬다.
 
 **MVP 범위**
-- `fn main` 및 고전 보조 함수
-- `let`/`let mut`, `i64`, `bool`
+- `void main` 및 고전 보조 함수
+- Java 스타일 타입 선언(`int x = 1;`, `final`)과 타입 `int`, `double`, `boolean`(0.5.0부터 적용, 12절 참고)
 - `if`/`else`, `for i in a..b`
 - 큐비트 및 큐비트 레지스터 할당
 - 게이트 `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `cx`, `ccx`, `reset`
@@ -41,67 +41,67 @@ ROADMAP 1단계 과제는 전용 `.qx` 문법의 도입이다. `.qx` 언어의 �
 
 아래 네 개의 예제 프로그램은 벨 쌍(Bell pair), 레지스터와 `for` 루프를 사용한 5-큐비트 GHZ 상태, 측정된 비트가 `if m1 { ... }`로 후속 게이트를 제어하는 양자 텔레포테이션, 빌드 시점 루프를 포함하는 순수 고전 보조 함수를 보여 준다.
 
-문법은 `examples/bell.rs`에서 수신자 `c.`와 `&mut`를 제거한 형태를 의도적으로 따른다. 게이트는 `h(a)`, `cx(a, b)`와 같은 자유 함수로 호출하며, 할당은 `qubit()`과 `qreg(n)`을 사용한다. `measure`는 `Qubit`에 대해 `Bit`를, `QReg`에 대해 `BitReg`를 반환한다. 주석은 `//` 한 줄 주석을 지원하며, 함수 정의, `let`, `let mut`, `if`/`else`, 끝값이 배타적인 `for i in a..b`, `return`, 함수 마지막 표현식 반환은 Rust 규칙을 따른다. 다만 MVP에서 `if`는 문(statement)으로만 사용할 수 있으며 `if` 표현식은 지원하지 않는다. 아래 코드 블록의 `rust` 태그는 구문 강조만을 위한 것이다.
+게이트는 `&mut` 없이 `h(a)`, `cx(a, b)`와 같은 자유 함수로 호출하며, 할당은 `qubit()`과 `qreg(n)`을 사용한다. `measure`는 `Qubit`에 대해 `Bit`를, `QReg`에 대해 `BitReg`를 반환한다. 0.5.0부터 변수 선언은 이름 앞에 타입을 두는 Java 스타일(`Qubit a = qubit();`, `Bit m = measure(a);`, `int n = 5;`, 상수에는 `final`)을 따르며, 함수는 반환 타입을 앞에 쓰고(`void main()`, `boolean parity(int n)`) 값 반환은 `return`으로만 수행한다(마지막 표현식 반환은 지원하지 않는다). 제어 흐름은 기존 형태를 유지해 괄호 없는 `if`/`else`, 끝값이 배타적인 `for i in a..b`, `//` 한 줄 주석을 지원하며, `if`는 문(statement)으로만 사용할 수 있다. 0.5.0의 문법 변경 사항과 마이그레이션은 12절에 기록한다. 아래 코드 블록의 `rust` 태그는 구문 강조만을 위한 것이다.
 
 ```rust
 // examples/qx/bell.qx
-fn main() {
-    let a = qubit();
-    let b = qubit();
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
     h(a);
     cx(a, b);
-    let ma = measure(a);
-    let mb = measure(b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
     println("a={} b={}", ma, mb);
 }
 ```
 
 ```rust
 // examples/qx/ghz.qx
-fn main() {
-    let n = 5;
-    let r = qreg(n);
+void main() {
+    int n = 5;
+    QReg r = qreg(n);
     h(r[0]);
     for i in 1..n {
         cx(r[0], r[i]);
     }
-    let m = measure(r);
-    println("{}", m);
+    BitReg m = measure(r);
+    println("{}  {} = {}", m, m.to_binary(), m.as_int());
 }
 ```
 
 ```rust
 // examples/qx/teleport.qx: measurement results steer later gates
-fn main() {
-    let msg = qubit();
-    let alice = qubit();
-    let bob = qubit();
+void main() {
+    Qubit msg = qubit();
+    Qubit alice = qubit();
+    Qubit bob = qubit();
     x(msg);
     h(alice);
     cx(alice, bob);
     cx(msg, alice);
     h(msg);
-    let m0 = measure(msg);
-    let m1 = measure(alice);
+    Bit m0 = measure(msg);
+    Bit m1 = measure(alice);
     if m1 {
         x(bob);
     }
     if m0 {
         z(bob);
     }
-    let out = measure(bob);
+    Bit out = measure(bob);
     println("bob={}", out);
 }
 ```
 
 ```rust
 // Classical helper functions and build-time control flow
-fn parity(n: i64) -> bool {
-    n % 2 == 1
+boolean parity(int n) {
+    return n % 2 == 1;
 }
 
-fn main() {
-    let mut total = 0;
+void main() {
+    int total = 0;
     for i in 0..10 {
         if parity(i) {
             total = total + i;
@@ -115,11 +115,11 @@ fn main() {
 
 ```ebnf
 program    = { fn_decl } ;
-fn_decl    = "fn" IDENT "(" [ param { "," param } ] ")" [ "->" type ] block ;
-param      = IDENT ":" type ;
-type       = "i64" | "bool" | "Bit" | "BitReg" | "Qubit" | "QReg" ;
-block      = "{" { stmt } [ expr ] "}" ;          (* trailing expr = function result *)
-stmt       = "let" [ "mut" ] IDENT [ ":" type ] "=" expr ";"
+fn_decl    = type IDENT "(" [ param { "," param } ] ")" block ;   (* type may be "void" *)
+param      = type IDENT ;
+type       = "int" | "double" | "boolean" | "void" | "Bit" | "BitReg" | "Qubit" | "QReg" ;
+block      = "{" { stmt } "}" ;
+stmt       = [ "final" ] type IDENT "=" expr ";"
            | IDENT "=" expr ";"
            | if_stmt
            | "for" IDENT "in" expr ".." expr block
@@ -133,8 +133,8 @@ cmp        = sum [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum ] ;
 sum        = term { ( "+" | "-" ) term } ;
 term       = unary { ( "*" | "/" | "%" ) unary } ;
 unary      = ( "-" | "!" ) unary | postfix ;
-postfix    = primary { "[" expr "]" } ;
-primary    = INT | "true" | "false" | STRING | IDENT [ "(" [ expr { "," expr } ] ")" ] | "(" expr ")" ;
+postfix    = primary { "[" expr "]" | "." IDENT "(" ")" } ;   (* r.to_binary(), r.as_int() *)
+primary    = INT | DOUBLE | "true" | "false" | STRING | IDENT [ "(" [ expr { "," expr } ] ")" ] | "(" expr ")" ;
 ```
 
 아래 표는 MVP에서 제공하는 내장 함수와 각 함수가 `qxide` 라이브러리에서 대응하는 대상을 정리한 것이다.
@@ -142,15 +142,17 @@ primary    = INT | "true" | "false" | STRING | IDENT [ "(" [ expr { "," expr } ]
 | 내장 함수 | 시그니처 / 소유권 | qxide 라이브러리 대응 |
 | --- | --- | --- |
 | `qubit()` | `() -> Qubit` | `Circuit::qubit` |
-| `qreg(n)` | `(i64) -> QReg` | `Circuit::qubit` × n |
+| `qreg(n)` | `(int) -> QReg` | `Circuit::qubit` × n |
 | `h` `x` `z` `s` `sdg` `t` `tdg` | `(Qubit)`, 큐비트 대여(유지) | `Circuit::h` … |
 | `cx(c, t)` | `(Qubit, Qubit)`, 큐비트 대여(유지) | `Circuit::cx` |
 | `ccx(c1, c2, t)` | `(Qubit, Qubit, Qubit)`, 큐비트 대여(유지) | `Circuit::ccx` |
 | `reset(q)` | `(Qubit)`, 큐비트 대여(유지) | `Circuit::reset` |
+| `rx(q, θ)` `ry` `rz` | `(Qubit, double)`, 큐비트 대여, 각도는 `double`(`int`는 확장 변환) | `Circuit::rx` … |
 | `measure(q)` / `measure(r)` | `(Qubit) -> Bit` / `(QReg) -> BitReg`, 인자 소비(이동) | `Circuit::measure` |
 | `discard(q)` / `discard(r)` | `(Qubit)` / `(QReg)`, 인자 소비(이동) | 연산 미방출, 슬롯 포기(부분 대각합) |
-| `len(r)` | `(QReg) -> i64` / `(BitReg) -> i64` | 빌드(전개) 시 평가, 연산 미방출 |
-| `println(fmt, ...)` | `{}` 자리표시자가 포함된 문자열 리터럴과 `i64`/`bool`/`Bit`/`BitReg` 인자 | 출력 템플릿에 기록, 샷마다 1회 렌더링 |
+| `len(r)` | `(QReg) -> int` / `(BitReg) -> int` | 빌드(전개) 시 평가, 연산 미방출 |
+| `r.to_binary()` / `r.as_int()` | `BitReg` 메서드, 출력 전용(변수 저장 불가) | 샷마다 렌더링, 연산 방출 없음 |
+| `println(fmt, ...)` | `{}` 자리표시자가 포함된 문자열 리터럴과 `int`/`double`/`boolean`/`Bit`/`BitReg`/`to_binary()`/`as_int()` 인자 | 출력 템플릿에 기록, 샷마다 1회 렌더링 |
 
 ## 4. 타입 시스템
 
@@ -158,76 +160,76 @@ MVP의 6개 타입은 복사 가능 여부와 값 확정 시점에 따라 세 �
 
 | 타입 | 복사 가능 여부 | 값 확정 시점 | 의미 |
 | --- | --- | --- | --- |
-| `i64`, `bool` | 가능 | 빌드 시점(인터프리터 전개 중) | 일반 고전 정수(64비트, 오버플로 시 오류)와 불리언 |
+| `int`, `double`, `boolean` | 가능 | 빌드 시점(인터프리터 전개 중) | 64비트 부호 있는 정수(오버플로 시 오류), 64비트 IEEE 754 부동소수점, 불리언 |
 | `Bit`, `BitReg` | 가능 | 샷 실행 시점(시뮬레이션 이후) | 측정 결과 슬롯 핸들 및 그 레지스터(라이브러리의 `Bit`/`BitReg`에 대응) |
 | `Qubit`, `QReg` | 불가 — 선형(정확히 한 번 소비해야 함) | 빌드 시점(인터프리터 전개 중) | 소유된 큐비트 및 큐비트 레지스터 |
 
 ### 선형 큐비트 규칙
 
-1. **복사 금지**: `let q2 = q;`는 `q`를 이동(move)시키며, 이후 `q`를 다시 사용하면 `Q0301` 오류가 발생한다. 복제 연산은 존재하지 않는다.
+1. **복사 금지**: `Qubit q2 = q;`는 `q`를 이동(move)시키며, 이후 `q`를 다시 사용하면 `Q0301` 오류가 발생한다. 복제 연산은 존재하지 않는다.
 2. **소비 규칙**: `measure`와 `discard`는 `Qubit` 또는 `QReg` 전체를 소비하며, 게이트와 `reset`은 대여만 수행한다. 이미 소비된 변수를 사용하면 `Q0301` 오류가 발생하며, 진단 메시지는 해당 변수가 소비된 위치를 함께 가리킨다.
 3. **선형성**: 블록이 끝나거나 `return`으로 함수를 빠져나갈 때 아직 살아 있는 `Qubit`/`QReg`가 남아 있으면 `Q0302` 오류로 거부한다. 라이브러리에서는 조용히 드롭되는 경우라도 `.qx`에서는 명시적인 `measure`나 `discard`가 필요하다. 살아 있는 큐비트와 같은 이름의 새 `let` 바인딩으로 섀도잉(shadowing)하는 것도 누수를 유발하므로 `Q0310` 오류로 금지한다.
 4. **피연산자 중복 금지**: `cx`/`ccx`에 동일한 큐비트를 두 번 전달하는 경우, 정적으로 판별 가능하면(같은 변수이거나 같은 레지스터의 동일한 리터럴 인덱스) 검사 단계에서 `Q0303` 오류를 보고한다. 정적으로 알 수 없는 경우(예: 실행 시 `i == j`인 `cx(r[i], r[j])`)에는 런타임에서 동일한 코드로 오류를 보고한다.
-5. **제어 흐름 일치**: `bool` 조건의 `if`에서는 양쪽 분기가 끝났을 때 외부 큐비트의 소비 상태가 모두 일치해야 하며, 다르면 `Q0304` 오류가 발생한다. `for` 루프 본문은 루프 바깥에서 선언된 큐비트를 소비할 수 없다(`Q0305`).
-6. **레지스터 단위 이동 및 재할당 금지**: MVP에서 `QReg`는 전체 단위로만 이동한다. `measure(r[i])`, `discard(r[i])`, `let q = r[i];`는 `Q0306` 오류로 거부하며, 개별 원소는 게이트 호출의 대여 인자로만 사용할 수 있다. 또한 양자 변수에는 `=`로 재할당할 수 없다(`Q0307`).
+5. **제어 흐름 일치**: `boolean` 조건의 `if`에서는 양쪽 분기가 끝났을 때 외부 큐비트의 소비 상태가 모두 일치해야 하며, 다르면 `Q0304` 오류가 발생한다. `for` 루프 본문은 루프 바깥에서 선언된 큐비트를 소비할 수 없다(`Q0305`).
+6. **레지스터 단위 이동 및 재할당 금지**: MVP에서 `QReg`는 전체 단위로만 이동한다. `measure(r[i])`, `discard(r[i])`, `Qubit q = r[i];`는 `Q0306` 오류로 거부하며, 개별 원소는 게이트 호출의 대여 인자로만 사용할 수 있다. 또한 양자 변수에는 `=`로 재할당할 수 없다(`Q0307`).
 7. **연산 문맥 제한**: 양자 값을 산술 연산이나 비교 연산에 사용하면 타입 불일치(`Q0204`)로, `println`으로 출력하면 `Q0212`로 보고되며, 매개변수나 반환값이 `Qubit`/`QReg`인 함수는 MVP에서 지원하지 않아 `Q0219`로 거부된다. 또한 `h(qubit())`처럼 큐비트 변수나 레지스터 원소가 아닌 게이트 피연산자는 `Q0311`로 보고된다.
 
 아래 네 개의 코드 예제는 이러한 오류 코드가 발생하는 대표적인 사례를 보여 준다.
 
 ```rust
-fn main() {
-    let q = qubit();
-    let m = measure(q);
+void main() {
+    Qubit q = qubit();
+    Bit m = measure(q);
     h(q);          // error[Q0301]: use of consumed qubit `q`
 }
 ```
 
 ```rust
-fn main() {
-    let a = qubit();
+void main() {
+    Qubit a = qubit();
     cx(a, a);      // error[Q0303]: same qubit passed to `cx` more than once
     discard(a);
 }
 ```
 
 ```rust
-fn main() {
-    let q = qubit();
+void main() {
+    Qubit q = qubit();
     h(q);
 }                  // error[Q0302]: qubit `q` is never measured or discarded
 ```
 
 ```rust
-fn main() {
-    let q = qubit();
+void main() {
+    Qubit q = qubit();
     for i in 0..3 {
-        let m = measure(q);   // error[Q0305]: qubit `q` is consumed inside a loop
+        Bit m = measure(q);   // error[Q0305]: qubit `q` is consumed inside a loop
     }
 }
 ```
 
-### 고전 값과 측정 결과 (`bool` 대 `Bit`)
+### 고전 값과 측정 결과 (`boolean` 대 `Bit`)
 
-`bool`과 `Bit`의 구분은 이 언어의 핵심 설계 결정이다. `i64`와 `bool` 값은 인터프리터가 프로그램을 전개하는 빌드 시점에 이미 확정되지만, `Bit`와 `BitReg` 값은 라이브러리의 `Bit`/`Shot::get`과 마찬가지로 시뮬레이션 이후 각 샷마다 결정된다.
+`boolean`과 `Bit`의 구분은 이 언어의 핵심 설계 결정이다. `int`와 `boolean` 값은 인터프리터가 프로그램을 전개하는 빌드 시점에 이미 확정되지만, `Bit`와 `BitReg` 값은 라이브러리의 `Bit`/`Shot::get`과 마찬가지로 시뮬레이션 이후 각 샷마다 결정된다.
 
-이에 따라 `bool` 조건의 `if`는 빌드 시점에 분기가 결정되어 선택된 쪽의 게이트만 방출하고, `for` 루프 역시 빌드 시점에 전개된다. 반면 `Bit` 조건의 `if`(`Bit` 변수 또는 `BitReg`의 원소 `m[i]`)는 `Circuit::if_one`으로, `else` 절은 `Circuit::if_zero`로 낮춰지며, OpenQASM 3의 `if (c[i] == true) { ... }`에 대응한다. `Bit`는 산술 연산, `for` 범위, `bool` 조건, 인덱스, 비교 연산처럼 빌드 시점 값이 필요한 위치에 사용할 수 없으며, 시도할 경우 전용 오류 코드 `Q0218`(빌드 시점 값이 필요한 위치에 측정 결과 사용)이 발생한다.
+이에 따라 `boolean` 조건의 `if`는 빌드 시점에 분기가 결정되어 선택된 쪽의 게이트만 방출하고, `for` 루프 역시 빌드 시점에 전개된다. 반면 `Bit` 조건의 `if`(`Bit` 변수 또는 `BitReg`의 원소 `m[i]`)는 `Circuit::if_one`으로, `else` 절은 `Circuit::if_zero`로 낮춰지며, OpenQASM 3의 `if (c[i] == true) { ... }`에 대응한다. `Bit`는 산술 연산, `for` 범위, `boolean` 조건, 인덱스, 비교 연산처럼 빌드 시점 값이 필요한 위치에 사용할 수 없으며, 시도할 경우 전용 오류 코드 `Q0218`(빌드 시점 값이 필요한 위치에 측정 결과 사용)이 발생한다.
 
 `Bit` 조건 `if`의 본문은 조건부 게이트 블록으로 낮춰져야 하므로 사용 가능한 구문이 제한된다.
-- **허용**: 게이트 호출, `reset`, 중첩 `if`, `for`, 고전 값에 대한 `let` 바인딩
-- **금지 (`Q0308`)**: `measure`, `discard`, `qubit()`/`qreg()`, `println`, 사용자 함수 호출, `return`, 양자 값에 대한 `let` 바인딩
+- **허용**: 게이트 호출, `reset`, 중첩 `if`, `for`, 고전 변수 선언(예: `int k = 3;`)
+- **금지 (`Q0308`)**: `measure`, `discard`, `qubit()`/`qreg()`, `println`, 사용자 함수 호출, `return`, 양자 변수 선언(`Qubit`, `QReg`)
 - **외부 변수 대입 금지 (`Q0309`)**: 본문 바깥에서 선언된 변수에 대입하면 샷 결과와 무관하게 빌드 시점에 실행되므로 허용하지 않는다.
 
 이 제약의 근거는 라이브러리의 의미론과 일치한다. 라이브러리 자체가 분기 내부의 측정을 선택되지 않은 경로의 미정의 비트로 간주해 패닉을 발생시키며, 빌드 시점의 부수 효과 역시 샷별 결과에 의존할 수 없다. 회로 중간 측정 후 후속 게이트를 적용하는 패턴과 `if`를 통한 고전 피드포워드는 그대로 지원된다. OpenQASM 3가 지원하는 샷 시점의 비트 단위 고전 연산은 이후 단계에서 추가할 예정이며, 세부 방향은 8절에서 다룬다.
 
 ```rust
-fn main() {
-    let a = qubit();
-    let t = qubit();
+void main() {
+    Qubit a = qubit();
+    Qubit t = qubit();
     h(a);
-    let m = measure(a);
+    Bit m = measure(a);
     if m {
         x(t);                 // ok: lowered to `if (c[0] == true) { x q[1]; }`
-        let m2 = measure(t);  // error[Q0308]: cannot use `measure` inside an `if` on a measurement result
+        Bit m2 = measure(t);  // error[Q0308]: cannot use `measure` inside an `if` on a measurement result
     }
 }
 ```
@@ -236,9 +238,9 @@ fn main() {
 
 검사기는 실행에 앞서 전체 프로그램을 먼저 검증하므로, 타입 오류나 소유권 오류가 있는 프로그램은 부분 출력을 생성하지 않는다.
 
-전개(elaboration) 단계는 단일 `qxide::Circuit`을 대상으로 `main`을 정확히 한 번 실행하는 트리 워킹 인터프리터다. 큐비트 변수는 풀(pool)에 저장된 실제 `qxide::Qubit` 값을 보유하므로 모든 게이트 호출은 `Circuit::h`, `Circuit::cx` 등 라이브러리 메서드의 직접 호출로 이어지고, `Bit` 조건의 `if`는 `Circuit::if_one`/`if_zero`로, `measure`는 라이브러리의 `Bit` 반환으로 매핑된다. 고전 평가는 검사된 `i64` 산술을 사용하므로 오버플로, 0으로 나누기, 범위 초과 인덱스는 소스 위치가 포함된 런타임 오류로 보고된다. 재귀 호출은 허용하되 호출 깊이에 상한을 둔다.
+전개(elaboration) 단계는 단일 `qxide::Circuit`을 대상으로 `main`을 정확히 한 번 실행하는 트리 워킹 인터프리터다. 큐비트 변수는 풀(pool)에 저장된 실제 `qxide::Qubit` 값을 보유하므로 모든 게이트 호출은 `Circuit::h`, `Circuit::cx` 등 라이브러리 메서드의 직접 호출로 이어지고, `Bit` 조건의 `if`는 `Circuit::if_one`/`if_zero`로, `measure`는 라이브러리의 `Bit` 반환으로 매핑된다. 고전 평가는 검사된 `int` 산술을 사용하므로 오버플로, 0으로 나누기, 범위 초과 인덱스는 소스 위치가 포함된 런타임 오류로 보고된다. 재귀 호출은 허용하되 호출 깊이에 상한을 둔다.
 
-전개 결과는 하나의 회로와 출력 템플릿으로 구성된다. 출력 템플릿은 빌드 순서대로 기록된 `println` 호출의 목록이며, 각 `{}` 자리표시자는 이미 확정된 텍스트(`i64`/`bool`)이거나 `Bit`/`BitReg` 참조다. 이처럼 고전 코드가 양자 프로그램을 구성하는 방식을 단계적(staged) 모델이라 하며, 현재 Rust 코드로 `qxide` 라이브러리를 사용하는 방식과 동일하다.
+전개 결과는 하나의 회로와 출력 템플릿으로 구성된다. 출력 템플릿은 빌드 순서대로 기록된 `println` 호출의 목록이며, 각 `{}` 자리표시자는 이미 확정된 텍스트(`int`/`boolean`)이거나 `Bit`/`BitReg` 참조다. 이처럼 고전 코드가 양자 프로그램을 구성하는 방식을 단계적(staged) 모델이라 하며, 현재 Rust 코드로 `qxide` 라이브러리를 사용하는 방식과 동일하다.
 
 ```text
 .qx source ─lexer→ tokens ─parser→ AST ─checker→ checked AST
@@ -249,11 +251,11 @@ fn main() {
 
 실행, 검증, OpenQASM 3 내보내기는 세 가지 CLI 하위 명령으로 제공된다.
 
-- `qxide run <file.qx> [--shots N] [--seed S]`: 회로를 `N`회(기본값 1) 시뮬레이션하며, `k`번째 샷은 `Circuit::simulate_with(Backend::Auto, S + k)`(기본값 `S = 0`)로 실행한다. 따라서 클리포드(Clifford) 연산만으로 구성된 프로그램은 안정화자 백엔드를, 그 외에는 상태벡터 백엔드를 사용한다. 각 샷의 비트로 출력 템플릿을 렌더링해 `N = 1`이면 결과를 그대로 출력하고, `N > 1`이면 동일한 출력을 묶어 고유 출력과 횟수를 함께 표시한다. 출력 템플릿이 `Bit`를 전혀 참조하지 않으면 출력이 샷에 의존하지 않으므로 시뮬레이션을 생략한다. 메모리 한도 초과 등의 `SimError`는 패닉 대신 진단 메시지로 보고한다.
-- `qxide qasm <file.qx>`: `Circuit::to_qasm()`이 생성한 OpenQASM 3 코드를 출력하며 `println`은 무시한다.
-- `qxide check <file.qx>`: 렉서, 파서, 검사기만 실행하고 진단 메시지를 출력한다. 인덱스 범위 초과와 같은 런타임 오류는 `run`이나 `qasm` 실행 시에만 검출된다.
+- `qxide run <file.qx> [--shots N] [--seed S]`: 프로그램을 N회 시뮬레이션한다(기본값 1). 각 샷 k는 `Circuit::simulate_with(Backend::Auto, S + k)`로 실행되므로(기본값 `S = 0`), 클리퍼드(Clifford) 전용 프로그램은 안정화기(stabilizer) 백엔드를, 그 외에는 상태 벡터 백엔드를 사용한다. N = 1이면 해당 샷의 `println` 출력을 그대로 출력한다. N > 1이면(0.5.0부터) 서로 다른 측정 기록(측정된 모든 비트를 측정 순서대로, 즉 고전 레지스터 `c[0]`부터 나열한 값)마다 한 행씩 `[0, 1, 1]  0b110 = 6  ×503` 형식의 표를 횟수 순으로 정렬해 출력하고, 각 행 아래에 해당 결과에 대한 `println` 출력을 공백 두 칸 들여쓰기로 이어 붙인다(`println` 출력은 측정된 비트에만 의존한다). N = 1이면서 `Bit` 출력이 없거나 측정 자체가 없는 등 샷 결과에 따라 관찰 가능한 출력이 달라지지 않으면 시뮬레이션을 건너뛴다. 메모리 한도 초과 같은 `SimError`는 진단 메시지로 변환한다.
+- `qxide qasm <file.qx>`: `Circuit::to_qasm()` 결과를 출력하고 `println`은 무시한다.
+- `qxide check <file.qx>`: 렉서, 파서, 검사기만 실행한다. 범위 초과 인덱스 같은 실행 시점 오류는 `run` 또는 `qasm`에서만 발견된다.
 
-`BitReg`는 인덱스 순서(`r[0]`부터)로 0과 1의 문자열을 출력한다. 이는 Qiskit의 표시 순서와 반대이며, 10절의 미결정 사항에 기록한다. 한편 `measure`가 즉시 `bool`을 반환하는 실시간 단계별 시뮬레이터 대안은 기각했다. 이 방식은 측정 결과에 임의의 고전 코드를 적용할 수 있지만, 측정 의존 프로그램의 고전 흐름이 단일 샷에 고정되어 OpenQASM 3 내보내기를 잃게 되고, 현재 크레이트에 없는 단계별 시뮬레이터 API가 필요하다. 다만 향후 선택적 실행 모드로 다시 검토할 여지는 남겨 둔다.
+`BitReg` 출력 규칙은 12.4절에 정의한다(기본값은 `r[0]`이 먼저 오는 배열 `[0, 1, 1]`, `to_binary()`는 최상위 비트 우선, `as_int()`는 `r[0]`을 최하위 비트로 해석하며 순서 변경 옵션은 두지 않는다). `measure`가 즉시 `boolean`을 반환하는 단계별 실시간 시뮬레이터 대안은 측정에 의존하는 고전 제어 흐름이 단일 샷에 고정되어 OpenQASM 3 내보내기가 불가능해지고, 크레이트에 단계별 시뮬레이터 API도 없어 기각했다. 향후 선택적 모드로 다시 도입할 수 있다.
 
 ## 6. 구현 전략 비교
 
@@ -298,10 +300,10 @@ fn main() {
 ```text
 $ qxide check leak.qx
 error[Q0302]: qubit `q` is never measured or discarded
- --> leak.qx:2:9
+ --> leak.qx:2:11
   |
-2 |     let q = qubit();
-  |         ^
+2 |     Qubit q = qubit();
+  |           ^
 note: goes out of scope here
  --> leak.qx:4:1
   |
@@ -312,14 +314,14 @@ help: call `measure` or `discard` on it before the end of its scope
 
 ## 8. MVP 이후 확장 계획
 
-아래 두 코드 스케치는 아직 구현되지 않았으며 향후 문법 방향만 고정하기 위한 것이다. `with_ancilla anc { compute } apply { body }`는 `Circuit::with_ancilla`/`with_ancillas`로 낮춰지며, 라이브러리와 동일한 규칙(compute 블록에는 `x`/`cx`/`ccx`만 허용, apply 블록에서는 보조 큐비트와 compute 블록이 건드린 모든 큐비트를 제어 큐비트 또는 대각 위상 용도로만 사용)을 대여 검사기와 런타임 잠금 대신 `.qx` 검사기가 정적으로 검증한다. 큐비트를 받는 사용자 함수는 명시적인 `&mut Qubit`(대여)와 `Qubit`(이동) 매개변수 및 `Qubit` 반환 타입으로 표현한다.
+아래 두 코드 스케치는 아직 구현되지 않았으며 향후 문법 방향만 고정하기 위한 것이다. `with_ancilla anc { compute } apply { body }`는 `Circuit::with_ancilla`/`with_ancillas`로 낮춰지며, 라이브러리와 동일한 규칙(compute 블록에는 `x`/`cx`/`ccx`만 허용, apply 블록에서는 보조 큐비트와 compute 블록이 건드린 모든 큐비트를 제어 큐비트 또는 대각 위상 용도로만 사용)을 대여 검사기와 런타임 잠금 대신 `.qx` 검사기가 정적으로 검증한다. 큐비트를 다루는 사용자 함수는 Java식 시그니처(`void bell_pair(Qubit a, Qubit b)`, `Qubit fresh_plus()`)로 스케치했으며, Rust의 `&mut` 없이 매개변수의 대여와 이동을 어떻게 표기할지는 미결 사항이다(12.8절 참고).
 
 ```rust
 // Sketch only (not implemented): scoped uncomputation, lowered to Circuit::with_ancilla
-fn main() {
-    let a = qubit();
-    let b = qubit();
-    let t = qubit();
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    Qubit t = qubit();
     h(a);
     h(b);
     with_ancilla anc {
@@ -327,27 +329,26 @@ fn main() {
     } apply {
         cx(anc, t);           // apply: anc, a and b are control-only here
     }
-    let r = measure(t);
+    Bit r = measure(t);
     discard(a);
     discard(b);
 }
 ```
 
 ```rust
-// Sketch only (not implemented): qubit-taking functions
-fn bell_pair(a: &mut Qubit, b: &mut Qubit) {
+// Sketch only (not implemented): qubit-taking functions; how to mark borrow vs move is open (section 12)
+void bell_pair(Qubit a, Qubit b) {
     h(a);
     cx(a, b);
 }
 
-fn fresh_plus() -> Qubit {
-    let q = qubit();
+Qubit fresh_plus() {
+    Qubit q = qubit();
     h(q);
-    q
+    return q;
 }
 ```
 
-- `f64` 타입과 회전 게이트 `rx`, `ry`, `rz`(라이브러리에서 이미 지원)
 - 위 스케치와 같은 큐비트 매개변수·반환값 지원 사용자 함수
 - `with_ancilla` 블록 문법
 - 빌드 시점 `while`/`loop`/`break` 제어 흐름
@@ -365,7 +366,7 @@ fn fresh_plus() -> Qubit {
    - 예제 파일 `examples/qx/bell.qx`, `ghz.qx`, `teleport.qx` 추가
    - 단위 테스트 및 CLI 통합 테스트 구축
 2. **2단계 — 언어 완성도 확보**
-   - `f64` 및 회전 게이트, 큐비트를 받는 사용자 함수, `with_ancilla` 문법, `while`/`break`, 확장된 `println` 지원
+   - `double` 및 회전 게이트, 큐비트를 받는 사용자 함수, `with_ancilla` 문법, `while`/`break`, 확장된 `println` 지원
    - 편집기 구문 강조 제공 및 ROADMAP의 `qxide build` 명령 명명 정리
 3. **3단계 — 타입 IR 도입**
    - 검사된 AST를 타입 IR로 낮추는 파이프라인과 IR 인터프리터 구현
@@ -380,17 +381,19 @@ fn fresh_plus() -> Qubit {
 
 1. **선형 대 아핀 모델** — 결정(2026-11-20): 스코프 종료 시 소비되지 않은 큐비트는 계속 오류(`Q0302`)로 처리하며, 명시적 해제를 위해 `discard`를 제공한다.
 2. **게이트 호출 문법** — 결정(2026-11-20): `&mut` 없이 `h(q)` 형태를 유지하며, 큐비트를 받는 사용자 정의 함수에도 같은 규칙을 적용한다.
-3. **타입 명명 규칙** — 결정(2026-11-20): Rust 관례를 따라 원시 타입은 소문자(`i64`, `bool`), 양자 타입과 복합 타입은 PascalCase(`Qubit`, `Bit`, `QReg`, `BitReg`)를 사용한다.
-4. **할당 문법** — 미결: 현재의 `qubit()`/`qreg(n)` 방식과 `let q: Qubit;` 같은 선언 구문 또는 `QReg<3>` 같은 크기 지정 레지스터 타입을 비교 검토한다.
+3. **타입 명명 규칙** — 결정(2026-11-20): 같은 날 Java 스타일 결정으로 대체되었다. 기본 타입은 Java 스타일 소문자(`int` = 64비트 정수, `double`, `boolean`), 양자 및 복합 타입은 PascalCase(`Qubit`, `Bit`, `QReg`, `BitReg`)를 사용하며 `long`은 생략한다(12.1절). 이전의 `i64`/`bool` 선택은 0.5.0에서 대체되었다.
+4. **할당 문법** — 결정(2026-11-20): 이름 앞에 타입을 두는 Java 스타일 선언을 사용하며, 할당은 함수 호출 형태를 유지한다(`Qubit q = qubit();`, `QReg r = qreg(3);`). `QReg<3>` 같은 크기 지정 레지스터 타입과 `var` 타입 추론(12.3절)은 여전히 미결이다.
 5. **`measure` 오버로딩** — 미결: `Qubit`과 `QReg` 모두에 오버로딩하는 현재 방식과 별도의 `measure_reg`를 분리하는 방식을 비교 검토한다.
 6. **`with_ancilla` 블록 문법** — 미결: 초안의 `with_ancilla anc { ... } apply { ... }` 형태와 Q# 스타일의 `within { } apply { }` 또는 다른 구문을 비교 검토한다.
 7. **CLI 명령 이름** — 결정(2026-11-20): `qxide run`/`check`/`qasm`을 유지하며, ROADMAP의 `qxide build` 항목은 `qxide qasm`으로 이름을 변경했다.
-8. **`BitReg` 출력 순서** — 보류: 결정 전까지 현재의 인덱스 순서(`r[0]` 우선)를 유지한다. 대안으로 Qiskit 방식의 최상위 비트 우선 출력이나 `Shot::value`와 같은 정수 표현이 있다.
+8. **`BitReg` 출력 순서** — 결정(2026-11-20): 순서 변경 옵션(`--bit-order` 등)은 두지 않는다. 기본 출력은 `r[0]`이 먼저 오는 배열 `[0, 1, 1]`이며, `to_binary()`는 `0b` 접두사와 함께 최상위 비트부터 출력하고(`0b110`), `as_int()`는 `r[0]`을 최하위 비트로 해석하므로 항상 `to_binary()` 값과 일치한다(`= 6`). 다중 샷 표에서는 두 형식을 모두 표시한다. 자세한 내용은 12.4절에 기록한다.
 9. **진단 메시지 언어** — 결정(2026-11-20): 영어를 사용한다. 모든 컴파일러 진단(오류, note, help)과 CLI 메시지를 영어로 출력한다(7절 및 11절 수정 사항 9 참고).
 10. **프런트엔드 공개 여부** — 미결: Python 바인딩 등을 위해 `qxide::lang` 모듈을 공개할지, 현재처럼 CLI 내부 비공개로 유지할지 검토한다.
 11. **출력 비의존 시 시뮬레이션 생략** — 미결: 출력되는 `Bit`가 없을 때 시뮬레이션을 생략하는 현재 동작과 `SimError`를 드러내기 위해 항상 시뮬레이션을 실행하는 동작을 비교 검토한다.
 
 ## 11. 구현 결과 및 설계 수정 사항 (MVP)
+
+> 이 절은 0.4 시점 MVP 구현의 이력 기록으로, 이전 Rust 스타일 문법(`let`, `fn`, `i64`, `bool`)을 기준으로 작성되었다. 현재 문법과 코드 변경 사항은 12절을 참고한다.
 
 6장의 권고(안 A)에 따라 `qx-lang` 브랜치의 커밋 `a052f2b`에서 MVP를 구현하고, 커밋 `d171fa6`에서 리뷰 수정 사항을 반영했다. 구현 코드는 `src/lang/`(`lexer.rs`, `parser.rs`, `ast.rs`, `check.rs`, `interp.rs`, `diag.rs`, `msg.rs`)에 위치하며 `src/main.rs`의 바이너리 전용 모듈로 구성되어 라이브러리 공개 API에는 변경이 없고 의존성도 추가되지 않았다. 이 장에서는 구현된 범위, 3~7장의 설계와 달라진 부분, 전체 오류 코드 목록, 그리고 검증 내역을 기록한다.
 
@@ -482,3 +485,154 @@ a=1 b=1
 - **주요 확인 항목**: 4장의 모든 오류 예제가 명시된 위치에서 해당 오류 코드를 반환하는지 확인했다. Bell과 GHZ 측정 결과가 항상 상관관계를 유지하며 Bell 예제가 200샷에서 두 결과를 모두 출력하는지, |1> 텔레포테이션이 항상 `bob=1`을 출력하는지 검증했다. `qxide qasm examples/qx/bell.qx` 출력이 Rust API로 구성한 동일 회로의 `to_qasm()` 결과와 일치하며, `bool` 조건 `if`는 선택된 분기만 방출하고 `Bit` 조건 `if`/`else`는 `if (c[i] == true)` / `if (c[i] == false)`로 내려가는 것을 확인했다. 30큐비트 비-Clifford 프로그램은 패닉 대신 `Q0406`을 반환하면서 `qasm` 출력은 정상 동작하며, CRLF 줄바꿈 소스에서도 열 번호가 정확히 보고된다.
 - **OpenQASM 3 상호운용성**: 세 예제 파일과 중첩 `Bit` 조건, `else`, `ccx`, `for` 루프를 포함한 추가 샘플에서 생성한 OpenQASM 3 출력을 `ci/check_qasm.py`를 통해 Qiskit 2.6.2(CI 기준 버전)의 `qiskit.qasm3.loads`로 파싱해 성공을 확인했다. CI의 `qasm-interop` 작업도 `examples/qx/*.qx`를 내보내 파싱하도록 확장했다.
 - **미검증 항목**: `gpu` 피처 테스트(`cargo test --features gpu`는 이번 변경에서 미실행; CI와 동일한 `cargo clippy --all-targets --features gpu -- -D warnings`는 실행해 통과함), GitHub CI 실행(원격 푸시 전), 인터프리터 성능(별도 측정 없음)은 검증하지 않았다.
+
+## 12. 0.5.0 문법 개정(Java 스타일 선언), 비트 출력, 포지셔닝 및 네이티브 코드 로드맵
+
+2026-11-20에 메인테이너는 Java 스타일 표면 문법, 고정된 비트 출력 형식, 언어 포지셔닝, 네이티브 코드 로드맵을 결정했다. 이 절은 해당 결정 사항과 0.4 시점 문법에서의 마이그레이션 내용을 기록한다. 이 변경 사항은 버전 0.5.0에 포함되어 있으며, 작성 시점 기준으로 준비 완료되었으나 아직 배포되지 않았다.
+
+### 12.1 Java 스타일 선언과 타입
+
+- Java와 같이 변수 이름 앞에 타입을 쓴다(`int x = 1;`, `Qubit q = qubit();`, `Bit m = measure(q);`). 초기화식은 필수이며 `int x;` 같은 미초기화 선언은 허용하지 않는다.
+- 함수는 반환 타입을 앞에 쓰고(`void main()`, `int add(int a, int b)`), 값 반환은 `return` 문으로만 수행한다(마지막 표현식 반환은 제거되었다).
+- 지역 변수는 기본적으로 가변이며, `final`을 붙이면 불변이 된다. `final` 변수에 재할당하면 `Q0207` 오류가 발생한다.
+- 기본 타입은 `int`(64비트 부호 있는 정수, 오버플로 시 `Q0401` 오류), `double`(64비트 IEEE 754 부동소수점, 0으로 나누면 오류가 아니라 Java와 같이 무한대 또는 NaN 반환), `boolean`이며, `void`는 함수 반환 타입으로만 사용할 수 있다. 양자 및 복합 타입은 PascalCase(`Qubit`, `QReg`, `Bit`, `BitReg`)를 사용한다.
+- `int`는 대입, 인자, 반환값, 산술 연산에서 `double`로 암묵적 확장 변환된다. 반대 방향 변환에는 캐스트가 필요하지만 아직 지원하지 않는다. 새로 추가된 `rx`, `ry`, `rz` 게이트는 각도 인자로 `double`을 받는다.
+- 제어 흐름은 기존과 동일하다(괄호 없는 `if`, `for i in a..b`).
+- 제거된 `let`, `fn`, `mut` 키워드를 사용하면 새 형식을 안내하는 도움말과 함께 `Q0110` 오류가 발생한다.
+
+아래는 0.5.0 문법으로 작성한 예제이다.
+
+```java
+// .qx 0.5.0
+int add(int a, int b) {
+    return a + b;
+}
+
+void main() {
+    final int n = 3;
+    double theta = 0.5;
+    Qubit q = qubit();
+    rx(q, theta);
+    Bit m = measure(q);
+    println("{} {}", add(n, 4), m);
+}
+```
+
+`long`을 생략한 이유는 `int`가 이미 64비트(Java의 `long`과 같은 너비)이기 때문이다. 인터프리터와 qxide 라이브러리 모두 64비트 정수를 사용하므로 별도의 정수 타입을 두어도 쓰임새 없이 변환만 늘어난다. 더 좁은 정수 타입이 필요해지면 그때 함께 추가할 수 있다. 현재 `long`을 쓰면 사용 가능한 타입 목록을 안내하는 도움말과 함께 알 수 없는 타입 오류(`Q0108`)로 거부된다.
+
+### 12.2 0.4.x에서의 마이그레이션 안내
+
+아래 표는 0.4.x 문법과 0.5.0 문법의 대응 관계를 정리한 것이다.
+
+| 0.4.x (MVP) | 0.5.0 |
+| --- | --- |
+| `fn main() { ... }` | `void main() { ... }` |
+| `fn add(a: i64, b: i64) -> i64 { a + b }` | `int add(int a, int b) { return a + b; }` |
+| `let x = 1;` / `let mut x = 1;` | `final int x = 1;` / `int x = 1;` |
+| `let q = qubit();` | `Qubit q = qubit();` |
+| `let r = qreg(3);` | `QReg r = qreg(3);` |
+| `let m = measure(q);` | `Bit m = measure(q);` |
+| `let bits = measure(r);` | `BitReg bits = measure(r);` |
+| `i64`, `bool` | `int`, `boolean` |
+| `println("{}", bits)` → `011` | `println("{}", bits)` → `[0, 1, 1]` |
+
+- `fn` 함수 선언 헤더를 반환 타입이 앞에 오는 형식으로 바꾼다.
+- `let`과 `let mut` 선언을 타입이 명시된 선언으로 바꾼다(일반 선언은 이제 기본 가변이므로 불변을 유지해야 하는 변수에는 `final`을 붙인다).
+- 함수 끝의 마지막 표현식 반환을 `return ...;` 문으로 바꾼다.
+- `qxide check`를 실행하면 제거된 각 키워드에 대해 새 형식을 안내하는 `Q0110` 오류가 보고된다.
+- `qxide run`의 다중 샷 출력이 12.4절의 표 형식으로 바뀌었으므로, 기존의 `== n/N ==` 헤더를 파싱하던 스크립트를 함께 수정해야 한다.
+- 자동 마이그레이션 도구는 아직 제공하지 않는다.
+
+### 12.3 `var`를 통한 타입 추론(제안 단계)
+
+이 항목은 아직 구현되지 않은 제안이다. Java 10의 지역 변수 타입 추론과 마찬가지로 지역 변수에 한해 `var x = expr;`를 허용해 초기화식의 타입을 추론하고, 함수 매개변수·반환 타입·필드에는 명시적 타입을 계속 요구하는 방안이다.
+
+다만 `.qx`에서는 변수의 타입이 소유권과 실행 시점 규칙을 결정하므로(`Qubit`은 선형 타입이고 `Bit`는 샷 시점 값이다) 신중하게 접근해야 한다. 명시적 타입은 이러한 규칙을 선언 지점에서 바로 드러내지만, `var q = qubit();`처럼 쓰면 `q`를 반드시 소비해야 한다는 사실이 가려진다.
+
+- 도입 시 후보 규칙 1: 고전 값(`int`, `double`, `boolean`)에만 `var`를 허용하고 `Qubit`, `QReg`, `Bit`, `BitReg`에는 명시적 타입을 요구한다.
+- 도입 시 후보 규칙 2: 모든 지역 변수에 `var`를 허용하되, 진단 메시지에 추론된 타입을 명시한다.
+- 권고: 실제 프로그램에서 필요성이 확인될 때까지 보류하고, 크기 지정 레지스터 타입과 함께 결정한다.
+
+### 12.4 측정 결과 출력
+
+아래는 `r[1]`을 중첩 상태에 두고 `r[2]`를 1로 설정한 3큐비트 레지스터 예제 프로그램과 실제 실행 출력이다.
+
+```java
+void main() {
+    QReg r = qreg(3);
+    h(r[1]);
+    x(r[2]);
+    BitReg m = measure(r);
+    println("{}  {}  {}", m, m.to_binary(), m.as_int());
+}
+```
+
+```text
+$ qxide run bits.qx
+[0, 1, 1]  0b110  6
+$ qxide run bits.qx --shots 1000
+[0, 0, 1]  0b100 = 4  ×504
+  [0, 0, 1]  0b100  4
+[0, 1, 1]  0b110 = 6  ×496
+  [0, 1, 1]  0b110  6
+```
+
+- `BitReg`에 `{}`를 사용하면 `r[0]`이 먼저 오는 레지스터 순서의 배열로 출력한다(`[0, 1, 1]`).
+- `r.to_binary()`는 `0b` 접두사 뒤에 최상위 인덱스부터 `r[0]`까지 레지스터 너비에 맞춰 0으로 채워 출력한다(`0b110`, 빈 레지스터는 `0b0`).
+- `r.as_int()`는 `r[0]`을 최하위 비트로 해석하므로 이진 표현과 항상 같은 값을 가진다(`0b110` = 6). 최대 64비트까지 지원하며 초과 시 `Q0410` 오류가 발생한다.
+- 두 메서드는 출력 전용 샷 시점 뷰(view)로, 변수에 저장하려 하면 `Q0218` 오류가, 그 외의 메서드를 호출하면 `Q0220` 오류가 발생한다.
+- 단일 `Bit`는 `0` 또는 `1`로 출력되며, `--bit-order` 같은 비트 순서 변경 옵션은 의도적으로 두지 않는다.
+
+다중 샷 표에서는 측정된 모든 비트를 순서대로(`c[0]` 우선) 기록한 결과를 배열·이진수·정수와 횟수로 한 행에 표시하고(`[0, 1, 1]  0b110 = 6  ×496`) 그 아래에 해당 결과의 `println` 출력을 공백 두 칸 들여쓰기로 이어 붙이며, 예제의 횟수는 기본 시드로 실제 실행한 한 번의 결과로 `--seed` 값에 따라 달라진다.
+
+### 12.5 포지셔닝
+
+메인테이너가 결정한 언어 포지셔닝은 세 가지 축으로 정리된다. 첫째, 타입 선언, 반환 타입 우선 표기, `final`, `int`/`double`/`boolean` 등 Java와 C 개발자에게 익숙한 문법을 제공한다. 둘째, 선형 큐비트, 측정 후 사용 금지, 게이트 피연산자 중복 금지 같은 양자 자원 소유권 규칙을 실행 전에 검사하는 Rust 수준의 컴파일 시점 안전성을 유지한다. 셋째, 장기 목표로 고전 코드에 대해 컴파일을 통한 네이티브 수준의 실행을 지향한다(12.6절).
+
+현재 언어는 트리 순회 인터프리터로 실행되며, 성능은 아직 측정되지 않았으므로 벤치마크가 마련되기 전까지는 어떤 성능 주장도 하지 않는다. 한편 크레이트 설명(description)에는 여전히 'Rust-like'라는 문구가 남아 있으며, 이 문구의 변경 여부는 메인테이너의 보류 결정 사항이다.
+
+### 12.6 인터프리터에서 IR, 네이티브 코드 생성까지의 로드맵
+
+현재는 검사를 마친 AST를 트리 순회 인터프리터가 해석하면서 `qxide::Circuit`을 구성한다. 고전 코드는 인터프리터에서 직접 실행되고, 양자 코드는 라이브러리 회로와 OpenQASM 3으로 하향 변환(lowering)된다.
+
+목표 구조는 검사된 AST를 빌드 시점 고전 코드, 측정 결과에 대한 샷 시점 고전 코드, 양자 연산으로 분리된 타입 포함 IR로 하향 변환하는 것이다. 먼저 이 IR을 인터프리터로 실행하고, 이어서 고전 코드 부분에 대한 네이티브 코드를 생성한다. 아래 표는 두 후보 백엔드를 비교한 것으로, 아직 측정된 수치는 없으며 각 프로젝트의 문서화된 범위에 기반한 정성적 비교이다.
+
+| 항목 | Cranelift | LLVM |
+| --- | --- | --- |
+| 의존성 및 빌드 | Wasmtime/Bytecode Alliance 프로젝트의 순수 Rust 크레이트로, Cargo만으로 추가되며 별도 시스템 툴체인이 필요 없다. | 대규모 C++ 라이브러리로, `inkwell` 같은 Rust 바인딩이 특정 LLVM 버전에 종속되어 설치 또는 번들이 필요하며 cargo-dist 및 PyPI 빌드를 복잡하게 만든다. |
+| 컴파일 속도 | 빠른 코드 생성을 목표로 설계되었다(Wasmtime의 JIT 및 rustc 디버그 빌드용 대체 백엔드로 사용된다). | 특히 최적화를 활성화할 경우 코드 생성 속도가 상대적으로 느리다. |
+| 생성 코드 최적화 수준 | 최적화 패스가 적어 생성 코드가 일반적으로 LLVM의 최적화 출력보다 느릴 것으로 예상된다(qxide 워크로드에 대한 실측 필요). | 인라이닝, 벡터화, 루프 최적화 등 성숙한 최적화 파이프라인을 제공한다. |
+| 지원 타깃 | x86-64, AArch64 등 주요 64비트 타깃과 JIT 및 오브젝트 파일 출력을 지원한다. | 매우 폭넓은 CPU 타깃을 지원하며 NVPTX, AMDGPU 같은 GPU 타깃도 존재한다. |
+| 양자 툴체인과의 연계 | 없음. 양자 출력은 라이브러리가 생성하는 OpenQASM 3을 그대로 사용한다. | QIR(Quantum Intermediate Representation)이 LLVM IR 위에 정의되어 있으므로, QIR을 지원하는 하드웨어 툴체인용 출력을 함께 생성할 수 있다. |
+
+1. 타입 포함 IR과 IR 인터프리터를 구현해 현재 결과를 그대로 재현한다. 기존 테스트와 예제가 모두 통과하고 OpenQASM 3 출력이 바이트 단위로 동일해야 한다.
+2. 최적화를 시작하기 전에 벤치마크 모음을 먼저 구축한다. 반복문·재귀 등 고전 연산 비중이 높은 프로그램과 대규모 레지스터 회로 구성을 포함해 이후의 판단이 실측에 근거하도록 한다.
+3. 첫 번째 네이티브 백엔드로 빌드 시점 고전 코드용 Cranelift JIT을 도입한다. 순수 Rust 구성이므로 설치와 배포를 단순하게 유지할 수 있다.
+4. 최적화 수준이 중요한 AOT 빌드와 QIR 출력을 위해 LLVM 백엔드를 추후 평가한다. 무거운 의존성에 대한 기존 원칙에 따라 기본값이 꺼진 Cargo feature 뒤에 둔다.
+5. 측정 결과에 대한 샷 시점 고전 연산은 OpenQASM 3 고전 코드(도입 시 QIR 포함)로 하향 변환한다.
+
+권고 방향은 Cranelift로 먼저 시작하고 LLVM은 선택 기능으로 두며, 벤치마크가 확보된 뒤 방향을 재검토하는 것이다.
+
+### 12.7 0.5.0에서 추가되거나 변경된 오류 코드
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0110` | 제거된 Rust 스타일 문법(`let`, `fn`, `mut`) 사용(마이그레이션 도움말 포함) |
+| `Q0220` | 알 수 없는 메서드(`BitReg`의 `to_binary()`, `as_int()`만 지원) |
+| `Q0410` | 64비트를 초과하는 레지스터에 `as_int()` 호출 |
+
+- `Q0104`: `double` 리터럴의 범위 초과도 포함한다.
+- `Q0206`: `void main()` 누락 또는 잘못된 `main` 시그니처를 의미한다.
+- `Q0207`: `final` 변수에 대한 재할당을 의미한다(도움말: `final` 제거).
+- `Q0204`: 변수나 매개변수 타입으로 `void`를 사용한 경우도 포함한다.
+- `Q0218`: `to_binary()` 또는 `as_int()` 결과를 변수에 저장하려는 경우도 포함한다.
+
+### 12.8 0.5.0 이후 미결 사항
+
+1. Rust의 `&mut` 없이 함수에서 큐비트 매개변수의 대여(borrow)와 이동(move)을 구분하는 표기 방식(예: 키워드 또는 어노테이션) — 큐비트를 받는 함수 지원 전에 결정 필요
+2. `var` 지역 변수 타입 추론 도입 여부(12.3절)
+3. `double`에서 `int`로의 캐스트 문법(Java 스타일 `(int) x` 또는 변환 함수)
+4. 회전 각도에 사용할 원주율 상수(예: `PI`) 제공 여부
+5. `to_binary()`/`as_int()`를 대체할 `println` 서식 지정자(예: 이진 서식 지정자) 도입 여부
+6. 크레이트 설명에 남아 있는 'Rust-like' 문구 변경 여부
+7. IR 작업 착수 시점(12.6절)
