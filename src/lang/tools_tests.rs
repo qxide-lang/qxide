@@ -383,7 +383,7 @@ fn repl_interactive_mode_shows_banner_and_prompts() {
     let code = repl::run(input.as_bytes(), &mut out, &mut err, 0, true);
     let out = String::from_utf8(out).unwrap();
     let banner = msg::repl_banner(env!("CARGO_PKG_VERSION"));
-    assert_eq!(out, format!("{banner}qx> qx> qx> qx> 0\nqx> qx> ... qx> "));
+    assert_eq!(out, format!("{banner}qx> qx> qx> qx> 1\nqx> qx> ... qx> "));
     let err = String::from_utf8(err).unwrap();
     assert_eq!(error_codes(&err), ["Q0301"]);
     assert_eq!(code, 0);

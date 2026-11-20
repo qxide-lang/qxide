@@ -2,6 +2,16 @@
 
 Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` language) are listed here by version; older releases (0.5.0 and earlier) are documented on [GitHub Releases](https://github.com/qxide-lang/qxide/releases) and in `docs/release-notes/`.
 
+## [Unreleased]
+
+### Fixed
+
+- **Biased and under-dispersed sampling across shots**: Shot `k` of `--seed S` previously used seed `S + k`, causing runs with nearby seeds to reuse nearly all of the same shots (over 200 seeds of 1,000-shot Bell runs, `00` counts had a standard deviation of 2.94 instead of ~15.8 for a binomial distribution). Each shot now receives an independent seed mixed from `(S, k)` via `qxide::shot_seed` and `Circuit::simulate_shots`, bringing the 200-seed Bell standard deviation to 16.7 (mean 497.6 vs. 506.1 before). Outputs remain reproducible for any given `--seed`, though counts and single-shot results differ from 0.6.0 across `qxide run`, `qxide bell`, `qxide repl`, and the browser playground.
+
+### Added
+
+- Added `qxide::shot_seed(seed, shot)` to derive an independent seed for each shot and `Circuit::simulate_shots(backend, seed, shots)` to iterate over `Result<Shot, SimError>` using `shot_seed`. `Circuit::simulate` and `Circuit::simulate_with` are unchanged and continue to execute a single shot with the exact seed provided.
+
 ## [0.6.0] - 2026-11-20
 
 `qxide v0.6.0` builds on `v0.5.0` by extending the `.qx` language with qubit-passing and qubit-returning functions, gate-only function calls inside `if` blocks conditioned on a measured `Bit`, `var` local type inference for classical scalar types, Java-style numeric casts, and the built-in `PI` constant. For Rust library users, the public API of the `qxide` crate is unchanged since `v0.5.0`, and rustdoc, panic messages, and `SimError` `Display` text are now in English.

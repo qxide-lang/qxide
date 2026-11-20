@@ -5,7 +5,7 @@
 
 mod lang;
 
-use qxide::Circuit;
+use qxide::{Backend, Circuit};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -48,8 +48,8 @@ fn bell(shots: u64) {
 
     println!("\nSimulation Counts");
     let mut counts = [0u64; 4];
-    for seed in 0..shots {
-        let shot = c.simulate(seed);
+    for shot in c.simulate_shots(Backend::StateVector, 0, shots) {
+        let shot = shot.unwrap_or_else(|e| panic!("{e}"));
         counts[(shot.get(ma) as usize) << 1 | shot.get(mb) as usize] += 1;
     }
     for (k, n) in counts.iter().enumerate() {

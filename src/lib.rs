@@ -660,6 +660,29 @@ impl Circuit {
         self.simulate_with(Backend::StateVector, seed)
             .unwrap_or_else(|e| panic!("{e}"))
     }
+
+    /// Runs `shots` independent shots and yields them in order.
+    /// Shot `k` calls [`Circuit::simulate_with`] with `backend` and the [`shot_seed`] for `(seed, k)`, so shots are independent and the same `seed` reproduces the same shots.
+    /// Use this instead of calling [`Circuit::simulate`] with consecutive seeds when sampling many shots.
+    /// Yielded errors are those returned by [`Circuit::simulate_with`].
+    pub fn simulate_shots(
+        &self,
+        backend: Backend,
+        seed: u64,
+        shots: u64,
+    ) -> impl Iterator<Item = Result<Shot, SimError>> + '_ {
+        (0..shots).map(move |k| self.simulate_with(backend, shot_seed(seed, k)))
+    }
+}
+
+/// Returns the seed passed to the simulator for shot number `shot` of a run with seed `seed`.
+/// Mixes both values so runs with nearby seeds (for example `--seed 0` and `--seed 1`) share no shots.
+/// Used by [`Circuit::simulate_shots`] and `qxide run --seed`.
+pub fn shot_seed(seed: u64, shot: u64) -> u64 {
+    // Two finalizer rounds (run, then shot) return a mixed value, never `base + k * gamma`: the
+    // simulators step their own state by gamma, so gamma-spaced seeds would share draws across shots.
+    let run = rng::SplitMix64(seed).next_u64();
+    rng::SplitMix64(run ^ shot.wrapping_mul(0xD1B5_4A32_D192_ED03)).next_u64()
 }
 
 // Shared-reference controls can alias; OpenQASM rejects a gate with a repeated qubit.

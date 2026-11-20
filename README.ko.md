@@ -90,10 +90,10 @@ void main() {
 $ qxide run examples/qx/bell.qx
 a=1 b=1
 $ qxide run examples/qx/bell.qx --shots 1000
-[0, 0]  0b00 = 0  ×504
-  a=0 b=0
-[1, 1]  0b11 = 3  ×496
+[1, 1]  0b11 = 3  ×521
   a=1 b=1
+[0, 0]  0b00 = 0  ×479
+  a=0 b=0
 $ qxide check examples/qx/ghz.qx
 examples/qx/ghz.qx: ok
 $ qxide qasm examples/qx/bell.qx

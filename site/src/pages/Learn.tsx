@@ -17,10 +17,10 @@ const BELL_RUN = `$ qxide run examples/qx/bell.qx
 a=1 b=1`;
 
 const BELL_SHOTS = `$ qxide run examples/qx/bell.qx --shots 1000
-[0, 0]  0b00 = 0  ×504
-  a=0 b=0
-[1, 1]  0b11 = 3  ×496
-  a=1 b=1`;
+[1, 1]  0b11 = 3  ×521
+  a=1 b=1
+[0, 0]  0b00 = 0  ×479
+  a=0 b=0`;
 
 const GHZ = `// examples/qx/ghz.qx
 void main() {
@@ -35,10 +35,10 @@ void main() {
 }`;
 
 const GHZ_OUT = `$ qxide run examples/qx/ghz.qx --shots 1000
-[0, 0, 0, 0, 0]  0b00000 = 0  ×504
-  [0, 0, 0, 0, 0]  0b00000 = 0
-[1, 1, 1, 1, 1]  0b11111 = 31  ×496
-  [1, 1, 1, 1, 1]  0b11111 = 31`;
+[1, 1, 1, 1, 1]  0b11111 = 31  ×521
+  [1, 1, 1, 1, 1]  0b11111 = 31
+[0, 0, 0, 0, 0]  0b00000 = 0  ×479
+  [0, 0, 0, 0, 0]  0b00000 = 0`;
 
 const TELEPORT = `// examples/qx/teleport.qx
 void main() {
@@ -63,13 +63,13 @@ void main() {
 }`;
 
 const TELEPORT_OUT = `$ qxide run examples/qx/teleport.qx --shots 1000
-[1, 0, 1]  0b101 = 5  ×266
+[1, 0, 1]  0b101 = 5  ×273
   bob=1
-[0, 0, 1]  0b100 = 4  ×252
+[0, 0, 1]  0b100 = 4  ×251
   bob=1
-[0, 1, 1]  0b110 = 6  ×252
+[1, 1, 1]  0b111 = 7  ×248
   bob=1
-[1, 1, 1]  0b111 = 7  ×230
+[0, 1, 1]  0b110 = 6  ×228
   bob=1`;
 
 const BAD = `void main() {

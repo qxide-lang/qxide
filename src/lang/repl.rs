@@ -264,9 +264,12 @@ impl Session {
         // appears, and another backend may draw different outcomes for bits already shown.
         let out = if prints_bits {
             let at = Span::new(p.input_at, p.input_at);
+            // Shot 0 of `--seed S`, the same seed derivation as `qxide run`.
             let shot = e
                 .circuit
-                .simulate_with(Backend::StateVector, self.seed)
+                .simulate_shots(Backend::StateVector, self.seed, 1)
+                .next()
+                .expect("one shot")
                 .map_err(|err| p.render(&[sim_error(err, at)]))?;
             render_output(&e.output, Some(&shot))
         } else {

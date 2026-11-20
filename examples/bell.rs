@@ -1,6 +1,6 @@
 //! Bell state (entanglement) example: `cargo run --example bell`
 
-use qxide::Circuit;
+use qxide::{Backend, Circuit};
 
 fn main() {
     let mut c = Circuit::new();
@@ -18,8 +18,8 @@ fn main() {
 
     println!("\n--- Running 1000 times on the simulator ---");
     let mut counts = [0u32; 4];
-    for seed in 0..1000 {
-        let shot = c.simulate(seed);
+    for shot in c.simulate_shots(Backend::StateVector, 0, 1000) {
+        let shot = shot.unwrap();
         let k = (shot.get(ma) as usize) << 1 | shot.get(mb) as usize;
         counts[k] += 1;
     }

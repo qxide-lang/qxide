@@ -18,7 +18,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/bell.qx --shots 1000',
     result: {
       label: 'Output',
-      text: '[0, 0]  0b00 = 0  ×504\n  a=0 b=0\n[1, 1]  0b11 = 3  ×496\n  a=1 b=1',
+      text: '[1, 1]  0b11 = 3  ×521\n  a=1 b=1\n[0, 0]  0b00 = 0  ×479\n  a=0 b=0',
       note: '[0, 1] and [1, 0] never occur because the qubits are entangled.',
     },
   },
@@ -28,7 +28,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/ghz.qx --shots 1000',
     result: {
       label: 'Output',
-      text: '[0, 0, 0, 0, 0]  0b00000 = 0  ×504\n  [0, 0, 0, 0, 0]  0b00000 = 0\n[1, 1, 1, 1, 1]  0b11111 = 31  ×496\n  [1, 1, 1, 1, 1]  0b11111 = 31',
+      text: '[1, 1, 1, 1, 1]  0b11111 = 31  ×521\n  [1, 1, 1, 1, 1]  0b11111 = 31\n[0, 0, 0, 0, 0]  0b00000 = 0  ×479\n  [0, 0, 0, 0, 0]  0b00000 = 0',
       note: 'Each row shows the bits as an array, in binary (highest bit first) and as an integer (first bit least significant).',
     },
   },
@@ -38,7 +38,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/teleport.qx --shots 1000',
     result: {
       label: 'Output',
-      text: '[1, 0, 1]  0b101 = 5  ×266\n  bob=1\n[0, 0, 1]  0b100 = 4  ×252\n  bob=1\n[0, 1, 1]  0b110 = 6  ×252\n  bob=1\n[1, 1, 1]  0b111 = 7  ×230\n  bob=1',
+      text: '[1, 0, 1]  0b101 = 5  ×273\n  bob=1\n[0, 0, 1]  0b100 = 4  ×251\n  bob=1\n[1, 1, 1]  0b111 = 7  ×248\n  bob=1\n[0, 1, 1]  0b110 = 6  ×228\n  bob=1',
       note: 'The measured bits vary, but bob is 1 in every outcome.',
     },
   },
@@ -48,7 +48,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/functions.qx --shots 1000',
     result: {
       label: 'Output',
-      text: "[0, 0]  0b00 = 0  ×504\n  [0, 0]\n[1, 1]  0b11 = 3  ×496\n  [1, 1]",
+      text: "[1, 1]  0b11 = 3  ×521\n  [1, 1]\n[0, 0]  0b00 = 0  ×479\n  [0, 0]",
       note: 'This produces the same Bell correlation as bell.qx, even though main never measures the register itself.',
     },
   },
@@ -58,7 +58,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/rotation.qx --shots 1000',
     result: {
       label: 'Output',
-      text: "[0]  0b0 = 0  ×503\n  ry total 90 degrees (90.0), m=0\n[1]  0b1 = 1  ×497\n  ry total 90 degrees (90.0), m=1",
+      text: "[1]  0b1 = 1  ×518\n  ry total 90 degrees (90.0), m=1\n[0]  0b0 = 0  ×482\n  ry total 90 degrees (90.0), m=0",
       note: 'A 90-degree ry rotation produces an even split between 0 and 1, and (int) truncates the printed angle to 90.',
     },
   },
@@ -68,7 +68,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/teleport_fn.qx --shots 1000',
     result: {
       label: 'Output',
-      text: "[1, 0, 1]  0b101 = 5  ×266\n  bob=1\n[0, 0, 1]  0b100 = 4  ×252\n  bob=1\n[0, 1, 1]  0b110 = 6  ×252\n  bob=1\n[1, 1, 1]  0b111 = 7  ×230\n  bob=1",
+      text: "[1, 0, 1]  0b101 = 5  ×273\n  bob=1\n[0, 0, 1]  0b100 = 4  ×251\n  bob=1\n[1, 1, 1]  0b111 = 7  ×248\n  bob=1\n[0, 1, 1]  0b110 = 6  ×228\n  bob=1",
       note: 'bob is always 1, and qxide qasm outputs the exact same OpenQASM 3 as teleport.qx.',
     },
   },
@@ -78,7 +78,7 @@ const QX_EXAMPLES: Example[] = [
     command: 'qxide run examples/qx/conditional_fn.qx --shots 1000',
     result: {
       label: 'Output',
-      text: "[1, 0, 0, 0]  0b0001 = 1  ×276\n  m=1 f=0 r=[0, 0]\n[0, 0, 0, 0]  0b0000 = 0  ×258\n  m=0 f=0 r=[0, 0]\n[0, 1, 0, 0]  0b0010 = 2  ×245\n  m=0 f=1 r=[0, 0]\n[1, 1, 1, 0]  0b0111 = 7  ×221\n  m=1 f=1 r=[1, 0]",
+      text: "[1, 0, 0, 0]  0b0001 = 1  ×268\n  m=1 f=0 r=[0, 0]\n[1, 1, 1, 0]  0b0111 = 7  ×250\n  m=1 f=1 r=[1, 0]\n[0, 1, 0, 0]  0b0010 = 2  ×246\n  m=0 f=1 r=[0, 0]\n[0, 0, 0, 0]  0b0000 = 0  ×236\n  m=0 f=0 r=[0, 0]",
       note: 'r[0] is 1 only when both coin bits are 1, because the two x gates in the else branch cancel each other out.',
     },
   },
@@ -92,7 +92,7 @@ const EXAMPLES: Example[] = [
     command: 'cargo run --example bell',
     result: {
       label: 'Last lines of output',
-      text: '00: 503\n01: 0\n10: 0\n11: 497',
+      text: '00: 482\n01: 0\n10: 0\n11: 518',
       note: '01 and 10 never occur because the qubits are entangled.',
     },
   },
