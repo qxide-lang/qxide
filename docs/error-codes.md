@@ -1,6 +1,6 @@
 # Qxide Error Codes
 
-This catalog lists every .qx compiler error code; every diagnostic prints a code such as `Q0302`, and running `qxide explain Q0302` prints that code's entry from this file. Codes are never reused and are grouped by category: `Q01xx` for lexing and parsing, `Q02xx` for names and types, `Q03xx` for qubit ownership (linearity), and `Q04xx` for errors found while running the program. Each entry includes an explanation, an example that triggers the error, and a corrected version.
+This catalog lists every .qx compiler error code; every diagnostic prints a code such as `Q0302`, and running `qxide explain Q0302` prints that code's entry from this file. Codes are never reused and are grouped by category: `Q01xx` for lexing and parsing, `Q02xx` for names and types, `Q03xx` for qubit ownership (linearity), `Q04xx` for errors found while running the program, and `Q05xx` for modules and imports. Each entry includes an explanation, an example that triggers the error, and a corrected version.
 
 ## Q0101: unexpected character in source code
 
@@ -1366,5 +1366,257 @@ void main() {
     QReg r = qreg(64);
     BitReg b = measure(r);
     println("{}", b.as_int());
+}
+```
+
+## Q0501: unknown package in an import
+
+The first segment of an `import` path names a package that is neither the current package nor a dependency declared in `[dependencies]` in `qxide.toml`. Package names with hyphens, such as `bell-utils`, are imported using underscores (`bell_utils`). Requiring every external package to be declared in `qxide.toml` keeps builds reproducible and ensures dependencies are explicitly resolved before compilation.
+
+Erroneous code example:
+
+```java
+// qxide.toml of package `app` has no [dependencies] yet
+// src/main.qx
+import bell_utils.bell_pair;  // error[Q0501]
+```
+
+To fix it, run `qxide add bell-utils`, which adds `bell-utils` to `[dependencies]` in `qxide.toml` and installs it so `bell_utils` can be imported.
+
+```java
+// after `qxide add bell-utils`
+// src/main.qx
+import bell_utils.bell_pair;
+```
+
+## Q0502: module file not found
+
+An `import` statement refers to a module whose corresponding `.qx` file under `src/` does not exist or cannot be read. Each module path maps to a file relative to the package's `src/` directory (for example, `app.gates` maps to `src/gates.qx` and the package root `app` maps to `src/lib.qx`), and the diagnostic note shows the path the compiler tried to open. Checking that every imported module resolves to an existing source file catches typos and missing files before type checking.
+
+Erroneous code example:
+
+```java
+// src/main.qx of package `app`; there is no src/gates.qx
+import app.gates.entangle;  // error[Q0502]
+```
+
+To fix it, create the missing `src/gates.qx` module file (or correct the module path in the `import` statement) and define the `public` function you want to import.
+
+```java
+// src/gates.qx
+public void entangle(Qubit control, Qubit target) {
+    cx(control, target);
+}
+```
+
+## Q0503: function not found in module
+
+An `import` statement names a function that does not exist in the target module, usually because of a typo or because the function has not been defined there. The module file itself was found, but none of its function declarations match the requested name. Reporting missing imports upfront prevents unresolved calls from failing later during compilation.
+
+Erroneous code example:
+
+```java
+// src/main.qx
+import bell_utils.bellpair;  // error[Q0503]: the function is `bell_pair`
+```
+
+To fix it, check the spelling of the function in the target module and update the `import` statement to use the exact name `bell_pair`.
+
+```java
+// src/main.qx
+import bell_utils.bell_pair;
+```
+
+## Q0504: imported function is not `public`
+
+An `import` statement names a function that exists in the target module, but the function is not marked `public`. In `.qx`, functions are private to their defining module by default so that helper functions remain an implementation detail that can change without breaking callers. Only functions explicitly declared `public` are part of a module's interface and may be imported by other modules.
+
+Erroneous code example:
+
+```java
+// src/gates.qx
+void entangle(Qubit control, Qubit target) {
+    cx(control, target);
+}
+
+// src/main.qx
+import app.gates.entangle;  // error[Q0504]
+```
+
+To fix it, mark `entangle` as `public` in `src/gates.qx` if it is intended to be imported by other modules.
+
+```java
+// src/gates.qx
+public void entangle(Qubit control, Qubit target) {
+    cx(control, target);
+}
+```
+
+## Q0505: import cycle between modules
+
+Two or more modules import each other, directly or transitively, forming an import cycle; the error message displays the chain of modules involved. The compiler rejects circular imports so that modules always load in a well-defined, acyclic order. Breaking cycles also keeps module boundaries clearer and easier to maintain.
+
+Erroneous code example:
+
+```java
+// src/a.qx
+import app.b.g;  // error[Q0505]: app.a -> app.b -> app.a
+public void f(Qubit q) {
+    g(q);
+}
+
+// src/b.qx
+import app.a.f;
+public void g(Qubit q) {
+    h(q);
+}
+```
+
+To fix it, remove the unneeded import from `src/b.qx`, or move any shared function into a separate module that both `app.a` and `app.b` can import.
+
+```java
+// src/a.qx
+import app.b.g;
+public void f(Qubit q) {
+    g(q);
+}
+
+// src/b.qx (no longer imports app.a)
+public void g(Qubit q) {
+    h(q);
+}
+```
+
+## Q0506: imported name conflicts with an existing function
+
+An `import` statement introduces a function name that clashes either with a function defined in the same file or with a different function imported under the same name. Allowing two distinct definitions to claim the same name in a module's top-level scope would make it ambiguous which function a call refers to. Rejecting the conflict keeps every top-level function name in the file unambiguous.
+
+Erroneous code example:
+
+```java
+// src/main.qx
+import bell_utils.bell_pair;  // error[Q0506]
+
+void bell_pair(Qubit a, Qubit b) {
+    h(a);
+}
+```
+
+To fix it, rename the local function so it does not clash with the imported name, or drop the `import` if you only need the local function.
+
+```java
+// src/main.qx
+import bell_utils.bell_pair;
+
+void my_pair(Qubit a, Qubit b) {
+    h(a);
+}
+```
+
+## Q0507: ambiguous call from wildcard imports
+
+A function call matches `public` functions with the same name brought in by two or more wildcard imports (`import pkg.module.*;`). Overlapping wildcard imports do not trigger an error on their own; the diagnostic is reported at the call site only when the colliding name is actually used. Because the compiler cannot safely choose between the competing definitions, you must resolve the ambiguity explicitly.
+
+Erroneous code example:
+
+```java
+// src/main.qx
+import bell_utils.*;
+import other.*;
+
+void main() {
+    Qubit q = qubit();
+    flip(q);  // error[Q0507]: both modules have a public `flip`
+    discard(q);
+}
+```
+
+To fix it, import the intended function explicitly with a single-function import such as `import other.flip;`. Because single-function imports take priority over wildcard imports, the call to `flip` resolves unambiguously.
+
+```java
+// src/main.qx
+import bell_utils.*;
+import other.*;
+import other.flip;
+
+void main() {
+    Qubit q = qubit();
+    flip(q);
+    discard(q);
+}
+```
+
+## Q0508: `import` used outside a project
+
+A lone `.qx` file contains an `import` statement, but there is no `qxide.toml` in its directory or any parent directory. Without a project manifest, the compiler has no package root or `[dependencies]` table to resolve package and module paths from. Restricting `import` to files inside a project ensures module resolution is always anchored to a known `qxide.toml`.
+
+Erroneous code example:
+
+```qx
+import bell_utils.bell_pair;  // error[Q0508]
+
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    bell_pair(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    println("{} {}", ma, mb);
+}
+```
+
+To fix it, either move the file into a project with a `qxide.toml` that depends on `bell-utils`, or, for a lone file, write the gates directly as below.
+
+```qx
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    h(a);
+    cx(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    println("{} {}", ma, mb);
+}
+```
+
+## Q0509: import path is too short
+
+An `import` statement contains only a bare package name instead of naming a function or wildcard. Every `import` in `.qx` must name a module and a function (`import pkg.function;` or `import pkg.module.function;`), or end with `.*` to import all `public` functions from a module. Requiring a function name or wildcard makes it explicit which symbols enter the file's scope.
+
+Erroneous code example:
+
+```java
+// src/main.qx
+import bell_utils;  // error[Q0509]
+```
+
+To fix it, name the specific function to import from the module (such as `bell_utils.bell_pair`), or end the path with `.*` to import all `public` functions from that module.
+
+```java
+// src/main.qx
+import bell_utils.bell_pair;
+```
+
+## Q0510: `import` after a function declaration
+
+An `import` statement appears after one or more function declarations in a `.qx` file. All `import` statements must come first in the file before any functions are declared. Keeping imports grouped at the top ensures a module's dependencies are immediately visible and parsed before any function bodies.
+
+Erroneous code example:
+
+```java
+// src/main.qx
+void main() {
+}
+
+import bell_utils.bell_pair;  // error[Q0510]
+```
+
+To fix it, move the `import` statement to the top of the file before all function declarations.
+
+```java
+// src/main.qx
+import bell_utils.bell_pair;
+
+void main() {
 }
 ```

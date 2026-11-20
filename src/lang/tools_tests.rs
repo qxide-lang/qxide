@@ -220,10 +220,24 @@ fn qx_blocks(entry: &str) -> Vec<String> {
 fn explain_examples_trigger_their_code_and_fixes_run() {
     // Safety-net and retired codes cannot be triggered by any program.
     let untriggerable = ["Q0219", "Q0407"];
+    // Import errors need a project with several files; their examples are `java` blocks and the
+    // same cases are tested in module_tests.rs. Q0508 (import in a lone file) stays a `qx` example.
+    let needs_project = [
+        "Q0501", "Q0502", "Q0503", "Q0504", "Q0505", "Q0506", "Q0507", "Q0509", "Q0510",
+    ];
     for (code, entry) in explain::entries() {
         let blocks = qx_blocks(&entry);
         if untriggerable.contains(&code.as_str()) {
             assert!(blocks.is_empty(), "{code}");
+            continue;
+        }
+        if needs_project.contains(&code.as_str()) {
+            assert!(blocks.is_empty(), "{code}");
+            assert_eq!(
+                entry.matches("```java\n").count(),
+                2,
+                "{code} needs an example and a fix"
+            );
             continue;
         }
         assert_eq!(blocks.len(), 2, "{code} needs an example and a fix");

@@ -28,6 +28,8 @@ use qxide::{Backend, Shot, SimError, DEFAULT_MEMORY_LIMIT};
 
 use diag::{Code, Diagnostic, SourceMap};
 use interp::{BitsFmt, Elaborated, OutPiece};
+// The package manager (CLI only) builds `PackageRoot`s; the playground build never does.
+#[allow(unused_imports)]
 pub use link::{PackageRoot, Project, ReadFn};
 
 /// Rendered diagnostics, ready for stderr.
