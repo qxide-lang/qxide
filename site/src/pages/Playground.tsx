@@ -5,7 +5,7 @@ import {usePageMeta} from '../lib/meta';
 export function Playground() {
   usePageMeta(
     'Qxide playground: coming soon',
-    'A browser playground for Qxide is planned. Until then, install the qxide command and try the examples.',
+    'A browser playground for Qxide .qx programs is planned. Until then, install the qxide command and run the examples.',
   );
 
   return (
@@ -17,7 +17,7 @@ export function Playground() {
           In preparation. There is nothing to run in the browser yet.
         </p>
         <p className="lede">
-          We want you to be able to write a Qxide program and run it in a browser tab, with nothing to install. That
+          We want you to be able to write a .qx program and run it in a browser tab, with nothing to install. That
           needs a few pieces that don&apos;t exist yet, so this page is a plan, not a product.
         </p>
       </header>
@@ -34,9 +34,9 @@ export function Playground() {
             vector doubles in size with every qubit, so a browser tab can&apos;t go much further.
           </li>
           <li>
-            <strong>Released with the .qx language.</strong> The playground is meant for the planned <code>.qx</code>{' '}
-            language, so it will launch when that language does. See{' '}
-            <Link to="/blog/why-qxide">Why Qxide</Link> for the roadmap.
+            <strong>For the .qx language.</strong> The <code>.qx</code> language shipped in 0.5.0 and runs through the{' '}
+            <code>qxide</code> command. The playground would put the same interpreter in a browser tab. See{' '}
+            <Link to="/blog/qxide-0-5-0-the-qx-language">Qxide 0.5.0</Link> for what exists today.
           </li>
         </ul>
         <p>These are goals, not commitments to a date.</p>
@@ -44,7 +44,7 @@ export function Playground() {
 
       <section aria-labelledby="now">
         <h2 id="now">What you can do today</h2>
-        <p>Install the command and run the Bell-state circuit on your own machine:</p>
+        <p>Install the command and run a Bell-state program on your own machine:</p>
         <CodeBlock
           label="Install script (macOS / Linux)"
           lang="sh"
@@ -55,10 +55,14 @@ export function Playground() {
           lang="sh"
           code='powershell -ExecutionPolicy Bypass -c "irm https://qxide.dev/install.ps1 | iex"'
         />
-        <CodeBlock label="Run it" lang="sh" code="qxide bell" />
+        <CodeBlock
+          label="Run it"
+          lang="sh"
+          code={'git clone https://github.com/qxide-lang/qxide\ncd qxide\nqxide run examples/qx/bell.qx --shots 1000'}
+        />
         <p>
-          Then follow the <Link to="/learn">tutorial</Link> to write your own circuits in Rust, or run the programs on
-          the <Link to="/examples">examples page</Link>.
+          Then follow the <Link to="/learn">tutorial</Link> to write your own <code>.qx</code> programs, or browse the
+          programs on the <Link to="/examples">examples page</Link>.
         </p>
       </section>
     </article>

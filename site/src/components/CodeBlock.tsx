@@ -1,9 +1,12 @@
 import {Fragment, useState, type ReactNode} from 'react';
 
-const KEYWORDS = new Set(['use', 'fn', 'let', 'mut', 'for', 'in', 'as', 'if', 'else', 'move', 'pub', 'struct', 'impl']);
+const RUST_KEYWORDS = new Set(['use', 'fn', 'let', 'mut', 'for', 'in', 'as', 'if', 'else', 'move', 'pub', 'struct', 'impl']);
+const QX_KEYWORDS = new Set([
+  'void', 'int', 'double', 'boolean', 'final', 'for', 'in', 'if', 'else', 'return', 'true', 'false',
+]);
 
-// Minimal Rust highlighter: comments, strings, keywords and capitalised types. Enough for the short snippets here.
-function highlightRust(code: string): ReactNode[] {
+// Minimal highlighter for Rust and .qx: comments, strings, keywords and capitalised types. Enough for the short snippets here.
+function highlight(code: string, keywords: Set<string>): ReactNode[] {
   const re = /(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
   const out: ReactNode[] = [];
   let last = 0;
@@ -13,7 +16,7 @@ function highlightRust(code: string): ReactNode[] {
     if (i > last) out.push(code.slice(last, i));
     if (m[1]) out.push(<span key={key++} className="tk-cm">{m[1]}</span>);
     else if (m[2]) out.push(<span key={key++} className="tk-str">{m[2]}</span>);
-    else if (KEYWORDS.has(m[3])) out.push(<span key={key++} className="tk-kw">{m[3]}</span>);
+    else if (keywords.has(m[3])) out.push(<span key={key++} className="tk-kw">{m[3]}</span>);
     else if (/^[A-Z]/.test(m[3])) out.push(<span key={key++} className="tk-ty">{m[3]}</span>);
     else out.push(m[3]);
     last = i + m[0].length;
@@ -22,11 +25,13 @@ function highlightRust(code: string): ReactNode[] {
   return out;
 }
 
+export const highlightQx = (code: string): ReactNode[] => highlight(code, QX_KEYWORDS);
+
 type Props = {
   code: string;
   /** Shown in the header (file name or short label); also used in the copy button's accessible name. */
   label: string;
-  lang?: 'rust' | 'sh' | 'text' | 'toml';
+  lang?: 'rust' | 'qx' | 'sh' | 'text' | 'toml';
   /** Output blocks have no copy button. */
   copyable?: boolean;
 };
@@ -55,7 +60,11 @@ export function CodeBlock({code, label, lang = 'text', copyable = true}: Props) 
         )}
       </figcaption>
       <pre tabIndex={0} aria-label={label}>
-        <code>{lang === 'rust' ? <Fragment>{highlightRust(code)}</Fragment> : code}</code>
+        <code>{lang === 'rust' || lang === 'qx' ? (
+            <Fragment>{highlight(code, lang === 'qx' ? QX_KEYWORDS : RUST_KEYWORDS)}</Fragment>
+          ) : (
+            code
+          )}</code>
       </pre>
       {copyable && (
         <p className="sr-only" role="status">

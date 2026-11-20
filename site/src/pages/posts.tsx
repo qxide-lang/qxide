@@ -12,6 +12,81 @@ export type Post = {
   body: ReactNode;
 };
 
+const RELEASE_050 = `${GITHUB}/releases/tag/v0.5.0`;
+
+const bell = `// Bell pair: the two measured bits are always equal.
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    h(a);
+    cx(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    println("a={} b={}", ma, mb);
+}`;
+
+const bellRun = `$ qxide run examples/qx/bell.qx --shots 1000
+[0, 0]  0b00 = 0  ×504
+  a=0 b=0
+[1, 1]  0b11 = 3  ×496
+  a=1 b=1`;
+
+const install050 = (
+  <>
+    <p>Qxide 0.5.0 introduces the .qx language for classical and quantum computers, pairing familiar Java/C-style syntax with compile-time qubit safety inspired by ownership in Rust. Alongside the language, the qxide command now supports run, check, and qasm subcommands, while the Rust library API remains unchanged since 0.4.1. Because .qx is still an early experiment, parts of the language may still change in future releases.</p>
+
+    <h2>A first program</h2>
+    <p>The listing below shows examples/qx/bell.qx, a complete Bell-pair program written in .qx. It uses Java-style declarations such as Qubit a = qubit(); inside a void main() entry point.</p>
+    <CodeBlock label="bell.qx" lang="qx" code={bell} />
+    <p>In the multi-shot output table, each row shows a measurement record as an array with the first bit first such as [0, 1, 1], in binary with the highest bit first such as 0b110, and as an integer with the first bit least significant (6), followed by its count. Any output printed by the program for that measurement outcome appears indented beneath its row.</p>
+    <CodeBlock label="qxide run (output)" copyable={false} code={bellRun} />
+
+    <h2>Checked before it runs</h2>
+    <p>Before anything runs, the checker rejects use after measurement, qubits that are never measured or discarded, and passing the same qubit twice to one gate. Diagnostics follow a rustc-style format with error codes spanning Q01xx to Q04xx, line:column locations, and note and help lines.</p>
+
+    <h2>What is in 0.5.0</h2>
+    <p>Here are the main changes included in Qxide 0.5.0:</p>
+    <ul className="plain-list">
+      <li>
+        The <code>.qx</code> language and the <code>qxide run</code>, <code>qxide check</code> and{' '}
+        <code>qxide qasm</code> commands.
+      </li>
+      <li>
+        Types <code>int</code>, <code>double</code>, <code>boolean</code>, <code>Qubit</code>, <code>QReg</code>,{' '}
+        <code>Bit</code> and <code>BitReg</code>, plus <code>final</code> declarations.
+      </li>
+      <li>
+        Rotation gates <code>rx</code>, <code>ry</code> and <code>rz</code> that take <code>double</code> angles.
+      </li>
+      <li>
+        Register output as <code>[0, 1, 1]</code>, <code>0b110</code> and <code>as_int()</code>, with grouped outcome
+        tables for multi-shot runs.
+      </li>
+      <li>English diagnostics with codes, line and column spans, and note and help lines.</li>
+      <li>
+        Example programs in <code>examples/qx</code>, and CI that validates the generated OpenQASM 3 with Qiskit.
+      </li>
+    </ul>
+
+    <h2>Breaking changes</h2>
+    <p>The Rust library has no breaking changes, so existing Rust users can upgrade without changing their code. Only early adopters who tried the unreleased .qx MVP syntax on the main branch need to migrate: declarations now use Java-style syntax instead of let, fn, and mut (using them fails with error Q0110 and a migration hint), and functions that return a value now require an explicit return statement.</p>
+
+    <h2>Install or upgrade</h2>
+    <p>
+      The install commands are on the <Link to="/learn#install">Learn page</Link>, and the{' '}
+      <Link to="/learn">tutorial</Link> walks through the programs above. The full list of changes is in the{' '}
+      <a href={RELEASE_050} target="_blank" rel="noreferrer">
+        v0.5.0 GitHub release
+      </a>{' '}
+      and in{' '}
+      <a href={`${GITHUB_BLOB}/docs/release-notes/v0.5.0.md`} target="_blank" rel="noreferrer">
+        docs/release-notes/v0.5.0.md
+      </a>
+      .
+    </p>
+  </>
+);
+
 const RELEASE = `${GITHUB}/releases/tag/v0.4.1`;
 
 const install041 = (
@@ -91,6 +166,11 @@ Simulation Counts
 
 const whyQxide = (
   <>
+    <p className="post-update">
+      <strong>Update, 2026-11-20:</strong> the <code>.qx</code> language described below as planned shipped in{' '}
+      <Link to="/blog/qxide-0-5-0-the-qx-language">Qxide 0.5.0</Link>, with Java/C-style syntax. The rest of this post is
+      unchanged and describes the project as of 2026-11-19.
+    </p>
     <p>
       Quantum programs are rarely quantum all the way through. A real program mixes ordinary code (loops, numbers,
       decisions based on measurement results) with a quantum part. Most tools today handle that by embedding a circuit
@@ -195,6 +275,14 @@ let ma = c.measure(a); // a is gone; only a classical bit remains`}
 // Newest first.
 export const POSTS: Post[] = [
   {
+    slug: 'qxide-0-5-0-the-qx-language',
+    title: 'Qxide 0.5.0: the .qx language',
+    date: '2026-11-20',
+    summary:
+      'Qxide 0.5.0 introduces the .qx language with Java-style syntax, compile-time qubit safety, and qxide CLI subcommands run, check, and qasm.',
+    body: install050,
+  },
+  {
     slug: 'qxide-0-4-1-install-with-one-line',
     title: 'Qxide 0.4.1: install with one line',
     date: '2026-11-20',
@@ -207,7 +295,7 @@ export const POSTS: Post[] = [
     title: 'Why Qxide',
     date: '2026-11-19',
     summary:
-      'Why we are building a Rust-like language for classical and quantum computers, what already works, and what is only planned.',
+      'Why we are building a language for classical and quantum computers, what already works, and what is only planned.',
     body: whyQxide,
   },
 ];

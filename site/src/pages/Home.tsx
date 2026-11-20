@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react';
 import {Link} from 'react-router';
+import {highlightQx} from '../components/CodeBlock';
 import {GITHUB, usePageMeta} from '../lib/meta';
 
 type Os = 'unix' | 'windows';
@@ -83,55 +84,32 @@ function Install() {
   );
 }
 
-// Real code from examples/bell.rs (comments shortened, printing omitted).
+// Real code from examples/qx/bell.qx.
+const BELL_QX = `// Bell pair: the two measured bits are always equal.
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    h(a);
+    cx(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    println("a={} b={}", ma, mb);
+}`;
+
 function BellCode() {
   return (
-    <pre tabIndex={0} aria-label="Qxide example code: bell.rs">
-      <code>
-        <span className="tk-kw">use</span> qxide::<span className="tk-ty">Circuit</span>;{'\n\n'}
-        <span className="tk-kw">fn</span> main() {'{'}
-        {'\n'}
-        {'    '}
-        <span className="tk-kw">let mut</span> c = <span className="tk-ty">Circuit</span>::new();{'\n'}
-        {'    '}
-        <span className="tk-kw">let mut</span> a = c.qubit();{'\n'}
-        {'    '}
-        <span className="tk-kw">let mut</span> b = c.qubit();{'\n\n'}
-        {'    '}c.h(&amp;<span className="tk-kw">mut</span> a);{'       '}
-        <span className="tk-cm">// superposition</span>
-        {'\n'}
-        {'    '}c.cx(&amp;<span className="tk-kw">mut</span> a, &amp;<span className="tk-kw">mut</span> b);{' '}
-        <span className="tk-cm">// entangle</span>
-        {'\n\n'}
-        {'    '}
-        <span className="tk-kw">let</span> ma = c.measure(a);{' '}
-        <span className="tk-cm">// a, b are consumed;</span>
-        {'\n'}
-        {'    '}
-        <span className="tk-kw">let</span> mb = c.measure(b);{' '}
-        <span className="tk-cm">// only classical bits remain</span>
-        {'\n\n'}
-        {'    '}
-        <span className="tk-kw">let mut</span> counts = [<span className="tk-ty">0u32</span>; 4];{'\n'}
-        {'    '}
-        <span className="tk-kw">for</span> seed <span className="tk-kw">in</span> 0..1000 {'{'}
-        {'\n'}
-        {'        '}
-        <span className="tk-kw">let</span> shot = c.simulate(seed);{'\n'}
-        {'        '}
-        <span className="tk-kw">let</span> k = (shot.get(ma) <span className="tk-kw">as</span> <span className="tk-ty">usize</span>) {'<<'} 1
-        | shot.get(mb) <span className="tk-kw">as</span> <span className="tk-ty">usize</span>;{'\n'}
-        {'        '}counts[k] += 1;{'\n'}
-        {'    '}
-        {'}'}
-        {'\n'}
-        {'}'}
-      </code>
+    <pre tabIndex={0} aria-label="Qxide example code: bell.qx">
+      <code>{highlightQx(BELL_QX)}</code>
     </pre>
   );
 }
 
-// Output captured by running `cargo run -- bell` (same as `qxide bell`, 1000 simulated shots).
+// Output captured by running `qxide run examples/qx/bell.qx --shots 1000` and `qxide qasm examples/qx/bell.qx`.
+const RUN_OUT = `[0, 0]  0b00 = 0  ×504
+  a=0 b=0
+[1, 1]  0b11 = 3  ×496
+  a=1 b=1`;
+
 const QASM = `OPENQASM 3.0;
 include "stdgates.inc";
 qubit[2] q;
@@ -142,10 +120,8 @@ c[0] = measure q[0];
 c[1] = measure q[1];`;
 
 const OUTCOMES = [
-  {bits: '00', n: 503},
-  {bits: '01', n: 0},
-  {bits: '10', n: 0},
-  {bits: '11', n: 497},
+  {bits: '[0, 0]', n: 504},
+  {bits: '[1, 1]', n: 496},
 ];
 
 function Example() {
@@ -154,7 +130,7 @@ function Example() {
       <div className="example-grid">
         <div className="code-panel">
           <div className="panel-head">
-            <span>examples/bell.rs</span>
+            <span>examples/qx/bell.qx</span>
           </div>
           <BellCode />
         </div>
@@ -165,10 +141,10 @@ function Example() {
           </div>
           <div className="result-body">
             <p className="result-cmd">
-              <span aria-hidden="true">$ </span>qxide bell
+              <span aria-hidden="true">$ </span>qxide run bell.qx --shots 1000
             </p>
-            <pre className="result-qasm" tabIndex={0} aria-label="OpenQASM 3 output">
-              {QASM}
+            <pre className="result-qasm" tabIndex={0} aria-label="Output of qxide run with 1000 shots">
+              {RUN_OUT}
             </pre>
             <ul className="bars" aria-label="Measurement counts over 1000 simulated shots">
               {OUTCOMES.map(({bits, n}) => (
@@ -181,9 +157,15 @@ function Example() {
                 </li>
               ))}
             </ul>
+            <p className="result-cmd">
+              <span aria-hidden="true">$ </span>qxide qasm bell.qx
+            </p>
+            <pre className="result-qasm" tabIndex={0} aria-label="OpenQASM 3 output">
+              {QASM}
+            </pre>
             <p className="result-note">
-              Real output of <code>qxide bell</code>: the circuit as OpenQASM 3, then 1000 simulated shots. Because
-              the two qubits are entangled, 01 and 10 never appear.
+              Real output of <code>qxide run</code> and <code>qxide qasm</code>. Because the two qubits are
+              entangled, only <code>[0, 0]</code> and <code>[1, 1]</code> ever appear.
             </p>
           </div>
         </div>
@@ -198,19 +180,20 @@ const FEATURES = [
     title: 'Two machines, one language',
     body: (
       <>
-        Classical logic is ordinary Rust. The same circuit prints as OpenQASM 3 and runs on a built-in simulator:
-        state-vector or stabilizer on the CPU, chosen automatically, plus a GPU prototype behind a feature flag.
+        Classical logic and quantum operations live in one <code>.qx</code> program with familiar C-style syntax.{' '}
+        <code>qxide run</code> simulates it with built-in state-vector and stabilizer simulators, and{' '}
+        <code>qxide qasm</code> exports OpenQASM 3.
       </>
     ),
   },
   {
     n: '02',
-    title: 'Rust-style safety',
+    title: 'Compile-time qubit safety',
     body: (
       <>
-        A <code>Qubit</code> can&apos;t be copied, and <code>measure</code> consumes it, so reuse after measurement
-        won&apos;t compile. <code>with_ancilla</code> lends a helper qubit as control-only, then appends the inverse
-        gates so it returns to |0⟩ and its slot can be reused.
+        Qubit safety is checked at compile time, like Rust&apos;s ownership. <code>qxide check</code> rejects use
+        after measurement, the same qubit passed twice to one gate, and qubits that are never measured or discarded,
+        before anything runs.
       </>
     ),
   },
@@ -219,9 +202,9 @@ const FEATURES = [
     title: 'Learn by running',
     body: (
       <>
-        After installing, <code>qxide bell</code> prints the OpenQASM 3 for an entangled pair and the results of 1000
-        simulated shots. The repository also ships runnable Rust examples such as <code>bell</code> and{' '}
-        <code>ghz_large</code>.
+        After installing, run <code>qxide run examples/qx/bell.qx --shots 1000</code> to see the outcomes as{' '}
+        <code>[0, 1, 1]</code>, <code>0b110</code> and an integer. The same engine is also a Rust library, with a GPU
+        prototype behind a feature flag.
       </>
     ),
   },
@@ -229,13 +212,13 @@ const FEATURES = [
 
 export function Home() {
   usePageMeta(
-    'Qxide: a Rust-like language for classical and quantum computers',
-    'Qxide is a Rust library and command-line tool for quantum circuits, with a Rust-like .qx language for classical and quantum computers planned.',
+    'Qxide: a programming language for classical and quantum computers',
+    "Qxide is a programming language for classical and quantum computers: familiar C-style syntax, compile-time qubit safety like Rust's ownership, and OpenQASM 3 output.",
   );
   return (
     <>
       <section className="hero">
-        <p className="hero-kicker">fn main() → |ψ⟩</p>
+        <p className="hero-kicker">void main() → |ψ⟩</p>
         <h1>
           <span>Write it once.</span>
           <span>
@@ -243,8 +226,8 @@ export function Home() {
           </span>
         </h1>
         <p className="hero-sub">
-          Today, Qxide is a Rust library and command-line tool for quantum circuits. A Rust-like .qx language for
-          classical and quantum computers is planned.
+          Familiar C-style syntax, compile-time qubit safety like Rust&apos;s ownership, and OpenQASM 3 output.
+          Version 0.5.0 is an early experiment; the language may still change.
         </p>
         <div className="cta">
           <Link className="pill pill-solid" to="/learn">

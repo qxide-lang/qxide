@@ -5,13 +5,28 @@ import {GITHUB, GITHUB_BLOB, usePageMeta} from '../lib/meta';
 const HELP = `Usage: qxide <COMMAND>
 
 Commands:
-  bell [SHOTS]   Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
+  run <FILE> [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, seed 0)
+  check <FILE>                       Check a .qx program for errors without running it
+  qasm <FILE>                        Print the OpenQASM 3 circuit built by a .qx program
+  bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
 
 Options:
-  -V, --version  Print version
-  -h, --help     Print help`;
+  -V, --version                      Print version
+  -h, --help                         Print help`;
 
 const REPO_DOCS = [
+  {
+    path: 'docs/design/qx-language.md',
+    title: '.qx language design',
+    desc: 'Goals, syntax, the linear qubit type system, diagnostics, the 0.5.0 Java-style syntax revision and the native-code roadmap.',
+    lang: 'Korean',
+  },
+  {
+    path: 'docs/release-notes/v0.5.0.md',
+    title: 'v0.5.0 release notes',
+    desc: 'What changed in 0.5.0: the .qx language and CLI, Java-style syntax, bit output and diagnostics.',
+    lang: 'English',
+  },
   {
     path: 'docs/release.md',
     title: 'Release runbook',
@@ -39,7 +54,13 @@ const REPO_DOCS = [
   {
     path: 'README.md',
     title: 'README',
-    desc: 'Overview, supported gates and simulators, memory per qubit count, and a comparison with other quantum languages.',
+    desc: 'Overview, install options, a .qx quick start with real output, and the Rust library.',
+    lang: 'English',
+  },
+  {
+    path: 'README.ko.md',
+    title: 'README (Korean)',
+    desc: 'The Korean translation of the README.',
     lang: 'Korean',
   },
   {
@@ -61,15 +82,16 @@ export function Docs() {
       <header className="page-head">
         <h1>Docs</h1>
         <p className="lede">
-          Qxide is early, so the docs are split between the API reference and a handful of documents in the
-          repository. New here? Start with the <Link to="/learn">tutorial</Link>.
+          Qxide is an early experiment, so the docs are split between the Rust API reference and a handful of documents
+          in the repository. New here? Start with the <Link to="/learn">tutorial</Link>.
         </p>
       </header>
 
       <section aria-labelledby="api">
-        <h2 id="api">API reference</h2>
+        <h2 id="api">Rust API reference</h2>
         <p>
-          Every public type and method of the <code>qxide</code> crate (<code>Circuit</code>, <code>Qubit</code>,{' '}
+          The <code>.qx</code> language is documented by the tutorial and the design document below. Every public type
+          and method of the <code>qxide</code> Rust crate (<code>Circuit</code>, <code>Qubit</code>,{' '}
           <code>Backend</code> and the rest) is documented on docs.rs.
         </p>
         <p>
@@ -86,7 +108,7 @@ export function Docs() {
           <a href={GITHUB} target="_blank" rel="noreferrer">
             GitHub repository
           </a>
-          . Most are written in Korean; the language is noted on each entry.
+          . Some are written in Korean; the language is noted on each entry.
         </p>
         <ul className="doc-list">
           {REPO_DOCS.map((d) => (
@@ -107,16 +129,26 @@ export function Docs() {
       <section aria-labelledby="cli">
         <h2 id="cli">Command line</h2>
         <p>
-          The <code>qxide</code> binary has one command today. This is the output of <code>qxide --help</code>:
+          The <code>qxide</code> binary runs, checks and exports <code>.qx</code> programs. This is the output of{' '}
+          <code>qxide --help</code>:
         </p>
         <CodeBlock label="qxide --help" code={HELP} />
         <ul className="plain-list">
           <li>
-            <code>qxide --version</code> prints the installed version.
+            <code>qxide run FILE</code> checks and simulates a program. <code>--shots N</code> repeats it and prints a
+            table grouped by outcome, such as <code>[0, 1, 1]  0b110 = 6  ×503</code>; <code>--seed S</code> makes a
+            run repeatable.
           </li>
           <li>
-            <code>qxide bell</code> prints the OpenQASM 3 for a Bell-state circuit, then the counts from 1000
-            simulated shots. <code>qxide bell 5000</code> runs 5000 shots instead.
+            <code>qxide check FILE</code> parses and type-checks a program and verifies qubit usage without running
+            it.
+          </li>
+          <li>
+            <code>qxide qasm FILE</code> prints the circuit as OpenQASM 3.
+          </li>
+          <li>
+            <code>qxide bell</code> prints the OpenQASM 3 for a built-in Bell-state circuit, then the counts from 1000
+            simulated shots. <code>qxide --version</code> prints the installed version.
           </li>
         </ul>
         <p>

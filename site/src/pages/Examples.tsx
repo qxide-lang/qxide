@@ -1,3 +1,4 @@
+import {Link} from 'react-router';
 import {CodeBlock} from '../components/CodeBlock';
 import {GITHUB_BLOB, GITHUB_TREE, usePageMeta} from '../lib/meta';
 
@@ -9,7 +10,41 @@ type Example = {
   note?: string;
 };
 
-// Every example in examples/ at v0.4.1. Results were captured by running the commands unless noted.
+// .qx programs in examples/qx/ at v0.5.0. Results were captured by running the commands.
+const QX_EXAMPLES: Example[] = [
+  {
+    name: 'bell',
+    summary: 'A Bell pair: the two measured bits are always equal.',
+    command: 'qxide run examples/qx/bell.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: '[0, 0]  0b00 = 0  ×504\n  a=0 b=0\n[1, 1]  0b11 = 3  ×496\n  a=1 b=1',
+      note: '[0, 1] and [1, 0] never occur because the qubits are entangled.',
+    },
+  },
+  {
+    name: 'ghz',
+    summary: 'A 5-qubit GHZ state: the register always reads all zeros or all ones.',
+    command: 'qxide run examples/qx/ghz.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: '[0, 0, 0, 0, 0]  0b00000 = 0  ×504\n  [0, 0, 0, 0, 0]  0b00000 = 0\n[1, 1, 1, 1, 1]  0b11111 = 31  ×496\n  [1, 1, 1, 1, 1]  0b11111 = 31',
+      note: 'Each row shows the bits as an array, in binary (highest bit first) and as an integer (first bit least significant).',
+    },
+  },
+  {
+    name: 'teleport',
+    summary: 'Quantum teleportation of |1⟩: measured bits steer the corrections applied to the third qubit.',
+    command: 'qxide run examples/qx/teleport.qx --shots 1000',
+    result: {
+      label: 'Output',
+      text: '[1, 0, 1]  0b101 = 5  ×266\n  bob=1\n[0, 0, 1]  0b100 = 4  ×252\n  bob=1\n[0, 1, 1]  0b110 = 6  ×252\n  bob=1\n[1, 1, 1]  0b111 = 7  ×230\n  bob=1',
+      note: 'The measured bits vary, but bob is 1 in every outcome.',
+    },
+  },
+];
+
+// Rust examples in examples/ at v0.5.0 (unchanged since v0.4.1). Results were captured by running the commands unless noted.
 const EXAMPLES: Example[] = [
   {
     name: 'bell',
@@ -54,8 +89,8 @@ const EXAMPLES: Example[] = [
 
 export function Examples() {
   usePageMeta(
-    'Qxide examples: Bell, GHZ, OpenQASM and GPU benchmark',
-    'Runnable examples from the Qxide repository, with the command to run each one, a real result and a link to the source.',
+    'Qxide examples: Bell, GHZ, teleportation, OpenQASM and GPU benchmark',
+    'Runnable .qx programs and Rust examples from the Qxide repository, with the command to run each one, a real result and a link to the source.',
   );
 
   return (
@@ -67,7 +102,8 @@ export function Examples() {
           <a href={`${GITHUB_TREE}/examples`} target="_blank" rel="noreferrer">
             examples/
           </a>{' '}
-          folder has four runnable programs. Clone the repository and run any command below from its root.
+          folder has three <code>.qx</code> programs and four Rust examples. Clone the repository and run any command
+          below from its root.
         </p>
       </header>
 
@@ -77,6 +113,38 @@ export function Examples() {
         code={'git clone https://github.com/qxide-lang/qxide\ncd qxide'}
       />
 
+      <h2 className="section-title">.qx programs</h2>
+      <p>
+        These need the <code>qxide</code> command, which you can install from the{' '}
+        <Link to="/learn#install">Learn page</Link>.
+      </p>
+      <div className="card-list">
+        {QX_EXAMPLES.map((ex) => (
+          <article className="card" key={ex.name} aria-labelledby={`qx-${ex.name}`}>
+            <h2 id={`qx-${ex.name}`}>
+              <code>{ex.name}.qx</code>
+            </h2>
+            <p>{ex.summary}</p>
+            <CodeBlock label={`Run ${ex.name}.qx`} lang="sh" code={ex.command} />
+            {ex.result && (
+              <>
+                <CodeBlock label={ex.result.label} copyable={false} code={ex.result.text} />
+                <p className="card-note">{ex.result.note}</p>
+              </>
+            )}
+            <p>
+              <a href={`${GITHUB_BLOB}/examples/qx/${ex.name}.qx`} target="_blank" rel="noreferrer">
+                View examples/qx/{ex.name}.qx on GitHub<span className="sr-only"> (opens in a new tab)</span>
+              </a>
+            </p>
+          </article>
+        ))}
+      </div>
+
+      <h2 className="section-title">Rust library examples</h2>
+      <p>
+        These use the <code>qxide</code> crate directly and are run with <code>cargo run --example</code>.
+      </p>
       <div className="card-list">
         {EXAMPLES.map((ex) => (
           <article className="card" key={ex.name} aria-labelledby={`ex-${ex.name}`}>
