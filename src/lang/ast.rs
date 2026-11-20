@@ -72,11 +72,24 @@ pub struct Ident {
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub imports: Vec<Import>,
     pub fns: Vec<FnDecl>,
+}
+
+/// `import pkg.module.function;` or `import pkg.module.*;`
+#[derive(Debug, Clone)]
+pub struct Import {
+    // Every segment before the function name (or `*`): the package, then nested modules.
+    pub module: Vec<Ident>,
+    // `None` for a wildcard import.
+    pub item: Option<Ident>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct FnDecl {
+    // Span of the `public` keyword: other modules may import the function.
+    pub public: Option<Span>,
     pub name: Ident,
     pub params: Vec<Param>,
     pub ret: Ty,

@@ -1,0 +1,21 @@
+// Root module of `bell-utils`: imported as `bell_utils.<function>`.
+import bell_utils.gates.entangle;
+
+// Turns two fresh qubits into the Bell state (|00> + |11>) / sqrt(2); both stay with the caller.
+public void bell_pair(Qubit a, Qubit b) {
+    h(a);
+    entangle(a, b);
+}
+
+// (|00> - |11>) / sqrt(2).
+public void phi_minus(Qubit a, Qubit b) {
+    bell_pair(a, b);
+    z(a);
+}
+
+// A new qubit in |+>; the caller owns it and must measure or discard it.
+public Qubit plus() {
+    Qubit q = qubit();
+    h(q);
+    return q;
+}

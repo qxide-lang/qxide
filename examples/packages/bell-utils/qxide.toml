@@ -1,0 +1,10 @@
+[package]
+name = "bell-utils"
+version = "0.1.0"
+description = "Bell-pair helpers for Qxide"
+license = "MIT OR Apache-2.0"
+authors = ["Qxide contributors"]
+repository = "https://github.com/qxide-lang/qxide"
+qxide = ">=0.6"
+
+[dependencies]

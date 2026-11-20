@@ -162,7 +162,8 @@ struct Checker {
     errors: Vec<Diagnostic>,
 }
 
-pub fn check(p: &Program) -> Vec<Diagnostic> {
+/// `require_main: false` checks a library module, which has no `main`.
+pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
     let mut c = Checker {
         fns: HashMap::new(),
         unconditional: HashMap::new(),
@@ -172,7 +173,7 @@ pub fn check(p: &Program) -> Vec<Diagnostic> {
         ret: Ty::Void,
         errors: Vec::new(),
     };
-    c.signatures(p);
+    c.signatures(p, require_main);
     c.conditional_safety(p);
     for f in &p.fns {
         c.function(f);
@@ -187,23 +188,25 @@ impl Checker {
         self.errors.last_mut().unwrap()
     }
 
-    fn signatures(&mut self, p: &Program) {
+    fn signatures(&mut self, p: &Program, require_main: bool) {
         let mut main = None;
         for f in &p.fns {
             let name = &f.name.name;
-            if BUILTINS.contains(&name.as_str()) {
+            // Functions of imported modules carry qualified names such as `bell_utils.prepare`.
+            let base = name.rsplit('.').next().unwrap_or(name);
+            if BUILTINS.contains(&base) {
                 self.err(
                     Code::BuiltinRedefined,
                     f.name.span,
-                    msg::builtin_redefined(name),
+                    msg::builtin_redefined(base),
                 );
                 continue;
             }
-            if constant(name).is_some() {
+            if constant(base).is_some() {
                 self.err(
                     Code::BuiltinRedefined,
                     f.name.span,
-                    msg::constant_redefined(name),
+                    msg::constant_redefined(base),
                 )
                 .help = Some(msg::help_constant_redefined());
                 continue;
@@ -239,6 +242,7 @@ impl Checker {
             );
         }
         match main {
+            None if !require_main => {}
             None => {
                 let at = p.fns.first().map_or(Span::default(), |f| f.name.span);
                 self.err(Code::BadMain, at, msg::missing_main());

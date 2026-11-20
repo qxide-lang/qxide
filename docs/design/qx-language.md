@@ -24,7 +24,7 @@ ROADMAP 1단계 과제는 전용 `.qx` 문법의 도입이다. `.qx` 언어의 �
 - 큐비트를 인자로 받는 사용자 정의 함수
 - `with_ancilla` 문법
 - `while`/`loop` 반복문
-- 구조체·모듈·패키지(`Qx.toml`)
+- 구조체·모듈·패키지(`qxide.toml`)
 - 네이티브 코드 생성
 - 실제 양자 하드웨어 제출
 
@@ -111,11 +111,12 @@ void main() {
 }
 ```
 
-다음은 MVP 문법의 EBNF 정의다. 연산자 우선순위는 낮은 순서에서 높은 순서로 `||`, `&&`, 비교 연산자(비결합), `+ -`, `* / %`, 단항 `- !` 및 캐스트 `(type) expr`, 인덱싱 순이다. 범위 연산자 `..`는 `for` 헤더에서만 허용된다. 문자열 리터럴(`\n`, `\t`, `\\`, `\"` 이스케이프와 리터럴 중괄호용 `{{`/`}}` 지원)은 `println`의 첫 번째 인자로만 사용할 수 있다. `var`와 `consume`은 정식 키워드이며, `PI`는 내장 `double` 상수 식별자다. 타입 이름(`int`, `double`, `boolean`, `void`, `Bit`, `BitReg`, `Qubit`, `QReg`)은 식별자로 사용할 수 없다(`Q0112`). 향후 확장을 위해 예약된 키워드 `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, `apply`는 사용 시 오류로 거부한다.
+다음은 MVP 문법의 EBNF 정의다. 연산자 우선순위는 낮은 순서에서 높은 순서로 `||`, `&&`, 비교 연산자(비결합), `+ -`, `* / %`, 단항 `- !` 및 캐스트 `(type) expr`, 인덱싱 순이다. 범위 연산자 `..`는 `for` 헤더에서만 허용된다. 문자열 리터럴(`\n`, `\t`, `\\`, `\"` 이스케이프와 리터럴 중괄호용 `{{`/`}}` 지원)은 `println`의 첫 번째 인자로만 사용할 수 있다. `var`, `consume`, `import`, `public`은 정식 키워드이며(패키지 시스템의 `import`와 `public` 문법은 `qx-packages.md` 참고), `PI`는 내장 `double` 상수 식별자다. 타입 이름(`int`, `double`, `boolean`, `void`, `Bit`, `BitReg`, `Qubit`, `QReg`)은 식별자로 사용할 수 없다(`Q0112`). 향후 확장을 위해 예약된 키워드 `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, `apply`는 사용 시 오류로 거부한다.
 
 ```ebnf
-program    = { fn_decl } ;
-fn_decl    = type IDENT "(" [ param { "," param } ] ")" block ;   (* type may be "void" *)
+program    = { import } { fn_decl } ;                          (* imports: qx-packages.md *)
+import     = "import" IDENT { "." IDENT } ( "." IDENT | "." "*" ) ";" ;
+fn_decl    = [ "public" ] type IDENT "(" [ param { "," param } ] ")" block ;   (* type may be "void" *)
 param      = [ "consume" ] type IDENT ;                      (* "consume" only on Qubit / QReg *)
 type       = "int" | "double" | "boolean" | "void" | "Bit" | "BitReg" | "Qubit" | "QReg" ;
 block      = "{" { stmt } "}" ;
@@ -340,7 +341,7 @@ void main() {
 - `with_ancilla` 블록 문법
 - 빌드 시점 `while`/`loop`/`break` 제어 흐름
 - `Bit` 값에 대한 샷 시점 고전 연산(OpenQASM 3 고전 타입)과 `BitReg`에 대한 `m == 3` 형태의 조건식
-- 구조체·모듈 및 `Qx.toml` 패키지 관리(ROADMAP 2단계)
+- 구조체·모듈 및 `qxide.toml` 패키지 관리(ROADMAP 2단계)
 - 검사기 내 정적 얽힘 추적(`entanglement-tracking.md`의 대안 F)
 - 대규모 고전 연산을 위한 IR 및 네이티브 코드 생성(6절의 안 C)
 - OpenQASM 3의 하드웨어 서비스 제출(ROADMAP 2단계)
@@ -360,7 +361,7 @@ void main() {
    - 정적 얽힘 분석, 샷 시점 고전 연산 및 이에 대응하는 OpenQASM 3 출력 지원
 4. **4단계 — 성능 및 실행 타깃 확장**
    - 고전 연산 영역의 네이티브 코드 생성
-   - 얽힘 그룹 기반 시뮬레이션 분할, 양자 하드웨어 제출, `Qx.toml` 패키지 지원
+   - 얽힘 그룹 기반 시뮬레이션 분할, 양자 하드웨어 제출, `qxide.toml` 패키지 지원
 
 ## 10. 결정 및 미결 사항
 
@@ -1014,3 +1015,26 @@ qxide 라이브러리 자체는 분기 안의 `measure`만 거부해 패닉을 �
 - `qxide repl`은 상태 벡터 백엔드만 사용하므로 약 26큐비트(1 GiB 메모리 한도, 초과 시 `Q0406`)로 제한된다.
 - `qxide repl`은 파일 불러오기나 입력 이력 편집 기능을 제공하지 않으며, 진단의 줄 번호는 `<repl>` 기준의 누적 줄 번호로 표시된다.
 - `qxide explain`은 원본 Markdown을 그대로 출력한다.
+
+## 15. 모듈, import, 패키지 (2026-11-20)
+
+`.qx` 파일마다 하나의 모듈이 되며, 파일 맨 앞에 Java식 `import pkg.module.function;` 또는 `import pkg.module.*;` 선언을 둔다. 다른 모듈에서 가져올 수 있는 대상은 `public`으로 표시한 함수뿐이며, `import`와 `public`은 새 정식 키워드로 추가된다. 모듈 사이의 순환 import는 금지되고, 큐비트 선형성 규칙은 함수 시그니처(대여, `consume`, 큐비트 반환)를 통해 패키지 경계를 넘어 그대로 유지된다.
+
+매니페스트 `qxide.toml`, 잠금 파일 `qxide.lock`, GitHub 색인 레지스트리, 그리고 `qxide add`/`remove`/`install`/`publish`/`search` 명령을 포함한 패키지 시스템의 전체 설계는 별도 영어 문서 [qx-packages.md](qx-packages.md)에 정리되어 있다.
+
+### 15.1 신규 오류 코드
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0501` | `import` 경로의 첫 이름이 현재 패키지도 선언된 의존 패키지도 아님 |
+| `Q0502` | 모듈 파일을 찾거나 읽을 수 없음(모듈 수 4096개 한도 초과 포함) |
+| `Q0503` | 모듈에 해당 이름의 함수가 없음 |
+| `Q0504` | `public`이 아닌 함수를 import함 |
+| `Q0505` | 모듈 순환 import |
+| `Q0506` | import한 이름이 같은 파일의 함수 또는 다른 import와 충돌함 |
+| `Q0507` | 두 개 이상의 와일드카드 import가 같은 이름을 제공해 호출이 모호함 |
+| `Q0508` | `qxide.toml` 프로젝트 밖의 단독 파일에서 `import`를 사용함 |
+| `Q0509` | `import` 경로가 너무 짧음(모듈과 함수 또는 `.*` 필요) |
+| `Q0510` | 함수 선언 뒤에 `import`가 옴 |
+
+패키지 관리자 오류 `Q06xx`는 소스 위치가 없는 별도 대역이며 `qx-packages.md` 16절에 정리되어 있다.

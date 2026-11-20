@@ -311,6 +311,14 @@ pub fn help(code: Code) -> Option<String> {
         Code::BorrowedConsume => "add `consume` before the parameter type, such as `void f(consume Qubit q)`, to take ownership and become responsible for measuring or discarding it".into(),
         Code::ConditionalCall => "a function called inside an `if` on a measurement result may only apply gates and `reset` to borrowed qubits, so it cannot allocate, measure, discard, print, take a `consume` parameter, or return a qubit; call it before or after the `if`".into(),
         Code::AsIntTooWide => "print it with `to_binary()` or as an array using a plain placeholder instead".into(),
+        Code::UnknownPackage => "declare the dependency by running `qxide add <package>`, which edits `qxide.toml`".into(),
+        Code::PrivateFunction => "add `public` before the function declaration, e.g. `public void prepare(Qubit q)`".into(),
+        Code::ImportCycle => "move the shared functions into a separate module that both modules import".into(),
+        Code::ImportOutsideProject => "put the file in a project with a `qxide.toml` manifest and sources under `src/`".into(),
+        Code::BadImportPath => "use `import package.function;`, `import package.module.function;`, or `import package.module.*;`".into(),
+        Code::MisplacedImport => "move every `import` to the top of the file, before the first function".into(),
+        Code::AmbiguousName => "import the function by full path, e.g. `import pkg.module.function;`, to override wildcard imports".into(),
+        Code::ImportConflict => "rename the local function or remove one of the conflicting imports".into(),
         _ => return None,
     })
 }
@@ -406,4 +414,66 @@ pub fn note_cond_op(op: &str) -> String {
 
 pub fn note_cond_calls(callee: &str) -> String {
     format!("calls `{callee}`, which cannot run inside a conditional block")
+}
+
+// Modules and imports (Q05xx).
+
+pub fn misplaced_import() -> String {
+    "`import` declarations must appear before function declarations".into()
+}
+
+pub fn bad_import_path() -> String {
+    "import path must name a package or module and a function, or end with `.*`".into()
+}
+
+pub fn note_imported_by(module: &str) -> String {
+    format!("`{module}` imports the next module here")
+}
+
+pub fn import_cycle(chain: &str) -> String {
+    format!("import cycle detected: {chain}")
+}
+
+pub fn import_outside_project() -> String {
+    "cannot resolve `import` outside a project with a `qxide.toml` manifest".into()
+}
+
+pub fn unknown_package(name: &str) -> String {
+    format!("unknown package `{name}` in import")
+}
+
+pub fn too_many_modules(limit: usize) -> String {
+    format!("exceeded maximum of {limit} imported modules")
+}
+
+pub fn module_not_found(module: &str) -> String {
+    format!("failed to load module `{module}`")
+}
+
+pub fn note_module_file(path: &str, err: &str) -> String {
+    format!("tried reading `{path}`: {err}")
+}
+
+pub fn unknown_import(name: &str, module: &str) -> String {
+    format!("cannot find function `{name}` in module `{module}`")
+}
+
+pub fn private_function(name: &str, module: &str) -> String {
+    format!("function `{name}` in module `{module}` is private")
+}
+
+pub fn import_conflicts_local(name: &str) -> String {
+    format!("imported function `{name}` conflicts with a local function")
+}
+
+pub fn import_conflicts_import(name: &str) -> String {
+    format!("conflicting imports for function `{name}`")
+}
+
+pub fn note_first_import() -> String {
+    "first imported here".into()
+}
+
+pub fn ambiguous_name(name: &str, modules: &str) -> String {
+    format!("ambiguous call to `{name}`: imported via wildcard from {modules}")
 }

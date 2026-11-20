@@ -22,11 +22,22 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         pos: 0,
         depth: 0,
     };
+    let mut imports = Vec::new();
+    while p.peek() == &Tok::Import {
+        imports.push(p.import()?);
+    }
     let mut fns = Vec::new();
     while p.peek() != &Tok::Eof {
+        if p.peek() == &Tok::Import {
+            return Err(Diagnostic::new(
+                Code::MisplacedImport,
+                p.span(),
+                msg::misplaced_import(),
+            ));
+        }
         fns.push(p.fn_decl()?);
     }
-    Ok(Program { fns })
+    Ok(Program { imports, fns })
 }
 
 impl Parser {
@@ -135,8 +146,42 @@ impl Parser {
         Ok(())
     }
 
-    // `ReturnType name(Type a, consume Type b) { ... }`
+    // `import a.b.c;` or `import a.b.*;`: at least a module and an item.
+    fn import(&mut self) -> PResult<Import> {
+        let start = self.bump().span;
+        let mut module = vec![self.ident()?];
+        let mut item = None;
+        let mut wildcard = false;
+        while self.eat(&Tok::Dot) {
+            if self.peek() == &Tok::Star {
+                self.bump();
+                wildcard = true;
+                break;
+            }
+            module.push(self.ident()?);
+        }
+        let end = self.expect(Tok::Semi)?;
+        let span = start.to(end);
+        if !wildcard {
+            if module.len() < 2 {
+                return Err(Diagnostic::new(
+                    Code::BadImportPath,
+                    span,
+                    msg::bad_import_path(),
+                ));
+            }
+            item = module.pop();
+        }
+        Ok(Import { module, item, span })
+    }
+
+    // `[public] ReturnType name(Type a, consume Type b) { ... }`
     fn fn_decl(&mut self) -> PResult<FnDecl> {
+        let public = if self.peek() == &Tok::Public {
+            Some(self.bump().span)
+        } else {
+            None
+        };
         let (ret, ret_span) = self.ty()?;
         let name = self.name()?;
         self.expect(Tok::LParen)?;
@@ -162,6 +207,7 @@ impl Parser {
         self.expect(Tok::RParen)?;
         let body = self.block()?;
         Ok(FnDecl {
+            public,
             name,
             params,
             ret,
