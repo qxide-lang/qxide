@@ -321,7 +321,7 @@ fn check_library(m: &Manifest) -> Result<()> {
     let name = lib.display().to_string();
     // Same large stack as `qxide check`, so deep nesting ends in a diagnostic, not a crash.
     let worker = std::thread::Builder::new()
-        .stack_size(64 << 20)
+        .stack_size(crate::lang::STACK_SIZE)
         .spawn(move || {
             let input = crate::lang::Input {
                 name: &name,

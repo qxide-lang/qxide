@@ -190,53 +190,82 @@ impl<'p> Interp<'p> {
         Ok(Flow::Next)
     }
 
+    // Stack: a dispatcher like `expr`, so nested blocks only pay for the statement kind they use.
     fn stmt(&mut self, c: &mut Circuit, f: &mut Frame, s: &'p Stmt) -> R<Flow> {
         match s {
-            Stmt::Decl { name, init, ty, .. } => {
-                let v = self.expr(c, f, init)?;
-                // `var` is classical only, so the runtime value determines the slot type.
-                let ty = ty.unwrap_or(match v {
-                    Value::Double(_) => Ty::Double,
-                    Value::Bool(_) => Ty::Boolean,
-                    _ => Ty::Int,
-                });
-                f.bind(&name.name, v, ty);
-            }
-            Stmt::Assign { name, value } => {
-                let v = self.expr(c, f, value)?;
-                f.set(&name.name, v);
-            }
-            Stmt::If(i) => return self.if_stmt(c, f, i),
+            Stmt::Decl { name, init, ty, .. } => self.decl(c, f, name, init, *ty),
+            Stmt::Assign { name, value } => self.assign(c, f, name, value),
+            Stmt::If(i) => self.if_stmt(c, f, i),
             Stmt::For {
                 var,
                 start,
                 end,
                 body,
-            } => {
-                let a = self.int(c, f, start)?;
-                let b = self.int(c, f, end)?;
-                for k in a..b {
-                    f.scopes
-                        .push(vec![(var.name.clone(), Value::Int(k), Ty::Int)]);
-                    let r = self.block(c, f, body);
-                    f.scopes.pop();
-                    if let Flow::Return(v) = r? {
-                        return Ok(Flow::Return(v));
-                    }
-                }
-            }
-            Stmt::Return { value, .. } => {
-                let v = match value {
-                    Some(e) => self.expr(c, f, e)?,
-                    None => Value::Unit,
-                };
+            } => self.for_stmt(c, f, var, start, end, body),
+            Stmt::Return { value, .. } => self.return_stmt(c, f, value.as_ref()),
+            Stmt::Expr(e) => self.expr(c, f, e).map(|_| Flow::Next),
+        }
+    }
+
+    fn decl(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        name: &'p Ident,
+        init: &'p Expr,
+        ty: Option<Ty>,
+    ) -> R<Flow> {
+        let v = self.expr(c, f, init)?;
+        // `var` is classical only, so the runtime value determines the slot type.
+        let ty = ty.unwrap_or(match v {
+            Value::Double(_) => Ty::Double,
+            Value::Bool(_) => Ty::Boolean,
+            _ => Ty::Int,
+        });
+        f.bind(&name.name, v, ty);
+        Ok(Flow::Next)
+    }
+
+    fn assign(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        name: &'p Ident,
+        value: &'p Expr,
+    ) -> R<Flow> {
+        let v = self.expr(c, f, value)?;
+        f.set(&name.name, v);
+        Ok(Flow::Next)
+    }
+
+    fn for_stmt(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        var: &'p Ident,
+        start: &'p Expr,
+        end: &'p Expr,
+        body: &'p Block,
+    ) -> R<Flow> {
+        let a = self.int(c, f, start)?;
+        let b = self.int(c, f, end)?;
+        for k in a..b {
+            f.scopes
+                .push(vec![(var.name.clone(), Value::Int(k), Ty::Int)]);
+            let r = self.block(c, f, body);
+            f.scopes.pop();
+            if let Flow::Return(v) = r? {
                 return Ok(Flow::Return(v));
-            }
-            Stmt::Expr(e) => {
-                self.expr(c, f, e)?;
             }
         }
         Ok(Flow::Next)
+    }
+
+    fn return_stmt(&mut self, c: &mut Circuit, f: &mut Frame, value: Option<&'p Expr>) -> R<Flow> {
+        match value {
+            Some(e) => self.expr(c, f, e).map(Flow::Return),
+            None => Ok(Flow::Return(Value::Unit)),
+        }
     }
 
     fn if_stmt(&mut self, c: &mut Circuit, f: &mut Frame, i: &'p IfStmt) -> R<Flow> {
@@ -247,25 +276,27 @@ impl<'p> Interp<'p> {
                 Some(Else::If(inner)) => self.if_stmt(c, f, inner),
                 None => Ok(Flow::Next),
             },
-            Value::Bit(bit) => {
-                // Checker forbids `return` here, so the bodies always fall through.
-                let mut res = Ok(Flow::Next);
-                c.if_one(bit, |c| res = self.block(c, f, &i.then));
-                res?;
-                if let Some(els) = &i.els {
-                    let mut res = Ok(Flow::Next);
-                    c.if_zero(bit, |c| {
-                        res = match els {
-                            Else::Block(b) => self.block(c, f, b),
-                            Else::If(inner) => self.if_stmt(c, f, inner),
-                        }
-                    });
-                    res?;
-                }
-                Ok(Flow::Next)
-            }
+            Value::Bit(bit) => self.if_bit(c, f, i, bit),
             _ => Err(internal(i.cond.span)),
         }
+    }
+
+    fn if_bit(&mut self, c: &mut Circuit, f: &mut Frame, i: &'p IfStmt, bit: Bit) -> R<Flow> {
+        // Checker forbids `return` here, so the bodies always fall through.
+        let mut res = Ok(Flow::Next);
+        c.if_one(bit, |c| res = self.block(c, f, &i.then));
+        res?;
+        if let Some(els) = &i.els {
+            let mut res = Ok(Flow::Next);
+            c.if_zero(bit, |c| {
+                res = match els {
+                    Else::Block(b) => self.block(c, f, b),
+                    Else::If(inner) => self.if_stmt(c, f, inner),
+                }
+            });
+            res?;
+        }
+        Ok(Flow::Next)
     }
 
     fn int(&mut self, c: &mut Circuit, f: &mut Frame, e: &'p Expr) -> R<i64> {
@@ -275,73 +306,120 @@ impl<'p> Interp<'p> {
         }
     }
 
+    // Stack: one small frame per nesting level (arms live in helpers) so 200 x 128 levels fit in
+    // `STACK_SIZE` even unoptimized; an inline match here cost ~7 KiB per level at opt-level 0.
     fn expr(&mut self, c: &mut Circuit, f: &mut Frame, e: &'p Expr) -> R<Value> {
-        Ok(match &e.kind {
-            ExprKind::Int(n) => Value::Int(*n),
-            ExprKind::Double(v) => Value::Double(*v),
-            ExprKind::Bool(b) => Value::Bool(*b),
-            ExprKind::Str(_) => return Err(internal(e.span)),
-            ExprKind::Var(name) => match super::check::constant(name) {
-                Some(v) => Value::Double(v),
-                None => f.get(name, e.span)?,
-            },
-            ExprKind::Call { name, args } => return self.call(c, f, name, args, e.span),
-            ExprKind::Index { base, index } => {
-                let b = self.expr(c, f, base)?;
-                let i = self.int(c, f, index)?;
-                match b {
-                    Value::QReg(v) => Value::Qubit(v[checked_index(i, v.len(), e.span)?]),
-                    Value::Bits(v) => Value::Bit(v[checked_index(i, v.len(), e.span)?]),
-                    _ => return Err(internal(e.span)),
-                }
-            }
-            ExprKind::Method { recv, name } => {
-                let Value::Bits(v) = self.expr(c, f, recv)? else {
-                    return Err(internal(e.span));
-                };
-                match name.name.as_str() {
-                    // Printed as an unsigned integer with r[0] as the least significant bit.
-                    "as_int" if v.len() > 64 => {
-                        return Err(Diagnostic::new(
-                            Code::AsIntTooWide,
-                            e.span,
-                            msg::as_int_too_wide(v.len()),
-                        ))
-                    }
-                    "as_int" => Value::ShotView(v, BitsFmt::Int),
-                    "to_binary" => Value::ShotView(v, BitsFmt::Binary),
-                    _ => return Err(internal(e.span)),
-                }
-            }
-            ExprKind::Cast { ty, expr } => match (ty, self.expr(c, f, expr)?) {
-                (Ty::Int, Value::Int(n)) => Value::Int(n),
-                // Java's `(long)` rule, which `as` matches: toward zero, NaN -> 0, saturating.
-                (Ty::Int, Value::Double(v)) => Value::Int(v as i64),
-                (Ty::Double, Value::Int(n)) => Value::Double(n as f64),
-                (Ty::Double, Value::Double(v)) => Value::Double(v),
-                _ => return Err(internal(e.span)),
-            },
-            ExprKind::Unary { op, expr } => match (op, self.expr(c, f, expr)?) {
-                (UnOp::Neg, Value::Int(n)) => Value::Int(
-                    n.checked_neg()
-                        .ok_or_else(|| Diagnostic::new(Code::Overflow, e.span, msg::overflow()))?,
-                ),
-                (UnOp::Neg, Value::Double(v)) => Value::Double(-v),
-                (UnOp::Not, Value::Bool(b)) => Value::Bool(!b),
-                _ => return Err(internal(e.span)),
-            },
-            ExprKind::Binary { op, lhs, rhs } => {
-                let l = self.expr(c, f, lhs)?;
-                // Short-circuit like Rust.
-                match (op, &l) {
-                    (BinOp::And, Value::Bool(false)) => return Ok(Value::Bool(false)),
-                    (BinOp::Or, Value::Bool(true)) => return Ok(Value::Bool(true)),
-                    _ => {}
-                }
-                let r = self.expr(c, f, rhs)?;
-                binary(*op, l, r, e.span)?
-            }
-        })
+        match &e.kind {
+            ExprKind::Int(n) => Ok(Value::Int(*n)),
+            ExprKind::Double(v) => Ok(Value::Double(*v)),
+            ExprKind::Bool(b) => Ok(Value::Bool(*b)),
+            ExprKind::Str(_) => Err(internal(e.span)),
+            ExprKind::Var(name) => var(f, name, e.span),
+            ExprKind::Call { name, args } => self.call(c, f, name, args, e.span),
+            ExprKind::Index { base, index } => self.index(c, f, base, index, e.span),
+            ExprKind::Method { recv, name } => self.method(c, f, recv, name, e.span),
+            ExprKind::Cast { ty, expr } => self.cast(c, f, ty, expr, e.span),
+            ExprKind::Unary { op, expr } => self.unary(c, f, op, expr, e.span),
+            ExprKind::Binary { op, lhs, rhs } => self.binary_expr(c, f, op, lhs, rhs, e.span),
+        }
+    }
+
+    fn index(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        base: &'p Expr,
+        index: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
+        let b = self.expr(c, f, base)?;
+        let i = self.int(c, f, index)?;
+        match b {
+            Value::QReg(v) => Ok(Value::Qubit(v[checked_index(i, v.len(), span)?])),
+            Value::Bits(v) => Ok(Value::Bit(v[checked_index(i, v.len(), span)?])),
+            _ => Err(internal(span)),
+        }
+    }
+
+    fn method(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        recv: &'p Expr,
+        name: &'p Ident,
+        span: Span,
+    ) -> R<Value> {
+        let Value::Bits(v) = self.expr(c, f, recv)? else {
+            return Err(internal(span));
+        };
+        match name.name.as_str() {
+            // Printed as an unsigned integer with r[0] as the least significant bit.
+            "as_int" if v.len() > 64 => Err(Diagnostic::new(
+                Code::AsIntTooWide,
+                span,
+                msg::as_int_too_wide(v.len()),
+            )),
+            "as_int" => Ok(Value::ShotView(v, BitsFmt::Int)),
+            "to_binary" => Ok(Value::ShotView(v, BitsFmt::Binary)),
+            _ => Err(internal(span)),
+        }
+    }
+
+    fn cast(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        ty: &Ty,
+        expr: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
+        match (ty, self.expr(c, f, expr)?) {
+            (Ty::Int, Value::Int(n)) => Ok(Value::Int(n)),
+            // Java's `(long)` rule, which `as` matches: toward zero, NaN -> 0, saturating.
+            (Ty::Int, Value::Double(v)) => Ok(Value::Int(v as i64)),
+            (Ty::Double, Value::Int(n)) => Ok(Value::Double(n as f64)),
+            (Ty::Double, Value::Double(v)) => Ok(Value::Double(v)),
+            _ => Err(internal(span)),
+        }
+    }
+
+    fn unary(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        op: &UnOp,
+        expr: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
+        match (op, self.expr(c, f, expr)?) {
+            (UnOp::Neg, Value::Int(n)) => n
+                .checked_neg()
+                .map(Value::Int)
+                .ok_or_else(|| Diagnostic::new(Code::Overflow, span, msg::overflow())),
+            (UnOp::Neg, Value::Double(v)) => Ok(Value::Double(-v)),
+            (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+            _ => Err(internal(span)),
+        }
+    }
+
+    fn binary_expr(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        op: &BinOp,
+        lhs: &'p Expr,
+        rhs: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
+        let l = self.expr(c, f, lhs)?;
+        // Short-circuit like Rust.
+        match (op, &l) {
+            (BinOp::And, Value::Bool(false)) => return Ok(Value::Bool(false)),
+            (BinOp::Or, Value::Bool(true)) => return Ok(Value::Bool(true)),
+            _ => {}
+        }
+        let r = self.expr(c, f, rhs)?;
+        binary(*op, l, r, span)
     }
 
     fn call(
@@ -352,8 +430,70 @@ impl<'p> Interp<'p> {
         args: &'p [Expr],
         span: Span,
     ) -> R<Value> {
+        if let Some(v) = self.builtin(c, f, name, args, span)? {
+            return Ok(v);
+        }
+        let func = self.user_fn(name)?;
+        let vals = self.args(c, f, args)?;
+        self.call_user(c, func, vals, span)
+    }
+
+    fn user_fn(&self, name: &'p Ident) -> R<&'p FnDecl> {
         let n = name.name.as_str();
-        match n {
+        self.fns
+            .get(n)
+            .copied()
+            .ok_or_else(|| Diagnostic::new(Code::UnknownFn, name.span, msg::unknown_fn(n)))
+    }
+
+    fn args(&mut self, c: &mut Circuit, f: &mut Frame, args: &'p [Expr]) -> R<Vec<Value>> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.expr(c, f, a)?);
+        }
+        Ok(vals)
+    }
+
+    fn call_user(
+        &mut self,
+        c: &mut Circuit,
+        func: &'p FnDecl,
+        vals: Vec<Value>,
+        span: Span,
+    ) -> R<Value> {
+        let n = func.name.name.as_str();
+        // Register elements with run-time indices may alias; the checker catches the rest.
+        let mut qubits: Vec<usize> = Vec::new();
+        for v in &vals {
+            match v {
+                Value::Qubit(i) => qubits.push(*i),
+                Value::QReg(r) => qubits.extend_from_slice(r),
+                _ => {}
+            }
+        }
+        qubits.sort_unstable();
+        if qubits.windows(2).any(|w| w[0] == w[1]) {
+            return Err(Diagnostic::new(
+                Code::DuplicateQubit,
+                span,
+                msg::duplicate_qubit(n),
+            ));
+        }
+        self.call_fn(c, func, vals, span)
+    }
+
+    // Stack: kept out of line so its large frame is not part of every user-function call level.
+    #[inline(never)]
+    fn builtin(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        name: &'p Ident,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Option<Value>> {
+        let n = name.name.as_str();
+        let v = match n {
             "qubit" => Ok(Value::Qubit(self.alloc(c, 1, span)?[0])),
             "qreg" => {
                 let k = self.int(c, f, &args[0])?;
@@ -484,34 +624,9 @@ impl<'p> Interp<'p> {
                 }
                 Ok(Value::Unit)
             }
-            _ => {
-                let func = *self.fns.get(n).ok_or_else(|| {
-                    Diagnostic::new(Code::UnknownFn, name.span, msg::unknown_fn(n))
-                })?;
-                let mut vals = Vec::with_capacity(args.len());
-                for a in args {
-                    vals.push(self.expr(c, f, a)?);
-                }
-                // Register elements with run-time indices may alias; the checker catches the rest.
-                let mut qubits: Vec<usize> = Vec::new();
-                for v in &vals {
-                    match v {
-                        Value::Qubit(i) => qubits.push(*i),
-                        Value::QReg(r) => qubits.extend_from_slice(r),
-                        _ => {}
-                    }
-                }
-                qubits.sort_unstable();
-                if qubits.windows(2).any(|w| w[0] == w[1]) {
-                    return Err(Diagnostic::new(
-                        Code::DuplicateQubit,
-                        span,
-                        msg::duplicate_qubit(n),
-                    ));
-                }
-                self.call_fn(c, func, vals, span)
-            }
-        }
+            _ => return Ok(None),
+        };
+        v.map(Some)
     }
 
     fn text(&mut self, s: &str) {
@@ -572,6 +687,13 @@ impl<'p> Interp<'p> {
             out.push(s.as_mut().ok_or_else(|| internal(at))?);
         }
         out.try_into().map_err(|_| internal(at))
+    }
+}
+
+fn var(f: &Frame, name: &str, at: Span) -> R<Value> {
+    match super::check::constant(name) {
+        Some(v) => Ok(Value::Double(v)),
+        None => f.get(name, at),
     }
 }
 

@@ -34,6 +34,10 @@ use interp::{BitsFmt, Elaborated, OutPiece};
 #[allow(unused_imports)]
 pub use link::{PackageRoot, Project, ReadFn};
 
+// Stack for threads that run the interpreter: the deepest legal program (200 calls x 128 nesting
+// levels) needs at most ~76 MiB in an unoptimized build and ~30 MiB optimized (measured 2026-11-21).
+pub const STACK_SIZE: usize = 256 << 20;
+
 /// Rendered diagnostics, ready for stderr.
 pub struct Failure(pub String);
 
