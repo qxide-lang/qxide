@@ -7,9 +7,11 @@ Standard library only; requires `git` for the pull-request (`--base`) checks. As
 codes and the offending path or version, never message prose.
 """
 
+import gzip
 import hashlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -19,11 +21,17 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SCRIPTS = REPO / "registry-template" / "scripts"
+TEMPLATE = REPO / "registry-template"
+SCRIPTS = TEMPLATE / "scripts"
 VALIDATE = SCRIPTS / "validate.py"
 BUILD_SEARCH = SCRIPTS / "build_search.py"
+# A registry written by `qxide publish` (0.7.0): GNU long-name entry, requirements such as `1` in
+# qxide.toml that the index line stores as `^1`.
+PUBLISHED = REPO / "ci" / "data" / "published-registry"
 CONFIG = '{"dl": "packages/{prefix}/{name}/{name}-{version}.tar.gz", "api": null}\n'
 LIB = "public void hello(Qubit a) {\n    h(a);\n}\n"
+# The client's limit on the decompressed tar stream (src/pkg/archive.rs `MAX_TAR`).
+MAX_TAR = (50 << 20) + (16 << 20)
 
 
 def prefix(name: str) -> str:
@@ -34,11 +42,54 @@ def prefix(name: str) -> str:
     return f"{name[:2]}/{name[2:4]}"
 
 
-def manifest(name: str, vers: str) -> str:
+def manifest(name: str, vers: str, extra: str = "") -> str:
     return (
         f'[package]\nname = "{name}"\nversion = "{vers}"\ndescription = "d"\n'
-        'license = "MIT"\nqxide = ">=0.6"\n'
+        f'license = "MIT"\nqxide = ">=0.6"\n{extra}'
     )
+
+
+# Raw tar building, for archives Python's tarfile will not write.
+GNU_MAGIC = b"ustar  \x00"
+USTAR_MAGIC = b"ustar\x0000"
+END = b"\0" * 1024
+
+
+def tar_header(name: bytes, size: int, kind: bytes = b"0", *, magic=GNU_MAGIC, prefix_field=b"", size_field=None) -> bytes:
+    h = bytearray(512)
+    h[0 : len(name)] = name
+    h[100:108] = b"0000644\x00"
+    h[108:116] = b"0000000\x00"
+    h[116:124] = b"0000000\x00"
+    h[124:136] = size_field if size_field is not None else b"%011o\x00" % size
+    h[136:148] = b"00000000000\x00"
+    h[156:157] = kind
+    h[257:265] = magic
+    h[345 : 345 + len(prefix_field)] = prefix_field
+    h[148:156] = b" " * 8
+    h[148:156] = b"%06o\x00 " % sum(h)
+    return bytes(h)
+
+
+def tar_member(name: bytes, data: bytes, kind: bytes = b"0", **kw) -> bytes:
+    return tar_header(name, len(data), kind, **kw) + data + b"\0" * (-len(data) % 512)
+
+
+def pax_record(key: str, value: str) -> bytes:
+    body = f" {key}={value}\n"
+    n = len(body) + 1
+    while len(str(n)) + len(body) != n:
+        n += 1
+    return f"{n}{body}".encode()
+
+
+def std_members(name: str, vers: str) -> bytes:
+    root = f"{name}-{vers}".encode()
+    return tar_member(root + b"/qxide.toml", manifest(name, vers).encode()) + tar_member(root + b"/src/lib.qx", LIB.encode())
+
+
+def gz(data: bytes) -> bytes:
+    return gzip.compress(data, compresslevel=6, mtime=0)
 
 
 def make_tar(files: list[tuple[str, str]]) -> bytes:
@@ -66,13 +117,13 @@ class Registry:
         (self.root / "index").mkdir()
         (self.root / "config.json").write_text(CONFIG, encoding="utf-8", newline="\n")
 
-    def add(self, name: str, vers: str, files=None, archive=True, **over) -> dict:
+    def add(self, name: str, vers: str, files=None, archive=True, raw=None, **over) -> dict:
         """Appends one index line for the version and writes its archive unless `archive` is false;
-        `over` overrides fields on the line.
+        `raw` gives the archive bytes instead of `files`; `over` overrides fields on the line.
         """
         line = {"name": name, "vers": vers, "deps": [], "yanked": False, "v": 1, "qxide": ">=0.6", "description": "d"}
         if archive:
-            data = make_tar(files if files is not None else std_files(name, vers))
+            data = raw if raw is not None else make_tar(files if files is not None else std_files(name, vers))
             line["cksum"] = hashlib.sha256(data).hexdigest()
             path = self.root / "packages" / prefix(name) / name / f"{name}-{vers}.tar.gz"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,6 +217,98 @@ class ValidateArchives(unittest.TestCase):
         files = std_files("evil", "1.0.0") + [(f"{root}/src/m{i}.qx", "") for i in range(2001)]
         self.assert_rejected(files, "evil 1.0.0")
 
+    def test_archives_written_by_qxide_publish_pass(self):
+        reg = Registry(self)
+        shutil.rmtree(reg.root)
+        shutil.copytree(PUBLISHED, reg.root, ignore=shutil.ignore_patterns(".gitattributes"))
+        r = reg.validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("4 packages, 4 versions, 0 errors", r.stdout)
+
+    def assert_raw(self, raw: bytes, ok: bool):
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", raw=raw)
+        r = reg.validate()
+        if ok:
+            self.assertEqual(r.returncode, 0, r.stdout)
+        else:
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("evil 1.0.0", r.stdout)
+
+    def test_archives_must_use_the_canonical_form(self):
+        # M-09: anything CI accepts must read the same in the client, which takes one gzip member,
+        # raw tar headers, and only regular files, directories and short GNU long names.
+        std = std_members("evil", "1.0.0")
+        root = b"evil-1.0.0"
+        extra = tar_member(root + b"/src/second.qx", b"x(a);\n")
+        long4097 = root + b"/src/" + b"a" * (4097 - len(root) - 8) + b".qx"
+        pax_size = pax_record("size", "100")
+        cases = {
+            # The report's input: the client stops after the first gzip member.
+            "two gzip members": gz(std) + gz(extra + END),
+            "bytes after the gzip member": gz(std + END) + b"trailing",
+            "PAX header with a size record": gz(std + tar_member(b"././@PaxHeader", pax_size, b"x") + tar_member(root + b"/src/p.qx", b"x" * 10) + END),
+            "PAX global header": gz(tar_member(b"pax_global_header", pax_record("comment", "c"), b"g") + std + END),
+            "GNU long link": gz(std + tar_member(b"././@LongLink", b"target\0", b"K") + extra + END),
+            "contiguous file": gz(std + tar_member(root + b"/src/c.qx", b"x(a);\n", b"7") + END),
+            "long name over 4096 bytes": gz(std + tar_member(b"././@LongLink", long4097, b"L") + tar_member(long4097[:99], b"x") + END),
+            "two long names in a row": gz(std + tar_member(b"././@LongLink", root + b"/src/a.qx\0", b"L") + tar_member(b"././@LongLink", root + b"/src/b.qx\0", b"L") + tar_member(b"x", b"x") + END),
+            "long name with no entry": gz(std + tar_member(b"././@LongLink", root + b"/src/a.qx\0", b"L") + END),
+            "data after the end marker": gz(std + END + extra),
+            "decompressed stream over the client limit": gz(std + tar_member(root + b"/src/", b"\0" * (MAX_TAR + 1), b"5") + END),
+            "leading ./": gz(std + tar_member(b"./" + root + b"/src/x.qx", b"x(a);\n") + END),
+            "empty segment": gz(std + tar_member(root + b"/src//x.qx", b"x(a);\n") + END),
+            "base-256 size": gz(std + tar_header(root + b"/src/x.qx", 6, size_field=b"\x80" + bytes(3) + (6).to_bytes(8, "big")) + b"x(a);\n" + b"\0" * 506 + END),
+            "truncated data": gz(std + tar_header(root + b"/src/x.qx", 100) + b"x" * 10),
+        }
+        for label, raw in cases.items():
+            with self.subTest(label):
+                self.assert_raw(raw, False)
+
+    def test_canonical_forms_the_client_reads_pass(self):
+        std = std_members("evil", "1.0.0")
+        root = b"evil-1.0.0"
+        long4096 = root + b"/src/" + b"a" * (4096 - len(root) - 8) + b".qx"
+        self.assertEqual(len(long4096), 4096)
+        for label, raw in {
+            "plain": gz(std + END),
+            "no end marker": gz(std),
+            "long name of 4096 bytes": gz(std + tar_member(b"././@LongLink", long4096, b"L") + tar_member(long4096[:99], b"x") + END),
+            "ustar prefix field": gz(std + tar_member(b"x.qx", b"x(a);\n", magic=USTAR_MAGIC, prefix_field=root + b"/src") + END),
+            "directory entries": gz(tar_member(root + b"/", b"", b"5") + tar_member(root + b"/src/", b"", b"5") + std + END),
+        }.items():
+            with self.subTest(label):
+                self.assert_raw(raw, True)
+
+    def test_manifest_dependencies_match_the_index(self):
+        # M-08: the client checks lock freshness against qxide.toml, resolution against the index.
+        dep = [{"name": "other", "req": "^1"}]
+        for label, deps, toml, ok in [
+            ("the report's input", [], '\n[dependencies]\nother = "1"\n', False),
+            ("missing in qxide.toml", dep, "", False),
+            ("other requirement", dep, '\n[dependencies]\nother = "2"\n', False),
+            ("other name", dep, '\n[dependencies]\nanother = "1"\n', False),
+            ("path only", dep, '\n[dependencies]\nother = { path = "../other" }\n', False),
+            ("non-string version", dep, "\n[dependencies]\nother = { version = 1 }\n", False),
+            ("bad requirement", dep, '\n[dependencies]\nother = "one"\n', False),
+            ("not a table", dep, '\ndependencies = "other"\n', False),
+            ("listed twice in the index", dep + dep, '\n[dependencies]\nother = "1"\n', False),
+            ("same requirement", dep, '\n[dependencies]\nother = "1"\n', True),
+            ("table form with a path", dep, '\n[dependencies]\nother = { version = "^1", path = "../other" }\n', True),
+            ("spacing", [{"name": "other", "req": ">=1.2, <2"}], '\n[dependencies]\nother = ">= 1.2,<2"\n', True),
+        ]:
+            with self.subTest(label):
+                reg = Registry(self)
+                reg.add("other", "1.2.0")
+                files = [("evil-1.0.0/qxide.toml", manifest("evil", "1.0.0", toml)), ("evil-1.0.0/src/lib.qx", LIB)]
+                reg.add("evil", "1.0.0", files, deps=deps)
+                r = reg.validate()
+                if ok:
+                    self.assertEqual(r.returncode, 0, r.stdout)
+                else:
+                    self.assertEqual(r.returncode, 1, r.stdout)
+                    self.assertIn("evil 1.0.0", r.stdout)
+
 
 def load_script(path: Path):
     import importlib.util
@@ -240,6 +383,59 @@ class ValidateEntries(unittest.TestCase):
                 index.write_bytes("\n".join(lines).encode("utf-8"))
                 self.assert_rejected(reg, "index/ev/il/evil:2")
 
+    def test_requirement_equality_matches_the_client(self):
+        # tests/data/semver_cases.json `req_pairs` is checked against `semver::VersionReq` equality.
+        cases = json.loads((REPO / "tests" / "data" / "semver_cases.json").read_text(encoding="utf-8"))
+        v = load_validate()
+        for a, b, same in cases["req_pairs"]:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(v.same_req(a, b), same)
+                self.assertEqual(v.same_req(b, a), same)
+
+    def test_description_control_characters(self):
+        # B-P4 / M-04: `qxide search` prints descriptions from search.json, built from index lines.
+        for desc in [
+            "plain \x1b]0;TITLE-SET-BY-REGISTRY\x07\x1b[2K",  # the report's input: ESC and BEL
+            "a\x7fb",
+            "a\x9b2Jb",
+            "two\nlines",
+            "carriage\rreturn",
+            "tab\there",
+            "nul\x00",
+        ]:
+            with self.subTest(desc=repr(desc)):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0")
+                reg.add("evil", "1.0.1", description=desc)
+                self.assert_rejected(reg, "index/ev/il/evil:2")
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", description="Bell-pair helpers — für Qubits, 量子 ‍")
+        r = reg.validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_external_download_locations_are_checked(self):
+        # B-P3: an https `dl` still needs the archive in this repository, at the default path, so
+        # CI checks the exact bytes clients accept (they verify `cksum`).
+        url = "https://example.invalid/releases/{name}-{version}.tar.gz"
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", archive=False, dl=url)
+        self.assert_rejected(reg, "evil 1.0.0")
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", dl=url)
+        r = reg.validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", [("evil-1.0.0/qxide.toml", manifest("evil", "1.0.0"))], dl=url)
+        self.assert_rejected(reg, "evil 1.0.0")
+        # The same for an https template in config.json.
+        for archive, ok in [(False, False), (True, True)]:
+            with self.subTest(template_archive=archive):
+                reg = Registry(self)
+                (reg.root / "config.json").write_text(json.dumps({"dl": url, "api": None}), encoding="utf-8")
+                reg.add("evil", "1.0.0", archive=archive)
+                r = reg.validate()
+                self.assertEqual(r.returncode, 0 if ok else 1, r.stdout)
+
     def test_only_newline_ends_a_line(self):
         for sep in ["\x0c", "\r", "\x1c", " "]:
             with self.subTest(sep=repr(sep)):
@@ -271,7 +467,8 @@ class ValidateEntries(unittest.TestCase):
                 reg.add("evil", "1.0.0", archive=False, dl=dl)
                 self.assert_rejected(reg, "evil 1.0.0")
         reg = Registry(self)
-        reg.add("evil", "1.0.0", archive=False, dl="https://example.invalid/releases/{name}-{version}.tar.gz")
+        # An https `dl` passes only with the archive in this repository (B-P3).
+        reg.add("evil", "1.0.0", dl="https://example.invalid/releases/{name}-{version}.tar.gz")
         r = reg.validate()
         self.assertEqual(r.returncode, 0, r.stdout)
 
@@ -302,6 +499,32 @@ class ValidatePullRequests(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("index/ev/il/evil:2", r.stdout)
 
+    def test_deleting_an_index_file(self):
+        # B-P2: the report's input deletes index/ev/il/evil in a pull request.
+        self.reg.git("rm", "-q", "index/ev/il/evil")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("index/ev/il/evil", r.stdout)
+
+    def test_readding_a_deleted_version_with_another_archive(self):
+        # B-P2 follow-up: once a deletion is merged, the version comes back with another cksum
+        # and an external `dl`; the archive published first is still in packages/.
+        self.reg.git("checkout", "-q", "main")
+        self.reg.git("rm", "-q", "index/ev/il/evil")
+        self.reg.git("commit", "-qm", "delete")
+        self.reg.git("checkout", "-qb", "pr2")
+        self.reg.add("evil", "1.0.0", archive=False, cksum="1" * 64, dl="https://example.invalid/evil-1.0.0.tar.gz")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("evil 1.0.0", r.stdout)
+
+    def test_unknown_base_fails(self):
+        self.reg.add("evil", "1.0.1")
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", "pr")
+        r = self.reg.validate("--base", "no-such-ref")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+
     def test_config_json_is_locked(self):
         (self.reg.root / "config.json").write_text(
             '{"dl": "https://attacker.invalid/{name}-{version}.tar.gz", "api": null}\n', encoding="utf-8", newline="\n"
@@ -309,6 +532,58 @@ class ValidatePullRequests(unittest.TestCase):
         r = self.commit_and_validate()
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("config.json", r.stdout)
+
+
+class ValidateWorkflow(unittest.TestCase):
+    """B-P1: a `pull_request` run uses the workflow file from the pull request itself, so a pull
+    request could edit or skip its own check. The standard library has no YAML parser, so these
+    tests read the workflow as text; the workflow itself only runs on GitHub.
+    """
+
+    def setUp(self):
+        text = (TEMPLATE / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        self.lines = [l.split(" #", 1)[0].rstrip() for l in text.splitlines() if not l.lstrip().startswith("#")]
+        self.code = "\n".join(self.lines)
+
+    def block(self, key: str) -> list[str]:
+        """Keys one level below the top-level `key:`."""
+        i = self.lines.index(f"{key}:")
+        keys = []
+        for line in self.lines[i + 1 :]:
+            if line and not line.startswith(" "):
+                break
+            if re.fullmatch(r"  [A-Za-z_-]+:.*", line):
+                keys.append(line.strip().split(":", 1)[0])
+        return keys
+
+    def test_pull_requests_run_the_target_branch_workflow(self):
+        triggers = self.block("on")
+        self.assertIn("pull_request_target", triggers)
+        self.assertNotIn("pull_request", triggers)
+
+    def test_checker_comes_from_the_target_branch(self):
+        runs = re.findall(r"python[^\n]*validate\.py[^\n]*", self.code)
+        self.assertEqual(len(runs), 2, runs)
+        for run in runs:
+            self.assertRegex(run, r"^python -I base/scripts/validate\.py ")
+        self.assertRegex(self.code, r"--root pr --base ")
+        # No fallback to a script taken from the pull request.
+        self.assertNotRegex(self.code, r"(?<!base/)scripts/validate\.py")
+        self.assertNotRegex(self.code, r"\bcp\b|git show")
+
+    def test_pull_request_is_data_only(self):
+        self.assertEqual(self.block("permissions"), ["contents"])
+        self.assertRegex(self.code, r"\npermissions:\n  contents: read\n")
+        self.assertNotIn("write", self.code)
+        checkouts = self.code.count("uses: actions/checkout@")
+        self.assertEqual(checkouts, 2)
+        self.assertEqual(self.code.count("persist-credentials: false"), checkouts)
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", self.code)
+        self.assertEqual(self.code.count("path: pr"), 1)
+        # Expressions reach shell commands through `env`, never spliced into `run:`.
+        for line in self.lines:
+            if "run:" in line:
+                self.assertNotIn("${{", line)
 
 
 class BuildSearch(unittest.TestCase):

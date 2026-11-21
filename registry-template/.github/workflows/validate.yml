@@ -1,7 +1,11 @@
 name: Validate
 
+# Pull requests are checked by this workflow and scripts/validate.py as they are on the target
+# branch (`pull_request_target`), so a pull request cannot edit or skip its own check. The pull
+# request is checked out only as data and nothing from it is executed; the token is read-only and
+# is not stored in either checkout.
 on:
-  pull_request:
+  pull_request_target:
   push:
     branches: [main]
 
@@ -14,21 +18,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          path: base
+          persist-credentials: false
+      - if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # A pull request must not be judged by a checker it can edit: run the target branch's copy
-      # (the pull request's own copy only while the target branch has none yet).
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request_target'
         env:
           BASE: origin/${{ github.base_ref }}
-        run: |
-          if git cat-file -e "$BASE:scripts/validate.py" 2>/dev/null; then
-            git show "$BASE:scripts/validate.py" > "$RUNNER_TEMP/validate.py"
-          else
-            cp scripts/validate.py "$RUNNER_TEMP/validate.py"
-          fi
-          python "$RUNNER_TEMP/validate.py" --root . --base "$BASE" --summary "$GITHUB_STEP_SUMMARY"
-      - if: github.event_name != 'pull_request'
-        run: python scripts/validate.py --summary "$GITHUB_STEP_SUMMARY"
+        run: python -I base/scripts/validate.py --root pr --base "$BASE" --summary "$GITHUB_STEP_SUMMARY"
+      - if: github.event_name != 'pull_request_target'
+        run: python -I base/scripts/validate.py --root base --summary "$GITHUB_STEP_SUMMARY"
