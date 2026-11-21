@@ -9,7 +9,8 @@ use tao::event_loop::EventLoopProxy;
 
 use crate::lang::command::json_str;
 use crate::lang::stdlib::{
-    log_line, Host, HostValue, LogLevel, NativeStd, Permissions, StdError, StdErrorKind, StdResult,
+    log_line, Host, HostValue, HttpAccess, LogLevel, NativeStd, Permissions, StdError,
+    StdErrorKind, StdResult,
 };
 use crate::UserEvent;
 
@@ -27,6 +28,15 @@ pub fn emit_script(event: &str, payload: &str) -> String {
     json_str(&mut s, payload);
     s.push_str(");");
     s
+}
+
+/// `std.http` through `curl` for an app granted `http` with at least one host, otherwise none.
+pub fn http_access(perms: &Permissions, hosts: &[String]) -> Option<HttpAccess> {
+    let granted = perms.access("http") == Some(crate::lang::stdlib::Access::Allowed);
+    (granted && !hosts.is_empty()).then(|| HttpAccess {
+        hosts: hosts.to_vec(),
+        get: Box::new(crate::http::get),
+    })
 }
 
 /// The page script for a `std.app.emit` event or a dev log line, refused (Q0706) when it would be
@@ -56,6 +66,7 @@ impl AppHost {
         proxy: EventLoopProxy<UserEvent>,
         cancel: Arc<AtomicBool>,
         dev: bool,
+        http_hosts: &[String],
     ) -> AppHost {
         let log_proxy = proxy.clone();
         let log = Box::new(move |level: LogLevel, text: &str| {
@@ -70,6 +81,7 @@ impl AppHost {
         });
         let mut native = NativeStd::new(data, log);
         native.cancel = Some(cancel);
+        native.http = http_access(&perms, http_hosts);
         AppHost {
             native,
             perms,

@@ -21,6 +21,7 @@ mod bundle;
 
 mod app;
 mod host;
+mod http;
 mod msg;
 
 use std::borrow::Cow;
@@ -461,6 +462,7 @@ fn run_call(
         shared.proxy.clone(),
         flag,
         app.dev,
+        &app.http_hosts,
     );
     call_app(app, name, args, shots, seed, &mut host)
 }
@@ -806,6 +808,40 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn http_needs_the_permission_and_listed_hosts() {
+        let hosts = vec!["api.example.com".to_string()];
+        let net = Permissions::app(&["http".into()]);
+        assert!(host::http_access(&net, &hosts).is_some());
+        assert!(host::http_access(&net, &[]).is_none());
+        assert!(host::http_access(&Permissions::app(&[]), &hosts).is_none());
+        // `http_hosts` is optional in the manifest, but must hold valid host names when present.
+        assert!(bundled(LIB_OK).http_hosts.is_empty());
+        let manifest = |hosts: serde_json::Value| {
+            serde_json::json!({
+                "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": false,
+                "title": "t", "identifier": "x", "module": "app",
+                "commands": ["f"], "permissions": ["http"], "http_hosts": hosts,
+                "width": 400, "height": 300, "resizable": true,
+                "packages": [{"name": "x", "src": "pkg/0/x/src", "deps": []}],
+                "entry": "pkg/0/x/src/app.qx", "ui": "ui", "data": null
+            })
+            .to_string()
+        };
+        let parse = |h| App::parse(manifest(h).as_bytes(), app::Files::Bundle(BTreeMap::new()));
+        let ok = parse(serde_json::json!(["api.example.com"])).ok().unwrap();
+        assert_eq!(ok.http_hosts, ["api.example.com"]);
+        for bad in [
+            serde_json::json!(["https://api.example.com"]),
+            serde_json::json!(["API.example.com"]),
+            serde_json::json!("api.example.com"),
+        ] {
+            assert!(parse(bad).is_err());
+        }
+    }
+
+    const LIB_OK: &str = "public void prepare(Qubit a, Qubit b) {\n    h(a);\n    cx(a, b);\n}\n";
 
     #[test]
     fn origins_and_paths() {

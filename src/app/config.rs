@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub module: String,
     pub commands: Vec<String>,
     pub permissions: Vec<String>,
+    /// Hosts `std.http` may reach (lowercase, exact match); required with the `http` permission.
+    pub http_hosts: Vec<String>,
     pub width: u32,
     pub height: u32,
     pub resizable: bool,
@@ -24,12 +26,13 @@ const KEYS: &[&str] = &[
     "module",
     "commands",
     "permissions",
+    "http_hosts",
     "width",
     "height",
     "resizable",
 ];
 
-pub const PERMISSIONS: &[&str] = &["log", "time", "fs", "app", "qxide"];
+pub const PERMISSIONS: &[&str] = &["log", "time", "fs", "app", "http", "qxide"];
 
 fn ident(s: &str) -> bool {
     let mut c = s.chars();
@@ -101,6 +104,20 @@ pub fn parse(text: &str, package: &str) -> Result<Option<AppConfig>, String> {
     {
         return Err(msg::reason_bad_permission(p, &PERMISSIONS.join(", ")));
     }
+    let http_hosts = strings(t, "http_hosts")?.unwrap_or_default();
+    let wants_http = permissions.iter().any(|p| p == "http");
+    if wants_http && http_hosts.is_empty() {
+        return Err(msg::reason_http_hosts_required());
+    }
+    if !wants_http && !http_hosts.is_empty() {
+        return Err(msg::reason_http_hosts_unused());
+    }
+    if let Some(h) = http_hosts
+        .iter()
+        .find(|h| !crate::lang::stdlib::valid_http_host(h))
+    {
+        return Err(msg::reason_bad_http_host(h));
+    }
     let module = string(t, "module")?.unwrap_or_else(|| "app".to_string());
     if !module.split('.').all(ident) || module == "main" || module == "lib" {
         return Err(msg::reason_bad_module(&module));
@@ -124,6 +141,7 @@ pub fn parse(text: &str, package: &str) -> Result<Option<AppConfig>, String> {
         module,
         commands,
         permissions,
+        http_hosts,
         width: size(t, "width", 800)?,
         height: size(t, "height", 600)?,
         resizable,
@@ -168,12 +186,32 @@ mod tests {
             "commands = [\"go\"]\nwidth = 10",
             "commands = [\"go\"]\nresizable = \"yes\"",
             "commands = \"go\"",
+            "commands = [\"go\"]\npermissions = [\"http\"]",
+            "commands = [\"go\"]\nhttp_hosts = [\"api.example.com\"]",
+            "commands = [\"go\"]\npermissions = [\"http\"]\nhttp_hosts = [\"API.example.com\"]",
+            "commands = [\"go\"]\npermissions = [\"http\"]\nhttp_hosts = [\"https://api.example.com\"]",
+            "commands = [\"go\"]\npermissions = [\"http\"]\nhttp_hosts = [\"api.example.com:8443\"]",
+            "commands = [\"go\"]\npermissions = [\"http\"]\nhttp_hosts = [\"*.example.com\"]",
         ] {
             assert!(
                 parse(&format!("{base}[app]\n{bad}\n"), "demo").is_err(),
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn http_hosts_come_with_the_http_permission() {
+        let base = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n[app]\ncommands = [\"go\"]\n";
+        let c = parse(
+            &format!("{base}permissions = [\"http\"]\nhttp_hosts = [\"api.example.com\", \"x-1.example.org\"]\n"),
+            "demo",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.http_hosts, ["api.example.com", "x-1.example.org"]);
+        let c = parse(base, "demo").unwrap().unwrap();
+        assert!(c.http_hosts.is_empty());
     }
 
     #[test]

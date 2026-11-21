@@ -116,6 +116,8 @@ codes! {
     StdIo => "Q0704",
     StdPath => "Q0705",
     StdArgument => "Q0706",
+    StdHttp => "Q0707",
+    StdUrl => "Q0708",
     UnknownCommand => "Q0711",
     BadArguments => "Q0712",
     Cancelled => "Q0713",

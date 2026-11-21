@@ -1942,6 +1942,56 @@ void main() {
 }
 ```
 
+## Q0707: failed `http.get` request
+
+A call to `http.get` in a desktop app fails when the request cannot be completed due to a network or TLS error or a 30-second timeout, when the server returns a status outside 200-299 (redirects are not followed), when the response body exceeds 16 MiB, or when the body is not valid UTF-8 text. HTTP requests are build-time effects that run once per command call before any shot executes, so a failed request fails the entire command call with this error. The timeout, response size cap, and redirect restriction prevent a single command call from hanging indefinitely or consuming unbounded memory.
+
+Erroneous code example:
+
+```java
+import std.http;
+
+public String latest() {
+    return http.get("https://api.example.com/moved");  // error[Q0707]: status 301
+}
+```
+
+To fix it, verify the URL and server availability, request a UTF-8 text resource of 16 MiB or less, or call the final destination URL directly instead of a URL that redirects.
+
+```java
+import std.http;
+
+public String latest() {
+    return http.get("https://api.example.com/v2/latest");
+}
+```
+
+## Q0708: disallowed `http.get` URL
+
+`http.get` only accepts `https://` URLs on port 443 without user info whose host matches an entry in `http_hosts` under `[app]` in `qxide.toml` using exact lowercase matching with no wildcards. The runtime validates the URL before sending any network traffic. Because the allow-list is embedded in the built app, neither page scripts nor dependencies can widen it.
+
+Erroneous code example:
+
+```java
+// qxide.toml: [app] permissions = ["http"], http_hosts = ["api.example.com"]
+import std.http;
+
+public String page() {
+    return http.get("http://example.org/");  // error[Q0708]
+}
+```
+
+To fix it, use an `https://` URL on port 443 without user info and add its host to `http_hosts` under `[app]` in `qxide.toml`.
+
+```java
+// qxide.toml: [app] permissions = ["http"], http_hosts = ["api.example.com", "example.org"]
+import std.http;
+
+public String page() {
+    return http.get("https://example.org/");
+}
+```
+
 ## Q0711: unknown app command
 
 The page called `qxide.invoke` with a command name that is not listed in `commands` under the `[app]` section of `qxide.toml`, so the runtime refused the call before running any code. Restricting invocation to explicitly listed functions prevents page code from calling arbitrary internal functions in your Qxide program.

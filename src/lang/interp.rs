@@ -589,6 +589,8 @@ impl<'p> Interp<'p, '_> {
                     StdErrorKind::Io => Code::StdIo,
                     StdErrorKind::Path => Code::StdPath,
                     StdErrorKind::Argument => Code::StdArgument,
+                    StdErrorKind::Http => Code::StdHttp,
+                    StdErrorKind::Url => Code::StdUrl,
                     StdErrorKind::Cancelled => Code::Cancelled,
                 };
                 Err(Diagnostic::new(code, span, e.message))

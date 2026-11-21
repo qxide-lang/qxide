@@ -553,6 +553,30 @@ pub fn std_not_utf8(path: &str) -> String {
     format!("file `{path}` is not valid UTF-8 text")
 }
 
+pub fn http_bad_url(url: &str) -> String {
+    format!("invalid URL `{url}`; only `https://` URLs on port 443 without user info are accepted")
+}
+
+pub fn http_host_denied(host: &str) -> String {
+    format!("host `{host}` is not listed in `[app]` `http_hosts` in `qxide.toml`; add it to `http_hosts` to allow requests")
+}
+
+pub fn http_failed(url: &str, reason: &str) -> String {
+    format!("request to `{url}` failed: {reason}")
+}
+
+pub fn http_status(url: &str, status: u16) -> String {
+    format!("request to `{url}` returned HTTP status {status}; only 200-299 is accepted (redirects are not followed)")
+}
+
+pub fn http_too_large(url: &str, mib: usize) -> String {
+    format!("response from `{url}` exceeds the {mib} MiB size limit")
+}
+
+pub fn http_not_utf8(url: &str) -> String {
+    format!("response from `{url}` is not valid UTF-8 text")
+}
+
 pub fn std_bad_path(path: &str) -> String {
     format!("path `{path}` is not allowed: `std.fs` paths must be relative paths inside the data folder")
 }

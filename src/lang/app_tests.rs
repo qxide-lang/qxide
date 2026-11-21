@@ -217,6 +217,56 @@ void main() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn std_http_get_in_an_app_with_the_http_permission() {
+    use super::stdlib::{HttpAccess, HttpReply};
+    let src = r#"
+import std.http;
+
+void main() {
+    String body = http.get("https://api.example.com/ping");
+    println("{} {}", body, len(body));
+}
+"#;
+    let host_with = |status: u16| {
+        let mut host = NativeStd::new(std::env::temp_dir(), Box::new(|_, _| {}));
+        host.http = Some(HttpAccess {
+            hosts: vec!["api.example.com".into()],
+            get: Box::new(move |_, _| {
+                Ok(HttpReply {
+                    status,
+                    body: b"pong".to_vec(),
+                })
+            }),
+        });
+        host
+    };
+    let mut input = Input::file("t.qx", src);
+    input.perms = Permissions::app(&["http".into()]);
+    assert_eq!(
+        super::run_input(&input, 1, 0, &mut host_with(200)).unwrap(),
+        "pong 4\n"
+    );
+    let Err(Failure(d)) = super::run_input(&input, 1, 0, &mut host_with(500)) else {
+        panic!("a 500 reply must fail");
+    };
+    assert!(
+        d.starts_with("error[Q0707]") && d.contains("--> t.qx:5:19"),
+        "{d}"
+    );
+    let other = src.replace("api.example.com", "evil.example.com");
+    let mut input = Input::file("t.qx", &other);
+    input.perms = Permissions::app(&["http".into()]);
+    let Err(Failure(d)) = super::run_input(&input, 1, 0, &mut host_with(200)) else {
+        panic!("an unlisted host must be refused");
+    };
+    assert!(d.starts_with("error[Q0708]"), "{d}");
+    // Without the permission the import itself is refused; the CLI and playground never offer it.
+    assert_eq!(err_codes(src, Permissions::app(&[])), ["Q0703"]);
+    assert_eq!(err_codes(src, Permissions::cli(true)), ["Q0702"]);
+    assert_eq!(err_codes(src, Permissions::playground()), ["Q0702"]);
+}
+
 const APP: &str = r#"
 import std.log;
 

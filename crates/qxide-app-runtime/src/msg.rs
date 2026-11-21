@@ -32,6 +32,26 @@ pub fn emit_too_large(limit: usize) -> String {
     )
 }
 
+pub fn curl_missing(err: &str) -> String {
+    format!("could not start system `curl` for `std.http`: {err}")
+}
+
+pub fn curl_exit(code: i32) -> String {
+    format!("`curl` exited with status {code} and no error output")
+}
+
+pub fn http_no_status() -> String {
+    "`curl` output did not end with an HTTP status code".into()
+}
+
+pub fn http_cancelled() -> String {
+    "request stopped because the command call was cancelled".into()
+}
+
+pub fn http_timeout(secs: u64) -> String {
+    format!("request timed out after {secs} seconds")
+}
+
 pub fn no_bundle() -> String {
     "no Qxide app attached to this executable; build one with `qxide app build` or run a project with `qxide app dev`".into()
 }

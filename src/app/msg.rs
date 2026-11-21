@@ -122,6 +122,18 @@ pub fn reason_bad_permission(name: &str, known: &str) -> String {
     format!("unknown permission `{name}` (known permissions: {known})")
 }
 
+pub fn reason_http_hosts_required() -> String {
+    "`permissions` includes `\"http\"`, so `http_hosts` must list at least one host name".into()
+}
+
+pub fn reason_http_hosts_unused() -> String {
+    "`http_hosts` is set, but `\"http\"` is not listed in `permissions`".into()
+}
+
+pub fn reason_bad_http_host(host: &str) -> String {
+    format!("`http_hosts` entry `{host}` must be a lowercase host name without scheme, port, path, or wildcard")
+}
+
 pub fn reason_bad_module(name: &str) -> String {
     format!("`module = \"{name}\"` is not a valid command module path such as `app` (and cannot be `main` or `lib`)")
 }

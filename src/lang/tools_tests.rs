@@ -241,7 +241,8 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
         "Q0501", "Q0502", "Q0503", "Q0504", "Q0505", "Q0506", "Q0507", "Q0509", "Q0510",
     ];
     let needs_host = [
-        "Q0703", "Q0704", "Q0705", "Q0711", "Q0712", "Q0713", "Q0714", "Q0715", "Q0716",
+        "Q0703", "Q0704", "Q0705", "Q0707", "Q0708", "Q0711", "Q0712", "Q0713", "Q0714", "Q0715",
+        "Q0716",
     ];
     for (code, entry) in explain::entries() {
         let blocks = qx_blocks(&entry);

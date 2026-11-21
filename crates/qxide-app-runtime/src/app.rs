@@ -21,6 +21,8 @@ pub struct App {
     pub module: String,
     pub commands: Vec<String>,
     pub permissions: Vec<String>,
+    /// Hosts `std.http` may reach (`[app] http_hosts`).
+    pub http_hosts: Vec<String>,
     pub width: u32,
     pub height: u32,
     pub resizable: bool,
@@ -134,6 +136,20 @@ impl App {
             module,
             commands: strings(&v, "commands")?,
             permissions: strings(&v, "permissions")?,
+            // Absent in manifests written before `std.http`.
+            http_hosts: match v.get("http_hosts") {
+                None => Vec::new(),
+                Some(_) => {
+                    let hosts = strings(&v, "http_hosts")?;
+                    if !hosts
+                        .iter()
+                        .all(|h| crate::lang::stdlib::valid_http_host(h))
+                    {
+                        return Err(msg::bad_manifest("http_hosts"));
+                    }
+                    hosts
+                }
+            },
             width: num(&v, "width")?,
             height: num(&v, "height")?,
             resizable: v["resizable"].as_bool().unwrap_or(true),

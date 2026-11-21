@@ -46,6 +46,11 @@ public void emit(String event, String payload) {}
 ",
     ),
     (
+        "http",
+        "public String get(String url) { return \"\"; }
+",
+    ),
+    (
         "qxide",
         "public String check(String source) { return \"\"; }
 public String run(String source, int shots, int seed) { return \"\"; }
@@ -164,6 +169,11 @@ pub enum StdErrorKind {
     Path,
     /// An argument out of range (Q0706).
     Argument,
+    /// An HTTP request failed: network error, status other than 2xx, body too large or not
+    /// UTF-8 (Q0707).
+    Http,
+    /// A URL that is not https or whose host is not in `[app] http_hosts` (Q0708).
+    Url,
     /// The call was cancelled (Q0713).
     Cancelled,
 }
@@ -216,16 +226,41 @@ pub fn log_line(level: LogLevel, message: &str) -> String {
 
 pub type LogSink = Box<dyn FnMut(LogLevel, &str) + Send>;
 
-/// `std.log`, `std.time` and `std.fs` on the real OS. Other modules are left to the embedder.
+/// `std.log`, `std.time`, `std.fs` and (when the embedder supplies a transport) `std.http` on
+/// the real OS. Other modules are left to the embedder.
 pub struct NativeStd {
     /// Root of every `std.fs` path.
     pub data_root: PathBuf,
     pub log: LogSink,
     pub cancel: Option<Arc<AtomicBool>>,
+    /// `std.http`; `None` where the host has no network access.
+    pub http: Option<HttpAccess>,
+}
+
+/// An HTTP response as the transport read it; the body is at most `MAX_HTTP_BYTES + 1` bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpReply {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+/// Performs one GET of an already validated https URL. It must stop reading after
+/// `MAX_HTTP_BYTES + 1` body bytes and give up when the second argument reports cancellation.
+pub type HttpGet = Box<dyn Fn(&str, &dyn Fn() -> bool) -> Result<HttpReply, String> + Send>;
+
+/// The hosts an app may reach and how requests are made (the app runtime supplies `curl`).
+pub struct HttpAccess {
+    /// Lowercase host names from `[app] http_hosts`, matched exactly.
+    pub hosts: Vec<String>,
+    pub get: HttpGet,
 }
 
 /// Largest file `std.fs.read_text` reads.
 pub const MAX_READ_BYTES: u64 = 16 << 20;
+/// Largest response body `std.http.get` returns.
+pub const MAX_HTTP_BYTES: usize = 16 << 20;
+/// Longest URL `std.http.get` accepts.
+pub const MAX_URL_LEN: usize = 2048;
 /// Longest single `std.time.sleep_millis`.
 pub const MAX_SLEEP_MS: i64 = 60_000;
 
@@ -250,7 +285,37 @@ impl NativeStd {
             data_root,
             log,
             cancel: None,
+            http: None,
         }
+    }
+
+    /// `std.http.get`: an https URL on an allowed host, a 2xx status and a UTF-8 body of at most
+    /// `MAX_HTTP_BYTES`.
+    fn http_get(&self, url: &str) -> StdResult {
+        let Some(http) = &self.http else {
+            return Err(StdError::new(
+                StdErrorKind::Unavailable,
+                msg::std_unavailable("std.http", "this host"),
+            ));
+        };
+        let url = allowed_url(url, &http.hosts)?;
+        let fail = |m: String| StdError::new(StdErrorKind::Http, m);
+        let reply = (http.get)(url, &|| self.is_cancelled()).map_err(|e| {
+            if self.is_cancelled() {
+                StdError::new(StdErrorKind::Cancelled, msg::cancelled())
+            } else {
+                fail(msg::http_failed(url, &e))
+            }
+        })?;
+        if !(200..300).contains(&reply.status) {
+            return Err(fail(msg::http_status(url, reply.status)));
+        }
+        if reply.body.len() > MAX_HTTP_BYTES {
+            return Err(fail(msg::http_too_large(url, MAX_HTTP_BYTES >> 20)));
+        }
+        String::from_utf8(reply.body)
+            .map(HostValue::Str)
+            .map_err(|_| fail(msg::http_not_utf8(url)))
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -275,6 +340,7 @@ impl NativeStd {
             ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
             ("time", "sleep_millis") => self.sleep(int_arg(args, 0)),
             ("fs", f) => self.fs(f, args),
+            ("http", "get") => self.http_get(str_arg(args, 0)),
             _ => Err(StdError::new(
                 StdErrorKind::Unavailable,
                 msg::std_unavailable(&format!("std.{module}"), "this host"),
@@ -442,6 +508,59 @@ const RESERVED: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
+
+/// Whether `h` may appear in `[app] http_hosts`: a lowercase DNS name (letters, digits, `-` and
+/// `.`; labels of 1 to 63 characters that neither start nor end with `-`), at most 253 long.
+pub fn valid_http_host(h: &str) -> bool {
+    h.len() <= 253
+        && h.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
+
+/// Checks a `std.http.get` URL: `https://` (scheme in any case), a host listed in `hosts`, port
+/// 443 or none, no user info, no spaces, control characters or backslashes, and at most
+/// `MAX_URL_LEN` bytes. Returns the URL unchanged.
+pub fn allowed_url<'a>(url: &'a str, hosts: &[String]) -> Result<&'a str, StdError> {
+    let bad = || StdError::new(StdErrorKind::Url, msg::http_bad_url(url));
+    if url.len() > MAX_URL_LEN
+        || url
+            .bytes()
+            .any(|b| b <= b' ' || b == 0x7f || b == b'\\' || b >= 0x80)
+    {
+        return Err(bad());
+    }
+    let rest = url
+        .get(..8)
+        .filter(|s| s.eq_ignore_ascii_case("https://"))
+        .map(|_| &url[8..])
+        .ok_or_else(bad)?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(bad());
+    }
+    let host = match authority.split_once(':') {
+        Some((h, "443")) => h,
+        Some(_) => return Err(bad()),
+        None => authority,
+    };
+    let host = host.to_ascii_lowercase();
+    if !valid_http_host(&host) {
+        return Err(bad());
+    }
+    if !hosts.contains(&host) {
+        return Err(StdError::new(
+            StdErrorKind::Url,
+            msg::http_host_denied(&host),
+        ));
+    }
+    Ok(url)
+}
 
 /// Resolves a `std.fs` path inside `root`. Only plain relative paths are accepted: no absolute
 /// paths, drive letters, UNC prefixes, `..`, reserved device names or empty segments, and no
@@ -702,6 +821,122 @@ mod tests {
     }
 
     #[test]
+    fn http_urls_must_be_https_on_listed_hosts() {
+        let hosts = vec!["api.example.com".to_string(), "10.0.0.1".to_string()];
+        for ok in [
+            "https://api.example.com",
+            "https://api.example.com/v1/items?q=a&b=%20#top",
+            "HTTPS://API.Example.COM/x",
+            "https://api.example.com:443/x",
+            "https://10.0.0.1/",
+        ] {
+            assert_eq!(allowed_url(ok, &hosts), Ok(ok), "{ok}");
+        }
+        for (bad, kind) in [
+            ("http://api.example.com/", StdErrorKind::Url),
+            ("ftp://api.example.com/", StdErrorKind::Url),
+            ("https://", StdErrorKind::Url),
+            ("https:/api.example.com", StdErrorKind::Url),
+            ("https://evil.com/", StdErrorKind::Url),
+            ("https://api.example.com.evil.com/", StdErrorKind::Url),
+            ("https://evil.com#@api.example.com", StdErrorKind::Url),
+            ("https://user@api.example.com/", StdErrorKind::Url),
+            ("https://api.example.com:8443/", StdErrorKind::Url),
+            ("https://api.example.com:/", StdErrorKind::Url),
+            ("https://[::1]/", StdErrorKind::Url),
+            ("https://api.example.com/a b", StdErrorKind::Url),
+            ("https://api.example.com\\@evil.com/", StdErrorKind::Url),
+            ("https://api.example.com/\n", StdErrorKind::Url),
+            ("https://api%2eexample.com/", StdErrorKind::Url),
+            ("https://äpi.example.com/", StdErrorKind::Url),
+        ] {
+            let e = allowed_url(bad, &hosts).unwrap_err();
+            assert_eq!(e.kind, kind, "{bad}");
+        }
+        let long = format!("https://api.example.com/{}", "a".repeat(MAX_URL_LEN));
+        assert!(allowed_url(&long, &hosts).is_err());
+        assert!(valid_http_host("a-1.b.example"));
+        for h in [
+            "", "A.com", "-a.com", "a-.com", "a..com", "a.com.", "*.a.com", "a_b.com",
+        ] {
+            assert!(!valid_http_host(h), "{h:?}");
+        }
+    }
+
+    fn with_http(
+        reply: Result<HttpReply, String>,
+    ) -> (NativeStd, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let mut s = NativeStd::new(std::env::temp_dir(), Box::new(|_, _| {}));
+        s.http = Some(HttpAccess {
+            hosts: vec!["api.example.com".into()],
+            get: Box::new(move |url, _cancelled| {
+                log.lock().unwrap().push(url.to_string());
+                reply.clone()
+            }),
+        });
+        (s, seen)
+    }
+
+    #[test]
+    fn http_get_returns_text_bodies_of_2xx_replies() {
+        let url = HostValue::Str("https://api.example.com/v1".into());
+        let ok = |status, body: &[u8]| {
+            Ok(HttpReply {
+                status,
+                body: body.to_vec(),
+            })
+        };
+        let (mut s, seen) = with_http(ok(200, "héllo".as_bytes()));
+        assert_eq!(
+            s.call("http", "get", std::slice::from_ref(&url)),
+            Ok(HostValue::Str("héllo".into()))
+        );
+        assert_eq!(*seen.lock().unwrap(), ["https://api.example.com/v1"]);
+        let (mut s, _) = with_http(ok(204, b""));
+        assert_eq!(
+            s.call("http", "get", std::slice::from_ref(&url)),
+            Ok(HostValue::Str(String::new()))
+        );
+        for reply in [
+            ok(404, b"not found"),
+            ok(301, b""),
+            ok(200, &[0xff, 0xfe]),
+            ok(200, &vec![b'a'; MAX_HTTP_BYTES + 1]),
+            Err("could not resolve host".into()),
+        ] {
+            let (mut s, _) = with_http(reply);
+            let e = s
+                .call("http", "get", std::slice::from_ref(&url))
+                .unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Http, "{}", e.message);
+        }
+        // Refused URLs never reach the transport.
+        let (mut s, seen) = with_http(ok(200, b"x"));
+        let e = s
+            .call("http", "get", &[HostValue::Str("https://evil.com/".into())])
+            .unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Url);
+        assert!(seen.lock().unwrap().is_empty());
+        // A cancelled request is reported as a cancellation, not as a network error.
+        let (mut s, _) = with_http(Err("killed".into()));
+        s.cancel = Some(Arc::new(AtomicBool::new(true)));
+        let e = s.call("http", "get", &[url]).unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Cancelled);
+        // Hosts without a transport (the CLI) do not offer `std.http`.
+        let mut cli = NativeStd::new(std::env::temp_dir(), Box::new(|_, _| {}));
+        let e = cli
+            .call(
+                "http",
+                "get",
+                &[HostValue::Str("https://api.example.com/".into())],
+            )
+            .unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Unavailable);
+    }
+
+    #[test]
     fn permissions_by_host() {
         let cli = Permissions::cli(false);
         assert_eq!(cli.access("time"), Some(Access::Allowed));
@@ -712,7 +947,18 @@ mod tests {
         assert_eq!(app.access("log"), Some(Access::Allowed));
         assert_eq!(app.access("fs"), Some(Access::Allowed));
         assert!(matches!(app.access("time"), Some(Access::Denied(_))));
-        assert_eq!(app.access("http"), None);
+        // `std.http` is only for apps that list it; no other host offers it.
+        assert!(matches!(app.access("http"), Some(Access::Denied(_))));
+        let net = Permissions::app(&["http".into()]);
+        assert_eq!(net.access("http"), Some(Access::Allowed));
+        for host in [
+            Permissions::cli(true),
+            Permissions::playground(),
+            Permissions::repl(),
+        ] {
+            assert!(matches!(host.access("http"), Some(Access::Unavailable(_))));
+        }
+        assert_eq!(app.access("shell"), None);
         assert!(matches!(
             Permissions::playground().access("time"),
             Some(Access::Unavailable(_))

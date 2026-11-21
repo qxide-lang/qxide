@@ -18,7 +18,7 @@ This document describes a framework for building desktop applications whose UI i
 **Non-goals (MVP)**
 
 - Per-app native Rust code or custom native plugins; new native capabilities arrive only through the standard library shipped with the runtime (or FFI later).
-- `std.http` and per-package permission grants (dependencies are limited to `std.log` in the MVP).
+- `std.http.post` and per-package permission grants (`std.http.get` is included in the MVP, and dependencies remain limited to `std.log`).
 - Installers (MSI, NSIS, macOS DMG), code signing, auto-update, and per-app executable icons or version resources.
 - Tested macOS and Linux runtime builds (the code is portable, but the MVP runtime targets Windows).
 - Full IDE features in Qxide Studio beyond the minimal editor, run, chart, and QASM view (circuit diagram, multi-file projects, package management, formatting, LSP, and debugger are later work).
@@ -104,7 +104,8 @@ resizable = true
 | `identifier` | Reverse-DNS identifier used to name the app data folder. | `dev.qxide.app.<name>` |
 | `module` | Module path containing command functions (`src/app.qx` for `app`). | `app` |
 | `commands` | List of `public` command function names callable from the page. | Required, non-empty |
-| `permissions` | Standard-library modules the app's own code may import (`"log"`, `"time"`, `"fs"`, `"app"`; later `"http"`). | Empty (`std.log` is always allowed) |
+| `permissions` | Standard-library modules the app's own code may import (`"log"`, `"time"`, `"fs"`, `"app"`, `"http"`, `"qxide"`). | Empty (`std.log` is always allowed) |
+| `http_hosts` | Lowercase host names that `std.http` may reach, matched exactly with no wildcards, scheme, or port; required when `permissions` contains `"http"`. | Empty |
 | `width` | Initial window width. | `800` |
 | `height` | Initial window height. | `600` |
 | `resizable` | Whether the window can be resized. | `true` |
@@ -239,7 +240,7 @@ Module imports (`import pkg.module;` followed by `module.fn(...)`) are limited t
 
 ### Modules
 
-The MVP standard library provides logging, time, confined file access, and app window control (`std.http` for getting and posting text is designed but not included in the MVP).
+The MVP standard library provides logging, time, confined file access, app window control, and HTTPS GET requests to listed hosts (`std.http.get`); `std.http.post` is designed but not implemented yet.
 
 ```text
 std.log    info(String msg)  warn(String msg)  error(String msg)
@@ -259,21 +260,22 @@ std.qxide  String check(String src)       // JSON: diagnostics      (permission 
            String run(String src, int shots, int seed)   // JSON: counts or diagnostics
            String qasm(String src)        // JSON: OpenQASM 3 or diagnostics
            String format(String src)      // JSON: formatted source or diagnostics
-std.http   String get(String url)  String post(String url, String body)   // later
+std.http   String get(String url)             // https, [app] http_hosts  (permission "http")
+           String post(String url, String body)   // later
 ```
 
 ### Hosts and permissions
 
 Every standard-library call passes through the `Host` trait supplied by the embedder, which enforces the module availability and permission set for that host.
 
-| Host | `std.log` | `std.time` | `std.fs` | `std.app` | `std.qxide` |
-| --- | --- | --- | --- | --- | --- |
-| App runtime | Always (also for dependencies) | Requires `"time"` in `[app]` `permissions` | Requires `"fs"` in `[app]` `permissions` | Requires `"app"` in `[app]` `permissions` | Requires `"qxide"` in `[app]` `permissions` |
-| `qxide run` | Always (`stderr`) | Always | Only with `--allow fs` (`data/` or `./data`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
-| `qxide check` | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs |
-| `qxide qasm` | Discarded | Always | Refused (`Q0702`) | Refused (`Q0702`) | Refused (`Q0702`) |
-| `qxide repl` | Accepted, not printed (the REPL replays the whole session on every input) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
-| Playground | Always (printed to stderr as `info: message`, like `qxide run`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
+| Host | `std.log` | `std.time` | `std.fs` | `std.app` | `std.http` | `std.qxide` |
+| --- | --- | --- | --- | --- | --- | --- |
+| App runtime | Always (also for dependencies) | Requires `"time"` in `[app]` `permissions` | Requires `"fs"` in `[app]` `permissions` | Requires `"app"` in `[app]` `permissions` | Requires `"http"` in `[app]` `permissions` and a non-empty `http_hosts` | Requires `"qxide"` in `[app]` `permissions` |
+| `qxide run` | Always (`stderr`) | Always | Only with `--allow fs` (`data/` or `./data`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
+| `qxide check` | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs |
+| `qxide qasm` | Discarded | Always | Refused (`Q0702`) | Refused (`Q0702`) | Refused (`Q0702`) | Refused (`Q0702`) |
+| `qxide repl` | Accepted, not printed (the REPL replays the whole session on every input) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
+| Playground | Always (printed to stderr as `info: message`, like `qxide run`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
 
 `std.qxide` is available only to apps granted the `qxide` permission (such as Qxide Studio). Dependencies from `[dependencies]` may import only `std.log` in the MVP. Importing or calling a module unavailable in the current host fails with `Q0702`, and importing or calling a module not granted by `[app]` `permissions` or `--allow` fails with `Q0703`.
 
@@ -286,6 +288,15 @@ Every standard-library call passes through the `Host` trait supplied by the embe
 - Files are UTF-8 text only, with a maximum size of 16 MiB per read.
 - Failed file operations (not found, exceeding the size limit, or invalid UTF-8) return `Q0704`.
 - Parent directories are created automatically on write.
+
+### HTTP access rules
+
+- `std.http.get(String url)` is available only in the desktop app runtime when `permissions` in `[app]` includes `"http"` and `http_hosts` is non-empty; other hosts (`qxide run`, REPL, playground, Studio user code, and dependency packages) never receive it.
+- Only `https://` URLs on port 443 without user info whose host exactly matches an entry in `http_hosts` are accepted; disallowed URLs fail with `Q0708` before any network traffic is sent.
+- Redirects are not followed, so any 3xx response fails like any other status outside 200-299 (`Q0707`).
+- The response body must be valid UTF-8 text of at most 16 MiB, and the request must complete within 30 seconds (`Q0707`).
+- Each call runs as a build-time effect once per command invocation before any shot executes, and cancelling the command stops the request (`Q0713`).
+- Requests are executed through the operating system's `curl` binary (included with Windows 10 and later and macOS), the same tool used by the package manager.
 
 ## 7. Language extensions
 
@@ -309,7 +320,7 @@ Every standard-library call passes through the `Host` trait supplied by the embe
 - Error values (a `Result`-like type or `try`/`catch`) so standard-library failures can be handled in `.qx` instead of aborting the command.
 - String slicing and parsing helpers (`substring`, `to_int`, `to_double`).
 - Shot-time to build-time results: a sampling expression that runs a circuit and returns counts as classical data, required for hybrid loops such as VQE and for saving measured data from a single function.
-- `std.http` with a host allow-list.
+- `std.http.post`, request headers, and per-host settings built on top of the existing `http_hosts` allow-list.
 
 ## 8. Security model
 
@@ -466,6 +477,8 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 | `Q0704` | File operation failed (not found, larger than 16 MiB, not UTF-8, or I/O error) | Run time |
 | `Q0705` | Path not allowed (absolute, `..`, drive or UNC prefix, reserved name, or escapes the data folder) | Run time |
 | `Q0706` | `std` argument out of range (for example, `sleep_millis` above `60000`) | Run time |
+| `Q0707` | HTTP request failed (network error, status outside 2xx, body over 16 MiB, or not UTF-8) | Run time |
+| `Q0708` | URL not allowed (not `https://`, port other than 443, user info, or host not in `[app]` `http_hosts`) | Run time |
 | `Q0711` | Unknown command (not listed in `[app]` `commands`) | App call |
 | `Q0712` | Bad command arguments (missing, extra, or wrong type) | App call |
 | `Q0713` | Call canceled | App call |
@@ -480,6 +493,7 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 - `String` type and `std` module imports.
 - `Host` trait with CLI, REPL, `qasm`, playground, and app hosts.
 - Standard-library modules: `std.log`, `std.time` (`now_millis`, `now_iso`, `sleep_millis`), `std.fs` (`read_text`, `write_text`, `append_text`, `exists`, `remove`), and `std.app` (`set_title`, `set_size`, `close`, `emit`).
+- `std.http.get` for apps granted `"http"`, restricted to `https://` hosts listed in `[app]` `http_hosts` and executed through the system `curl`.
 - `qxide run --allow fs`.
 - Command engine in `src/lang`.
 - `qxide-app` runtime on `wry` and `tao` for Windows.
@@ -489,7 +503,7 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 
 ### Not in the MVP
 
-- `std.http`.
+- `std.http.post` and request headers.
 - Installers.
 - Code signing.
 - Per-app icons.

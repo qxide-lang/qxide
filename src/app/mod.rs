@@ -259,6 +259,7 @@ fn manifest_json(
         "module": c.module,
         "commands": c.commands,
         "permissions": c.permissions,
+        "http_hosts": c.http_hosts,
         "width": c.width,
         "height": c.height,
         "resizable": c.resizable,
