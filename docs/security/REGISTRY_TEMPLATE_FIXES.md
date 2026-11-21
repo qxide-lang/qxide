@@ -226,7 +226,7 @@ The steps of part 1 apply. In addition:
 - **Branch:** `feat/registry-owners`, created from local `main` at `846d18e` (parts 1 and 2 merged). Not merged or pushed.
 - **Decision:** the user chose alternative (b) of B-P5 for publishing: an owner list per package, created by the first publishing pull request and enforced by CI instead of by review alone.
 - **Scope:** `registry-template/`, `src/pkg/`, their tests, and documentation in this repository. Nothing was sent to `qxide-lang/registry` or any other remote. This record and the commit messages were written by hand; nothing was sent to an external text service.
-- **Commits:** `9ca1222` (validator, workflow, tests), `dbbe8b7` (`qxide publish` writes the owner file), then the documentation commit that adds this record.
+- **Commits:** `9ca1222` (validator, workflow, tests), `dbbe8b7` (`qxide publish` writes the owner file), `d224ea6` (documentation and this record), then a follow-up found in review: new versions keep their archive at the default path, and GitHub App authors are accepted.
 
 ## Design
 
@@ -241,7 +241,8 @@ The steps of part 1 apply. In addition:
 | Missing author | `--base` without a valid `--author-id` and `--author-login` is an error | Fail closed if the workflow is changed or run without the event. |
 | Changes to owners | Only by an author listed on the base branch; the file cannot become empty or be deleted; no confirmation by added accounts | Smallest rule that allows adding, removing, and transferring. |
 | Maintainer override | Commit to `main` (admin bypass); the push run checks the format only | No maintainer list inside CI, which would be one more thing to protect. |
-| Files under `packages/` | Every added file must be the archive of a version in the index | Without this, a non-owner could add `packages/<prefix>/<name>/<name>-<next>.tar.gz` with no index line; the owner's publication of that version would then modify an existing archive and be rejected. |
+| Files under `packages/` | Every added file must be the archive of a version in the index, and a version added by the pull request keeps its archive at the default path (no relative `dl` elsewhere) | Without this, a non-owner could add `packages/<prefix>/<name>/<name>-<next>.tar.gz`, with no index line or as the `dl` of a package of its own; the owner's publication of that version would then modify an existing archive and be rejected. |
+| Bot authors | `--author-login` also accepts `<name>[bot]`; owner files list users only | A Dependabot pull request that updates workflow actions would otherwise fail; a bot cannot own a package. |
 | Diff parsing | `git diff --name-status -z` | Without `-z`, git quotes paths with unusual characters, and a quoted path does not start with `packages/`. |
 | Yanking | Unchanged: maintainers only (B-P5) | Allowing owners to yank is a separate decision. |
 
@@ -265,6 +266,8 @@ The steps of part 1 apply. In addition:
 | `test_owner_cannot_leave_a_package_without_owners` | empty owner file; deleted owner file | rejected |
 | `test_package_without_owner_file_is_locked` | no owner file on base; `alice` or `mallory` publish and add themselves; then a maintainer adds the file | rejected, then passes |
 | `test_archive_without_index_line_in_another_package` | archive at the path of `evil 1.0.1` with no index line; a non-ASCII file name | rejected (the unquoted path is reported) |
+| `test_relative_dl_into_another_package` | new package `mallory-tools` whose `dl` is the path of `evil 1.0.1`, with a valid archive there; then the same package with the default path as `dl` | rejected, then passes (without the rule: 0 errors) |
+| `test_bot_authors` | `dependabot[bot]` changes `README.md`; publishes `evil 1.0.1`; adds a package listing itself | passes; rejected; rejected |
 | `test_author_is_required_with_base` | no author, only one of the two, leading zero, non-digit id, invalid login | rejected |
 | `test_malformed_owner_files` | 16 malformed files (empty, invalid JSON, `true`/string/float/zero/oversized id, extra key, bad or long login, duplicate id, invalid UTF-8, nesting 5000 deep, 33 owners) | rejected without a traceback |
 | `test_owner_files_need_a_package` | owner file without an index file; owner file at a wrong prefix | rejected |
@@ -283,7 +286,7 @@ Run on Windows 11 with Python 3.14.10 and rustc 1.99.1 at the tip of this branch
 
 | Command | Result |
 | --- | --- |
-| `python -m unittest ci.test_registry_scripts` | 68 tests OK (1 skipped: `test_windows_device_names_on_disk`, Linux only) |
+| `python -m unittest ci.test_registry_scripts` and `python -I ci/test_registry_scripts.py` | 70 tests OK each (1 skipped: `test_windows_device_names_on_disk`, Linux only) |
 | `cargo fmt --check` | clean |
 | `cargo clippy -j 8 --all-targets -- -D warnings` | clean |
 | `cargo test -j 8 --workspace` | all passed (binary unit tests 117) |

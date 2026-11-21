@@ -69,6 +69,8 @@ OWNER_KEYS = {"id", "login"}
 MAX_OWNERS = 32
 GITHUB_ID = re.compile(r"[1-9][0-9]{0,18}")
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
+# Pull request authors may also be GitHub Apps (`dependabot[bot]`); owner files list users only.
+AUTHOR_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?")
 REGISTRY_DATA = ("index/", "packages/", "owners/")
 
 errors: list[str] = []
@@ -778,7 +780,7 @@ def main() -> int:
             isinstance(args.author_id, str)
             and GITHUB_ID.fullmatch(args.author_id)
             and isinstance(args.author_login, str)
-            and GITHUB_LOGIN.fullmatch(args.author_login)
+            and AUTHOR_LOGIN.fullmatch(args.author_login)
         ):
             author = {"id": int(args.author_id), "login": args.author_login}
         else:
@@ -933,6 +935,15 @@ def main() -> int:
             for p in touched:
                 if not p.startswith(REGISTRY_DATA):
                     error(p, "a pull request that changes index/, packages/ or owners/ may not change other files")
+        # The archive of a new version sits at the default path, which contains its own package name;
+        # a relative `dl` could otherwise place it at the path of another package's next version.
+        local_template = template if "://" not in template else DEFAULT_DL
+        for name, entries in names.items():
+            for e in entries:
+                where = f"{name} {e['vers']}"
+                target = archive_path(e, template)
+                if where in changed and "://" not in target and target != archive_path(dict(e, dl=None), local_template):
+                    error(where, INVALID_VALUE.format(key="dl", value=repr(target)) + "; new versions use the default archive path")
         check_ownership(args.base, author, diff, names, head_owners, archive_owner)
         for status, *paths in diff:
             for p in paths:

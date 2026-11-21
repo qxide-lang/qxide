@@ -131,7 +131,7 @@ Every pull request runs `scripts/validate.py` from the target branch (the workfl
 - All declared dependencies exist in the registry and a package does not depend on itself
 - The pull request author owns every package whose index file, archives, or owner file the pull request changes, according to the owner files on `main`; a new package adds an owner file that lists exactly the author
 - Owner files are well formed and belong to a package with an index file
-- Every file added under `packages/` is the archive of a version in the index
+- Every file added under `packages/` is the archive of a version in the index, and new versions keep their archive at the default `packages/<prefix>/<name>/` path
 - A pull request that changes `index/`, `packages/`, or `owners/` changes no other files
 - Existing published index lines are unchanged, including `yanked`
 - No published version or index file is removed

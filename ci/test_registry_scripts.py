@@ -828,6 +828,20 @@ class ValidateOwners(unittest.TestCase):
         (path.parent / "évil.tar.gz").write_bytes(b"x")
         self.assert_rejected(self.pr(MALLORY), "packages/ev/il/evil/évil.tar.gz")
 
+    def test_relative_dl_into_another_package(self):
+        # A new package of its own whose `dl` points at the path of `evil 1.0.1`, with a valid
+        # archive of that package there.
+        squat = "packages/ev/il/evil/evil-1.0.1.tar.gz"
+        data = make_tar(std_files("mallory-tools", "1.0.0"))
+        (self.reg.root / squat).write_bytes(data)
+        self.reg.add("mallory-tools", "1.0.0", archive=False, owner=MALLORY, cksum=hashlib.sha256(data).hexdigest(), dl=squat)
+        self.assert_rejected(self.pr(MALLORY), "mallory-tools 1.0.0")
+        # The same `dl` naming the default path is accepted.
+        self.reg.git("checkout", "-q", "-B", "pr-default", "main")
+        self.reg.add("mallory-tools", "1.0.0", owner=MALLORY, dl="packages/{prefix}/{name}/{name}-{version}.tar.gz")
+        r = self.pr(MALLORY)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
     def test_author_is_required_with_base(self):
         self.reg.add("evil", "1.0.1")
         self.commit()
@@ -844,6 +858,18 @@ class ValidateOwners(unittest.TestCase):
                 self.assertNotIn("Traceback", r.stderr)
                 self.assertEqual(r.returncode, 1, r.stdout)
                 self.assertIn("--author-id", r.stdout)
+
+    def test_bot_authors(self):
+        # A GitHub App such as Dependabot may change other files, but owns no package.
+        bot = {"id": 49699333, "login": "dependabot[bot]"}
+        (self.reg.root / "README.md").write_text("x\n", encoding="utf-8")
+        r = self.pr(bot)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(bot), self.EVIL)
+        self.reg.git("checkout", "-q", "-B", "pr-bot-new", "main")
+        self.reg.add("bot-tools", "1.0.0", owner=bot)
+        self.assert_rejected(self.pr(bot), "owners/bo/t-/bot-tools")
 
     def test_malformed_owner_files(self):
         cases = {
