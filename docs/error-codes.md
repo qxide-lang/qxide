@@ -1568,7 +1568,7 @@ void main() {
 
 ## Q0417: simulation work limit exceeded
 
-Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to roughly one to two minutes of simulation for the `qxide` command and a few seconds in the browser playground. Branch bodies are counted as if they always run.
+Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to at most about three minutes of simulation for the `qxide` command and a few seconds in the browser playground. Branch bodies are counted as if they always run.
 
 Erroneous code example:
 

@@ -91,7 +91,7 @@ The largest legitimate program at the qubit cap, `qxide qasm` of GHZ on 1,048,57
 | `nest_198_61.qx` `qasm` (M-10) | Q0416 | 0.12 s | 4 MB |
 | `oneline_50000.qx` `check` (M-01, over 3.4 GB before) | 15,711 bytes, Q0418 | 0.11 s | 4 MB |
 
-Calibration of `shot_work` on the same machine: a 22-qubit state vector ran 463 operations in 2.7 s (about 1.4 ns per amplitude update); stabilizer column passes cost about 12 ns per row at n = 20,000 (400,000 gates: 193 s), and GHZ runs measured 0.03-0.13 ns per estimated row-reduction word. The CLI work limit 2^36 therefore corresponds to roughly 1-1.5 minutes of simulation; programs just over it (22 qubits x 16,522 operations; 220,002 stabilizer gates on 20,001 qubits, 193 s before) are refused at once. The playground limits are 16x (steps, work) and 256x (output) smaller, which keeps a run to a few seconds natively; they were not timed in a browser or under Node.
+Calibration of `shot_work` on the same machine: a 22-qubit state vector ran 463 operations in 2.7 s (about 1.4 ns per amplitude update); stabilizer column passes cost about 12 ns per row at n = 20,000 (400,000 gates: 193 s), and GHZ runs measured 0.03-0.13 ns per estimated row-reduction word. Measured just under the CLI work limit 2^36: 22 qubits x 16,303 operations (mostly `t`) took 188.5 s (about 2.7 ns per unit, since rotations cost more than the calibration gates), 200,001 stabilizer gates on 20,001 qubits took 90.0 s, and GHZ 16384 took 16.7 s; the worst case is therefore about 3 minutes; programs just over it (22 qubits x 16,522 operations; 220,002 stabilizer gates on 20,001 qubits, 193 s before) are refused at once. The playground limits are 16x (steps, work) and 256x (output) smaller, which keeps a run to a few seconds natively; they were not timed in a browser or under Node.
 
 ## Results
 
@@ -102,7 +102,7 @@ Calibration of `shot_work` on the same machine: a 22-qubit state vector ran 463 
 
 - M-05 (quadratic checker time) is unchanged; `check` of about 1 MB can still take 40 s.
 - The playground nesting cap was not validated on the wasm build under Node, and playground budgets were not timed in a browser.
-- No CLI flag to raise the limits; a legitimate simulation over about 1.5 minutes of estimated work is now refused with Q0417.
+- No CLI flag to raise the limits; a legitimate simulation above the estimate (up to about 3 minutes of real time) is now refused with Q0417; the state-vector unit weight could be raised for non-Clifford gates.
 - No wall-clock limit and no wasm maximum memory; the page still renders up to 1 MiB of output and up to 50 diagnostic buttons on its main thread.
 - `app-framework-next` also changes `Limits` (`Limits::APP`, `scope`); merging needs the new fields added to `Limits::APP`.
 - Step costs are approximate: a step ranges from under 1 ns (a variable compared in a lookup) to about 70 ns (an empty loop iteration).
