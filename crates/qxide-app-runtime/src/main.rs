@@ -55,8 +55,11 @@ pub enum UserEvent {
 const SCHEME: &str = "qxapp";
 const BRIDGE: &str = include_str!("bridge.js");
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
-// The interpreter recurses per nested call; same stack as `qxide run`.
-const LANG_STACK: usize = 64 << 20;
+// The interpreter recurses per nested call; same stack as `qxide run`. Thread stacks are
+// reserved, not committed: `MAX_WORKERS` of them reserve 1 GiB of address space, but each commits
+// only what a call uses (at most ~45 MiB optimized for the deepest legal program, measured
+// 2026-11-21; see `lang::STACK_SIZE`).
+const LANG_STACK: usize = lang::STACK_SIZE;
 
 /// The page origin wry gives the `qxapp` protocol on this platform.
 fn origin() -> &'static str {
@@ -687,7 +690,7 @@ mod tests {
         );
     }
 
-    // M-13 (B-A7): calls waiting for a worker must not each hold a thread (64 MiB stack).
+    // M-13 (B-A7): calls waiting for a worker must not each hold a thread (`LANG_STACK` stack).
     #[test]
     fn queued_calls_do_not_hold_threads() {
         use std::collections::HashSet;
@@ -708,6 +711,26 @@ mod tests {
         }
         let n = ids.lock().unwrap().len();
         assert!(n <= 2, "16 queued calls used {n} threads");
+    }
+
+    // The deepest legal nesting under the deepest recursion runs on a worker like in `qxide run`.
+    #[test]
+    fn workers_have_the_interpreter_stack() {
+        use std::time::Duration;
+        assert_eq!(LANG_STACK, lang::STACK_SIZE);
+        let src = format!(
+            "int f(int k) {{\n    if k > 0 {{\n        return f(k - 1){};\n    }}\n    return 0;\n}}\n\npublic int deep() {{\n    return f(197);\n}}\n",
+            " + 0".repeat(124)
+        );
+        let app = bundled_app(&src, "deep", "public void unused() {\n}\n", &["log"]);
+        let w = Workers::new(1).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        w.submit(Box::new(move || {
+            let r = call_app(&app, "deep", &[], 1, 0, &mut LogOnly::default());
+            tx.send(r).unwrap();
+        }));
+        let r = rx.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
+        assert!(r.as_ref().is_ok_and(|j| j.contains("\"value\":0")), "{r:?}");
     }
 
     // M-13 (B-A7): a call that panics must not take its worker slot with it.

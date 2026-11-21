@@ -205,9 +205,9 @@ fn validate(app: &App) -> Result<()> {
     let name = app.entry.display().to_string();
     let project = app.project.clone();
     let config = app.config.clone();
-    // Same large stack as `qxide check`, so deep nesting ends in a diagnostic, not a crash.
+    // Same stack as `qxide check`, so deep nesting ends in a diagnostic, not a crash.
     let worker = std::thread::Builder::new()
-        .stack_size(64 << 20)
+        .stack_size(lang::STACK_SIZE)
         .spawn(move || {
             let input = lang::Input {
                 name: &name,
