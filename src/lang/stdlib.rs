@@ -704,6 +704,11 @@ mod tests {
         } else {
             std::os::windows::fs::symlink_file(target, link)
         };
+        #[cfg(not(any(unix, windows)))]
+        let r: std::io::Result<()> = {
+            let _ = (target, link, dir);
+            Err(std::io::ErrorKind::Unsupported.into())
+        };
         match r {
             Ok(()) => true,
             Err(e) if std::env::var_os("CI").is_none() => {

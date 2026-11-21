@@ -626,14 +626,19 @@ mod tests {
     // A bundle as `qxide app build` writes it, with a dependency package next to the app.
     fn bundled(lib: &str) -> App {
         let app = "import bell_utils.prepare;\n\npublic BitReg pair() {\n    QReg q = qreg(2);\n    prepare(q[0], q[1]);\n    return measure(q);\n}\n";
-        bundled_app(app, "pair", lib)
+        bundled_app(app, "pair", lib, &["log"])
     }
 
-    fn bundled_app(app: &str, command: &str, lib: &str) -> App {
+    fn bundled_app(app: &str, command: &str, lib: &str, perms: &[&str]) -> App {
+        let hosts: &[&str] = if perms.contains(&"http") {
+            &["api.example.com"]
+        } else {
+            &[]
+        };
         let manifest = serde_json::json!({
             "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": false,
             "title": "t", "identifier": "dev.qxide.app.test", "module": "app",
-            "commands": [command], "permissions": ["log"],
+            "commands": [command], "permissions": perms, "http_hosts": hosts,
             "width": 400, "height": 300, "resizable": true,
             "packages": [
                 {"name": "demo", "src": "pkg/0/demo/src", "deps": [1]},
@@ -663,7 +668,7 @@ mod tests {
     #[test]
     fn app_calls_use_app_limits() {
         let src = "public BitReg big() {\n    QReg q = qreg(25);\n    t(q[0]);\n    return measure(q);\n}\n";
-        let app = bundled_app(src, "big", "public void unused() {\n}\n");
+        let app = bundled_app(src, "big", "public void unused() {\n}\n", &["log"]);
         let e = call_app(&app, "big", &[], 1, 0, &mut LogOnly::default())
             .unwrap()
             .unwrap_err();
@@ -807,6 +812,19 @@ mod tests {
             assert!(r.is_err(), "--dev accepted by a built app");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundled_dependencies_cannot_use_http() {
+        // The app itself is granted `http`; its dependency still is not.
+        let app = "import bell_utils.prepare;\nimport std.http;\n\npublic BitReg pair() {\n    QReg q = qreg(2);\n    prepare(q[0], q[1]);\n    return measure(q);\n}\n";
+        let lib = "import std.http;\n\npublic void prepare(Qubit a, Qubit b) {\n    h(a);\n    cx(a, b);\n}\n";
+        let e = call(&bundled_app(app, "pair", lib, &["log", "http"])).unwrap_err();
+        assert!(e.contains("\"code\":\"Q0703\""), "{e}");
+        assert!(e.contains("bell_utils") && e.contains("lib.qx"), "{e}");
+        // Without the dependency's import the same app links and runs.
+        let lib_ok = "public void prepare(Qubit a, Qubit b) {\n    h(a);\n    cx(a, b);\n}\n";
+        assert!(call(&bundled_app(app, "pair", lib_ok, &["log", "http"])).is_ok());
     }
 
     #[test]

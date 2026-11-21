@@ -22,6 +22,8 @@ const MAX_STDERR: u64 = 64 << 10;
 /// globbing, time and size limits, and the status code printed after the body.
 pub fn curl_args(url: &str) -> Vec<String> {
     let mut a: Vec<String> = [
+        // Must come first: ignore the user's `.curlrc`, which could add output or TLS options.
+        "--disable",
         "--silent",
         "--show-error",
         "--globoff",
@@ -179,6 +181,7 @@ mod tests {
     #[test]
     fn curl_gets_https_only_without_redirects() {
         let a = curl_args("https://api.example.com/x?a=1");
+        assert_eq!(a[0], "--disable");
         let has = |k: &str, v: &str| a.windows(2).any(|w| w[0] == k && w[1] == v);
         assert!(has("--proto", "=https"));
         assert!(has("--max-redirs", "0"));
