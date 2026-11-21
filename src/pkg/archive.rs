@@ -2,6 +2,7 @@
 // Unpacking trusts nothing: the caller verifies the sha256 first, and every entry is checked for
 // type, path and size before anything is written.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -17,6 +18,34 @@ pub const MAX_ARCHIVE: u64 = 10 << 20;
 /// Largest total unpacked size and file count of one package.
 pub const MAX_UNPACKED: u64 = 50 << 20;
 pub const MAX_FILES: usize = 2000;
+/// Largest decompressed tar stream: `MAX_UNPACKED` plus room for the headers, padding, and long
+/// names of `MAX_FILES` entries.
+const MAX_TAR: u64 = MAX_UNPACKED + (16 << 20);
+/// Largest GNU long-name entry (`pack` writes one for paths over 100 bytes).
+const MAX_LONG_NAME: u64 = 4096;
+
+// Fails once more than `left` bytes have been read, and records that in `over`.
+struct Capped<'a, R> {
+    inner: R,
+    left: u64,
+    over: &'a Cell<bool>,
+}
+
+impl<R: Read> Read for Capped<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        match self.left.checked_sub(n as u64) {
+            Some(left) => {
+                self.left = left;
+                Ok(n)
+            }
+            None => {
+                self.over.set(true);
+                Err(std::io::ErrorKind::FileTooLarge.into())
+            }
+        }
+    }
+}
 
 /// The files a package ships, as (path inside the package with `/`, file on disk), sorted:
 /// `qxide.toml`, every `.qx` file under `src/`, and top-level `README*` / `LICENSE*` files.
@@ -232,22 +261,53 @@ pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
     if bytes.len() as u64 > MAX_ARCHIVE {
         return Err(bad(msg::reason_too_large(MAX_ARCHIVE)));
     }
-    let mut archive = tar::Archive::new(GzDecoder::new(bytes));
-    let entries = archive
-        .entries()
-        .map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?;
+    let over = Cell::new(false);
+    let mut archive = tar::Archive::new(Capped {
+        inner: GzDecoder::new(bytes),
+        left: MAX_TAR,
+        over: &over,
+    });
+    let corrupt = |e: std::io::Error| {
+        if over.get() {
+            bad(msg::reason_too_large(MAX_UNPACKED))
+        } else {
+            bad(msg::reason_corrupt(&e.to_string()))
+        }
+    };
+    // Raw entries: otherwise the crate reads GNU long-name and PAX data whole, before any check
+    // here. Long names are read below under `MAX_LONG_NAME`; PAX headers are not regular files.
+    let entries = archive.entries().map_err(corrupt)?.raw(true);
     let (mut total, mut count) = (0u64, 0usize);
     let mut saw_manifest = false;
     let mut seen = PathSet::default();
     let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut long_name: Option<PathBuf> = None;
     for entry in entries {
-        let mut entry = entry.map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?;
-        let path = entry
-            .path()
-            .map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?
-            .into_owned();
-        let rel = entry_path(&path, root)?;
+        let mut entry = entry.map_err(corrupt)?;
         let kind = entry.header().entry_type();
+        if kind.is_gnu_longname() {
+            let shown = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+            let size = entry.header().size().unwrap_or(u64::MAX);
+            if size > MAX_LONG_NAME || long_name.is_some() {
+                return Err(bad(msg::reason_bad_path(&shown)));
+            }
+            let mut name = Vec::new();
+            (&mut entry)
+                .take(size)
+                .read_to_end(&mut name)
+                .map_err(corrupt)?;
+            while name.last() == Some(&0) {
+                name.pop();
+            }
+            let name = String::from_utf8(name).map_err(|_| bad(msg::reason_bad_path(&shown)))?;
+            long_name = Some(PathBuf::from(name));
+            continue;
+        }
+        let path = match long_name.take() {
+            Some(p) => p,
+            None => entry.path().map_err(corrupt)?.into_owned(),
+        };
+        let rel = entry_path(&path, root)?;
         count += 1;
         if count > MAX_FILES {
             return Err(bad(msg::reason_too_many_files(MAX_FILES)));
@@ -277,7 +337,7 @@ pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
         (&mut entry)
             .take(size)
             .read_to_end(&mut data)
-            .map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?;
+            .map_err(corrupt)?;
         saw_manifest |= rel == Path::new(MANIFEST);
         files.push((rel, data));
     }
