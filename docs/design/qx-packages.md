@@ -198,12 +198,14 @@ dependencies = []
 - `source` is either `registry+<registry URL>` or `path+<path relative to the project root>`.
 - Registry packages must include `checksum = "sha256:<64 hex>"`. Path packages have no `checksum`.
 - Applications should commit `qxide.lock`.
-- A lock file is considered fresh when:
+- A lock file is considered fresh when all of the following hold:
   1. the root package's direct dependencies match `qxide.toml` exactly,
-  2. every locked version satisfies all requirements on it,
-  3. registry packages match the active registry URL,
-  4. path dependencies still have the same version and dependency list on disk, and
-  5. every referenced dependency has a corresponding locked entry.
+  2. every locked version satisfies every requirement on it: requirements from the root manifest, from path packages as their `qxide.toml` exists on disk now, and from registry packages (`qxide run`, `qxide check`, and `qxide qasm` read a registry package's requirements from its unpacked `qxide.toml` in the cache, reporting a package that is not yet unpacked as `Q0611` instead; `qxide install` reads them from the unpacked package or otherwise from the registry index before downloading anything),
+  3. registry packages come from the active registry URL,
+  4. path packages still have the same name, version, and dependency list on disk, and a package is locked as a path package exactly when some package requires it by path, and
+  5. every referenced dependency has a corresponding locked entry, every locked package is reachable from the root (so `qxide install` never fetches unused entries), and no package depends on itself or on the root.
+- Package names and dependency names in `qxide.lock` must be valid package names; otherwise the lock file is invalid (`Q0603`), because names become paths in the local cache.
+- A stale lock file is re-resolved by `qxide install`; `qxide install --locked` fails with `Q0612`.
 - `qxide run`, `qxide check`, and `qxide qasm` require a fresh lock whenever the project has dependencies, failing with `Q0611` if the lock file is missing or a package is not unpacked, or `Q0612` if the lock file is stale. These commands never access the network.
 
 ## 7. Version resolution
@@ -221,7 +223,7 @@ The resolver does not backtrack. Resolution errors map to specific codes:
 
 - Unknown package: `Q0604`.
 - No version satisfies the requirements: `Q0605` (diagnostic notes list the requirements and available versions).
-- Incompatible requirements or a package depending on itself: `Q0606`.
+- Incompatible requirements, or any package depending on itself (the project, a path package, or a registry package whose index entry lists itself, directly or reached transitively): `Q0606`.
 - Only versions requiring a different `qxide` version exist: `Q0613`.
 
 Adding a new dependency preserves already locked versions of existing dependencies. Deleting `qxide.lock` and running `qxide install` re-resolves the graph to the newest matching versions. `qxide remove` prunes unreachable packages from `qxide.lock` without contacting the registry.
@@ -255,7 +257,7 @@ Each line in `index/<prefix>/<name>` is a JSON object with sorted keys, represen
 **Index entry fields**
 
 - `name`: package name.
-- `vers`: semver version string.
+- `vers`: semver version string without build metadata (no `+...` suffix), since `1.0.0+x` has the same precedence as `1.0.0` and could otherwise stand in for a published version.
 - `deps`: array of `{"name", "req"}` objects.
 - `cksum`: 64-character lowercase hex SHA-256 digest of the package archive.
 - `qxide`: optional `qxide` version requirement.
@@ -265,6 +267,8 @@ Each line in `index/<prefix>/<name>` is a JSON object with sorted keys, represen
 - `v`: index schema version (`1`).
 
 Unknown keys in index entries are ignored by the client. Download URL templates expand `{name}`, `{version}`, `{prefix}`, and `{sha256-checksum}`. Relative URLs are resolved against the registry root.
+
+**Decision:** The client skips index lines it cannot use instead of failing the whole package. A line is unusable when it is not valid JSON, has a field of the wrong type (a non-string `qxide`, `description`, or `dl`, or a non-array `deps`), has an invalid name, version, checksum, or version requirement, carries build metadata, names another package, or repeats a version already listed earlier in the file (the first line for a version wins, because published lines are immutable). Skipped lines can never be selected and the package's other versions stay installable; a lock file that pins a skipped version cannot fetch it. Only an index file without a single usable line fails, with `Q0609`. Registry CI rejects such lines before they are merged, and one malformed line must not make every version of a package uninstallable (Cargo also skips index lines it cannot parse).
 
 The default registry URL is `https://raw.githubusercontent.com/qxide-lang/registry/main/`. It can be overridden with `--registry <url|path>` or the `QXIDE_REGISTRY` environment variable. Plain `http://` URLs are refused (`Q0608`).
 
@@ -285,6 +289,7 @@ The index format also supports a per-entry `dl` URL (such as a GitHub Release as
 Archives are deterministic gzip-compressed tar files:
 
 - Every entry path sits under `<name>-<version>/`.
+- Every path component must be portable: non-empty, with no trailing dot or space, no Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1`-`COM9`, `LPT1`-`LPT9`, including the superscript-digit forms, with or without an extension), and none of the characters `<>:"/\|?*` or control characters. No two entries may be equal after case folding, and no file may also be a directory of another entry, so that nothing overwrites a reviewed file on case-insensitive file systems such as Windows and macOS. `qxide publish` refuses a package whose files break these rules (`Q0614`) and skips top-level `README*` or `LICENSE*` entries that are symbolic links.
 - Included files are `qxide.toml`, every `.qx` file under `src/`, and top-level `README*` and `LICENSE*` files. Nothing else is packaged.
 - Entries are sorted by path, with `mtime` 0, `uid` and `gid` 0, file mode `0644`, and gzip header `mtime` 0.
 - `.qx` files and `qxide.toml` are normalized to `\n` line endings before archiving.
@@ -297,7 +302,7 @@ The same source files produce identical archive bytes and the same SHA-256 check
 
 `qxide publish [--dry-run] [--registry <url|path>]` performs the following steps:
 
-1. Validates `qxide.toml`: `description`, `license`, and `qxide` must be present; every dependency must specify a `version` requirement (path-only dependencies are rejected); and `src/lib.qx` must exist.
+1. Validates `qxide.toml`: `description`, `license`, and `qxide` must be present; the package `version` must not carry build metadata; every dependency must specify a `version` requirement (path-only dependencies are rejected); and `src/lib.qx` must exist.
 2. Runs `qxide check` on `src/lib.qx` with its dependencies (library packages do not require `main`).
 3. Builds the deterministic archive at `target/package/<name>-<version>.tar.gz`.
 4. Prints the packaged file list, `sha256 <hex>`, the target index path, and the index JSON line.
@@ -314,14 +319,15 @@ If `--dry-run` is passed, `qxide publish` stops after printing this summary. Oth
 
 - `scripts/validate.py` (using only the Python standard library) runs on every pull request and push and verifies:
   - Index files live at the correct `<prefix>/<name>` path and use valid package names.
-  - Every line is valid JSON containing the required keys, a valid package name, a valid semver version, a 64-hex checksum, and `v` equal to `1`.
-  - No version appears more than once.
-  - Every archive hosted in the repository exists, its SHA-256 matches `cksum`, and it is a valid gzip tar containing only regular files and directories under `<name>-<version>/`, with no absolute, `..`, drive-letter, or backslash paths, at most 2000 files, at most 10 MiB compressed, and at most 50 MiB unpacked.
-  - Each archive contains `qxide.toml` whose `name` and `version` match the index entry and which defines `description`, `license`, and `qxide`, and contains `src/lib.qx`.
-  - Every dependency listed in an entry names a package present in the registry.
-  - Against the pull request's base branch: previously published lines are unchanged except for `yanked`; no version is removed; no archive under `packages/` is modified or deleted; `search.json` is not manually edited; and a new package name is not a look-alike of an existing package (identical after removing hyphens).
+  - Every line is accepted by the client: valid JSON containing the required keys, a valid package name, a 64-hex checksum, `v` equal to the integer `1` (not `true`), `vers` without build metadata, string `description` and `dl` fields, and `vers`, dependency `req`, and `qxide` values checked with a port of the `semver` crate parser the client uses (64-bit numbers, no leading zeros, and the same requirement syntax); the shared case list `tests/data/semver_cases.json` in the `qxide` repository is checked against both parsers.
+  - No version appears more than once, compared by semver precedence.
+  - Every download location, after template expansion, is an `https://` URL or a plain relative path inside the registry.
+  - Every archive hosted in the repository exists, its SHA-256 matches `cksum`, and it is a valid gzip tar containing only regular files and directories under `<name>-<version>/`, enforcing the same path rules as the client (no absolute, `..`, drive-letter, or backslash paths, only portable components, and no entries that collide after case folding), with at most 2000 files (the check stops reading at the limit), at most 10 MiB compressed, and at most 50 MiB unpacked.
+  - Each archive contains `qxide.toml` whose `name` and `version` match the index entry and which defines `description`, `license`, and `qxide`, and contains exactly `src/lib.qx`.
+  - Every dependency listed in an entry names a package present in the registry, and no entry depends on its own package.
+  - Against the pull request's base branch: previously published lines are unchanged except for `yanked`; no version is removed; no archive under `packages/` is modified or deleted; `search.json` is not manually edited; `config.json` is not changed in a pull request; and a new package name is not a look-alike of an existing package (identical after removing hyphens).
   - Outputs a summary listing the files inside each newly added archive for reviewers.
-- `scripts/build_search.py` regenerates `search.json` with the newest non-yanked version and description for each package. The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`.
+- `scripts/build_search.py` regenerates `search.json` with the newest non-yanked version and description for each package, where newest is determined by semver precedence (numeric pre-release identifiers compare as numbers, so `1.0.0-rc.10` is newer than `1.0.0-rc.2`). The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`. The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`.
 - `.gitattributes` keeps index files LF-terminated and marks archives as binary.
 - Human review on pull requests covers name squatting, malicious or misleading packages, and licensing issues according to the policy documented in the registry `README`.
 
@@ -365,6 +371,7 @@ The cache root is `$QXIDE_HOME`, defaulting to `~/.qxide` (resolved from `HOME` 
 ~/.qxide/registry/index/<registry id>/...                 copies of fetched index files (for --offline)
 ~/.qxide/registry/cache/<registry id>/<name>-<version>.tar.gz
 ~/.qxide/registry/src/<registry id>/<name>-<version>/      unpacked packages read by run/check/qasm
+~/.qxide/registry/tmp/                                     files being downloaded by curl, removed afterwards
 ```
 
 `<registry id>` combines a readable host segment with the first 16 hex digits of the SHA-256 of the registry URL so data from different registries never collides.
@@ -373,7 +380,7 @@ The cache root is `$QXIDE_HOME`, defaulting to `~/.qxide` (resolved from `HOME` 
 
 - **Checksum verification at three points:** SHA-256 digests are mandatory and verified by registry CI against the committed archive, by the client comparing the index entry against `qxide.lock` before downloading, and by the client hashing the downloaded archive against `qxide.lock` before unpacking.
 - **Immutability:** Once published, a version's index entry and archive cannot be overwritten or deleted; CI allows only the `yanked` field to change.
-- **Defensive extraction:** Archives are verified prior to unpacking and extracted into a temporary directory with path, entry-type, size (10 MiB compressed, 50 MiB unpacked), and file-count (2000 files) restrictions, rejecting `..`, absolute paths, drive letters, backslashes, symlinks, and hard links.
+- **Defensive extraction:** Archives are verified prior to unpacking and extracted into a temporary directory with path, entry-type, size (10 MiB compressed, 50 MiB unpacked), and file-count (2000 files) restrictions, rejecting `..`, absolute paths, drive letters, backslashes, symlinks, and hard links; entry paths must be portable and must not collide after case folding (see Archive format), and every entry is checked before the first file is written.
 - **Transport:** Plain `http://` registries are refused; HTTPS requests require TLS 1.2 or higher.
 - **Index trust:** The index is trusted as served by GitHub over TLS. Cryptographic index signatures (such as signed index commits or TUF-style metadata) are not implemented yet and remain a follow-up.
 - **Moderation:** Name squatting and malicious packages are mitigated through pull-request review, look-alike name checks in CI, and yanking.
@@ -387,7 +394,7 @@ Local directory registries and `file://` registries are always local. `qxide run
 
 ### Network transport
 
-HTTPS requests invoke the system `curl` executable with `--proto =https --tlsv1.2`, a 120-second timeout, and a 10 MiB transfer size limit. HTTP 404 is treated as "not found"; all other network or HTTP failures report `Q0608`.
+HTTPS requests invoke the system `curl` executable with `--proto =https --tlsv1.2`, `--globoff` (so `{}` and `[]` in URLs are taken literally), a 120-second timeout, and a 10 MiB transfer size limit. `curl` writes to a freshly created file under `$QXIDE_HOME/registry/tmp/`, not the shared system temporary directory, and the file is removed afterwards. A response is accepted only when `curl` exits successfully with HTTP 200, so a transfer cut off midway (`curl` exit 18 after a 200 status) fails with `Q0608` and nothing is cached. HTTP 404 is treated as "not found"; all other network or HTTP failures report `Q0608`.
 
 **Decision:** No HTTP or TLS library is linked into `qxide` for now, keeping the binary small and avoiding additional dependencies. `curl` is preinstalled on Windows 10+, macOS, and most Linux distributions. A native HTTP client can be added later behind a Cargo feature.
 
@@ -487,7 +494,7 @@ Rendered without a source snippet, with optional `note:` and `help:` lines.
 | `Q0606` | Version conflict (incompatible requirements or self-dependency). |
 | `Q0607` | Checksum mismatch (index vs. lock or archive vs. lock). |
 | `Q0608` | Registry unreachable, download failed, or insecure URL (`http://`). |
-| `Q0609` | Malformed index entry or registry JSON. |
+| `Q0609` | Malformed registry JSON (`config.json`, `search.json`) or an index file without a single usable entry. |
 | `Q0610` | Unsafe or invalid archive. |
 | `Q0611` | Dependency not installed or lock file missing. |
 | `Q0612` | Lock file out of date. |
@@ -520,8 +527,9 @@ The six new dependencies (`semver`, `toml_edit`, `serde_json`, `sha2`, `tar`, `f
 All tests run without network access, without `gh`, and without touching the user's real home directory:
 
 - `src/lang/module_tests.rs`: module loading, visibility, conflicts, cycles, linking, and diagnostics using in-memory files.
-- `src/pkg/tests.rs`: version resolution, yanking, lock determinism, comment-preserving manifest edits, archive determinism, malicious archive rejection (`..`, absolute paths, drive-letter paths, symlinks, hard links), and checksum-first installs.
-- `tests/packages.rs`: end-to-end CLI tests against a temporary file registry covering `publish`, `add`, `install`, `run`, `remove`, lock reproducibility across caches and newer releases, `--locked`, stale locks, tampered archives and tampered index checksums, missing packages/versions, yanked versions, offline errors, import cycles and private functions inside a project, and the committed path-dependency example.
+- `src/pkg/tests.rs`: version resolution, yanking, lock determinism, comment-preserving manifest edits, archive determinism, malicious archive rejection (`..`, absolute paths, drive-letter paths, symlinks, hard links, and non-portable or case-colliding paths), checksum-first installs, skipping unusable index lines, build-metadata versions, `curl` exit-status handling, lock name validation, whole-graph lock freshness (transitive requirements, edited path packages, unreachable entries, and self-dependencies), and `tests/data/semver_cases.json`.
+- `tests/packages.rs`: end-to-end CLI tests against a temporary file registry covering `publish`, `add`, `install`, `run`, `remove`, lock reproducibility across caches and newer releases, `--locked`, stale locks (including transitive requirement changes), tampered archives and tampered index checksums, missing packages/versions, yanked versions, build-metadata look-alike versions, failed and truncated HTTPS downloads through a stand-in `curl` built from `tests/support/fake_curl.rs`, lock names that try to leave the cache, offline errors, import cycles and private functions inside a project, and the committed path-dependency example.
+- `ci/test_registry_scripts.py`: tests `registry-template/scripts` (`validate.py` and `build_search.py`) against throwaway registries, including pull-request checks in a temporary git repository; requires Python 3.11+ and `git`, runs with `python -I ci/test_registry_scripts.py`, and runs in the `registry-scripts` CI job.
 - `examples/packages/bell-utils`: example library package containing `src/lib.qx` and `src/gates.qx`.
 - `examples/packages/bell-app`: example application using `bell-utils` via a path dependency with a committed `qxide.lock`.
 
