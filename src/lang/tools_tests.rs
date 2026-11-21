@@ -203,7 +203,13 @@ fn known_codes() -> Vec<String> {
 
 #[test]
 fn explain_catalog_covers_every_code_once_in_order() {
-    let codes: Vec<String> = explain::entries().into_iter().map(|(c, _)| c).collect();
+    let all: Vec<String> = explain::entries().into_iter().map(|(c, _)| c).collect();
+    let mut sorted = all.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(all, sorted, "catalog entries must be unique and in order");
+    // Package-manager codes belong to the binary's `pkg` module; src/pkg/tests.rs checks them.
+    let codes: Vec<String> = all.into_iter().filter(|c| !c.starts_with("Q06")).collect();
     assert_eq!(codes, known_codes());
 }
 
@@ -236,6 +242,11 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
     ];
     for (code, entry) in explain::entries() {
         let blocks = qx_blocks(&entry);
+        // Package-manager errors come from commands, not from a `.qx` program.
+        if code.starts_with("Q06") {
+            assert!(blocks.is_empty(), "{code}");
+            continue;
+        }
         if untriggerable.contains(&code.as_str()) {
             assert!(blocks.is_empty(), "{code}");
             continue;

@@ -750,3 +750,51 @@ fn semver_cases_match_the_registry_checker() {
         assert_eq!(Entry::parse(&line.to_string()).is_ok(), ok, "req {text:?}");
     }
 }
+
+// Every variant once, in order: the exhaustive `match` breaks the build when a variant is added
+// without being linked into this chain.
+fn all_codes() -> Vec<Code> {
+    use Code::*;
+    let next = |c: Code| match c {
+        ManifestNotFound => Some(InvalidManifest),
+        InvalidManifest => Some(InvalidLock),
+        InvalidLock => Some(PackageNotFound),
+        PackageNotFound => Some(NoMatchingVersion),
+        NoMatchingVersion => Some(VersionConflict),
+        VersionConflict => Some(ChecksumMismatch),
+        ChecksumMismatch => Some(RegistryUnavailable),
+        RegistryUnavailable => Some(InvalidIndex),
+        InvalidIndex => Some(BadArchive),
+        BadArchive => Some(NotInstalled),
+        NotInstalled => Some(LockOutdated),
+        LockOutdated => Some(LanguageVersion),
+        LanguageVersion => Some(PublishRejected),
+        PublishRejected => Some(Offline),
+        Offline => Some(Io),
+        Io => Some(NotADependency),
+        NotADependency => None,
+    };
+    std::iter::successors(Some(ManifestNotFound), |&c| next(c)).collect()
+}
+
+// `qxide explain` covers the package-manager codes too, from the same catalog.
+#[test]
+fn explain_covers_every_package_code() {
+    let codes = all_codes();
+    for (i, code) in codes.iter().enumerate() {
+        // Consecutive numbers, so a variant skipped in the chain above shows up as a gap.
+        assert_eq!(code.as_str(), format!("Q{:04}", 601 + i));
+        let entry = crate::lang::explain(code.as_str())
+            .unwrap_or_else(|| panic!("no catalog entry for {}", code.as_str()));
+        assert!(
+            entry.starts_with(&format!("{}: ", code.as_str())),
+            "{entry}"
+        );
+    }
+    let next = format!("Q{:04}", 601 + codes.len());
+    assert_eq!(
+        crate::lang::explain(&next),
+        None,
+        "catalog has an entry for unknown {next}"
+    );
+}

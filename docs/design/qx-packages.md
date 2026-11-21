@@ -544,6 +544,5 @@ All tests run without network access, without `gh`, and without touching the use
 - The registry index has no cryptographic signatures yet.
 - `qxide search` downloads the entire `search.json`.
 - Only functions can be exported; exporting constants or types is not implemented yet.
-- `qxide new` (being added on the separate `cli-commands` branch) should generate `qxide.toml`, `src/main.qx`, and a `.gitignore` containing `target/`, and `qxide explain` on that branch should cover `Q05xx` and `Q06xx`.
 - The `Qx.toml` filename referenced in older design documents is superseded by `qxide.toml`.
 - A Korean translation of this document has not been written yet.
