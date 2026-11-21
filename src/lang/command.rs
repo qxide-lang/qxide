@@ -94,7 +94,12 @@ impl CallError {
         CallError {
             code: first.map_or("Q0412", |d| d.code.as_str()),
             message: first.map_or_else(String::new, |d| d.message.clone()),
-            diagnostics: diags.iter().map(|d| diag_info(map, d)).collect(),
+            // As many as are rendered; the rendered report ends with the Q0418 summary.
+            diagnostics: diags
+                .iter()
+                .take(Limits::APP.max_diagnostics)
+                .map(|d| diag_info(map, d))
+                .collect(),
             // Every caller serves a desktop app, so the app's report limits apply.
             rendered: super::diag::render_all(diags, &Limits::APP, |d| map.render(d, &Limits::APP)),
         }
@@ -380,7 +385,7 @@ fn convert(param: &str, cmd: &str, ty: Ty, arg: &JsArg) -> Result<Value, CallErr
             _ => return Err(bad()),
         }),
         (Ty::Boolean, JsArg::Bool(b)) => Value::Bool(*b),
-        (Ty::String, JsArg::Str(s)) => Value::Str(s.clone()),
+        (Ty::String, JsArg::Str(s)) => Value::Str(s.as_str().into()),
         _ => return Err(bad()),
     })
 }
@@ -449,7 +454,7 @@ pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, 
         Value::Int(n) => Ret::Int(n),
         Value::Double(v) => Ret::Double(v),
         Value::Bool(b) => Ret::Bool(b),
-        Value::Str(s) => Ret::Str(s),
+        Value::Str(s) => Ret::Str(s.to_string()),
         _ => Ret::Null,
     };
     let as_ret = |bits: Vec<bool>| {
@@ -498,14 +503,27 @@ pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, 
     }
     // Group by the returned bits, or by the whole measurement record for classical returns.
     let key_bits: &[qxide::Bit] = returned.as_deref().unwrap_or(&e.measured);
+    // Each new record adds its JSON row to the output budget, as in `qxide run` (B-03).
     let mut groups: HashMap<Vec<bool>, (u64, String)> = HashMap::new();
+    let mut bytes: u64 = 0;
     for shot in sims {
         let shot = shot.map_err(fail)?;
         let key: Vec<bool> = key_bits.iter().map(|&b| shot.get(b)).collect();
-        groups
-            .entry(key)
-            .or_insert_with(|| (0, render_output(&e.output, Some(&shot))))
-            .0 += 1;
+        if let Some(group) = groups.get_mut(&key) {
+            group.0 += 1;
+            continue;
+        }
+        let text = render_output(&e.output, Some(&shot));
+        // `{"value":[false,..],"count":N,"output":".."},`: at most 6 bytes per bit plus 64.
+        bytes = bytes.saturating_add(6 * key.len() as u64 + text.len() as u64 + 64);
+        if bytes > c.limits.max_output_bytes {
+            return Err(fail(Diagnostic::new(
+                Code::OutputLimit,
+                at,
+                msg::shots_output_limit(c.shots, c.limits.max_output_bytes),
+            )));
+        }
+        groups.insert(key, (1, text));
     }
     let rows = sorted_groups(groups)
         .into_iter()

@@ -285,3 +285,120 @@ fn m10_qasm_text_stops_at_the_output_limit() {
     // `run` prints one line, so the same program runs under the same limits.
     run_limited(src, 1, limits).unwrap_or_else(|Failure(d)| panic!("{d}"));
 }
+
+// ---- String values and std results (app framework) ----
+// Building, comparing, measuring and passing text is work in proportion to its length, so it is
+// charged to the step budget per byte; reading a `String` variable shares the text.
+
+/// `String s` of `2^doublings` bytes, built by repeated concatenation.
+fn doubled(doublings: usize) -> String {
+    format!("String s = \"x\";\n    for i in 0..{doublings} {{\n        s = s + s;\n    }}\n")
+}
+
+/// Budgets that admit building a 1 MiB string but not repeating work on it a thousand times.
+fn medium() -> Limits {
+    Limits {
+        max_steps: 1 << 26,
+        ..Limits::CLI
+    }
+}
+
+#[test]
+fn str_doubling_stops_at_the_step_limit() {
+    let src = format!(
+        "void main() {{\n    {}    println(\"{{}}\", len(s));\n}}\n",
+        doubled(24)
+    );
+    within(20, move || {
+        fails_with(run_limited(&src, 1, small()), "Q0413")
+    });
+}
+
+#[test]
+fn str_variable_reads_do_not_copy_the_text() {
+    let src = format!(
+        "void main() {{\n    {}    for i in 0..200000 {{\n        String t = s;\n    }}\n    println(\"done\");\n}}\n",
+        doubled(20)
+    );
+    let out = within(20, move || run_limited(&src, 1, medium()))
+        .unwrap_or_else(|Failure(d)| panic!("{d}"));
+    assert_eq!(out, "done\n");
+}
+
+#[test]
+fn str_len_is_charged_per_byte() {
+    let src = format!(
+        "void main() {{\n    {}    int n = 0;\n    for i in 0..1000 {{\n        n = len(s);\n    }}\n    println(\"{{}}\", n);\n}}\n",
+        doubled(20)
+    );
+    within(20, move || {
+        fails_with(run_limited(&src, 1, medium()), "Q0413")
+    });
+}
+
+#[test]
+fn str_comparison_is_charged_per_byte() {
+    let src = format!(
+        "void main() {{\n    {}    String t = s + \"\";\n    boolean same = false;\n    for i in 0..1000 {{\n        same = s == t;\n    }}\n    println(\"{{}}\", same);\n}}\n",
+        doubled(20)
+    );
+    within(20, move || {
+        fails_with(run_limited(&src, 1, medium()), "Q0413")
+    });
+}
+
+#[test]
+fn str_literals_are_charged_each_time_they_are_built() {
+    let src = format!(
+        "void main() {{\n    for i in 0..100000 {{\n        String t = \"{}\";\n    }}\n}}\n",
+        "x".repeat(1000)
+    );
+    within(20, move || {
+        fails_with(run_limited(&src, 1, small()), "Q0413")
+    });
+}
+
+/// `std.fs` that never touches the disk: `read_text` returns 1 MiB, the rest succeed.
+struct BigFiles;
+
+impl stdlib::Host for BigFiles {
+    fn call(&mut self, _: &str, function: &str, _: Vec<stdlib::HostValue>) -> stdlib::StdResult {
+        Ok(match function {
+            "read_text" => stdlib::HostValue::Str("y".repeat(1 << 20)),
+            "exists" => stdlib::HostValue::Bool(true),
+            _ => stdlib::HostValue::Unit,
+        })
+    }
+}
+
+fn run_with_files(body: &str, limits: Limits) -> Result<String, Failure> {
+    let src = format!("import std.fs;\n\nvoid main() {{\n    {body}\n}}\n");
+    let mut input = Input::file("t.qx", &src);
+    input.perms = stdlib::Permissions::cli(true);
+    run_input_with(&input, 1, 0, limits, &mut BigFiles)
+}
+
+#[test]
+fn std_results_are_charged_per_byte() {
+    let body =
+        "String t = \"\";\n    for i in 0..1000 {\n        t = fs.read_text(\"a.txt\");\n    }";
+    within(20, move || {
+        fails_with(run_with_files(body, medium()), "Q0413")
+    });
+    // One read of the same file is well within the budget.
+    within(20, move || {
+        run_with_files("String t = fs.read_text(\"a.txt\");", medium())
+    })
+    .unwrap_or_else(|Failure(d)| panic!("{d}"));
+}
+
+#[test]
+fn std_arguments_are_charged_per_byte() {
+    let body = format!(
+        "{}    for i in 0..1000 {{\n        fs.write_text(\"a.txt\", s);\n    }}",
+        doubled(20)
+    );
+    within(20, move || {
+        fails_with(run_with_files(&body, medium()), "Q0413")
+    });
+}

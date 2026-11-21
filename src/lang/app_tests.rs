@@ -507,6 +507,68 @@ fn cancelling_stops_between_shots() {
     let _ = Ret::Null;
 }
 
+// B-03 for commands: each distinct record of a multi-shot call adds its row to the output budget.
+#[test]
+fn command_counts_stop_at_the_output_limit() {
+    let src = "public BitReg spread() {\n    QReg q = qreg(20);\n    for i in 0..20 {\n        h(q[i]);\n    }\n    return measure(q);\n}\n";
+    let commands = ["spread".to_string()];
+    let mut input = Input::file("app.qx", src);
+    input.perms = Permissions::app(&[]);
+    let call = |limits: Limits| {
+        command::call(
+            &input,
+            &Call {
+                module: "app",
+                commands: &commands,
+                name: "spread",
+                args: &[],
+                shots: 100_000,
+                seed: 1,
+                limits,
+            },
+            &mut LogOnly::default(),
+        )
+    };
+    let small = Limits {
+        max_output_bytes: 64 << 10,
+        ..Limits::APP
+    };
+    let e = call(small).map(|r| r.to_json().len()).unwrap_err();
+    assert_eq!(e.code, "Q0415", "{}", e.rendered);
+    // The same call fits the app limits: about 100,000 rows of 20 bits.
+    let json = call(Limits::APP).unwrap().to_json();
+    assert!(json.len() > 1 << 20, "{} bytes", json.len());
+}
+
+// Diagnostics sent to the page are capped like rendered ones (M-01).
+#[test]
+fn command_errors_list_at_most_max_diagnostics() {
+    let src = format!(
+        "public int many() {{\n{}    return 0;\n}}\n",
+        "    a;\n".repeat(500)
+    );
+    let commands = ["many".to_string()];
+    let mut input = Input::file("app.qx", &src);
+    input.perms = Permissions::app(&[]);
+    let e = command::call(
+        &input,
+        &Call {
+            module: "app",
+            commands: &commands,
+            name: "many",
+            args: &[],
+            shots: 1,
+            seed: 1,
+            limits: Limits::APP,
+        },
+        &mut LogOnly::default(),
+    )
+    .map(|r| r.to_json())
+    .unwrap_err();
+    assert_eq!(e.diagnostics.len(), Limits::APP.max_diagnostics);
+    assert!(e.rendered.contains("Q0418"), "{}", e.rendered);
+}
+
 // M-13: programs typed into Qxide Studio (`std.qxide.run`) run under the desktop app limits,
 // not the CLI's 1 GiB state vector.
 #[test]

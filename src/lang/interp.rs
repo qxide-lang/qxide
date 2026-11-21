@@ -83,7 +83,7 @@ pub enum Value {
     Int(i64),
     Double(f64),
     Bool(bool),
-    Str(String),
+    Str(Rc<str>),
     Bit(Bit),
     Bits(Rc<[Bit]>),
     ShotView(Rc<[Bit]>, BitsFmt),
@@ -181,6 +181,11 @@ struct Interp<'p, 'h> {
 // `OPENQASM 3.0;`, `include`, `qubit[n] q;` and `bit[n] c;` lines.
 const QASM_HEADER_BYTES: u64 = 96;
 
+// Steps per byte of `String` text built, compared, measured or passed to or from the host. Every
+// live byte was charged when it was built, so the step budget also bounds string memory:
+// `max_steps / 8` bytes (128 MiB for the CLI, 256 MiB per desktop-app call).
+const STR_BYTE_STEPS: u64 = 8;
+
 /// Runs `main` once, recording its circuit. Std calls go to `host`.
 pub fn elaborate(p: &Program, host: &mut dyn Host, limits: &Limits) -> R<Elaborated> {
     elaborate_call(p, "main", Vec::new(), host, limits).map(|(e, _)| e)
@@ -259,24 +264,59 @@ fn debug_len(v: f64) -> usize {
     n.0
 }
 
-// A string literal used as a value; `println` reads its format string from the AST instead.
-fn str_lit(pieces: &[FmtPiece], at: Span) -> R<Value> {
-    let mut text = String::new();
-    for p in pieces {
-        match p {
-            FmtPiece::Lit(t) => text.push_str(t),
-            FmtPiece::Hole => return Err(internal(at)),
-        }
-    }
-    Ok(Value::Str(text))
-}
-
 fn internal(at: Span) -> Diagnostic {
     // Only reachable if the checker and interpreter disagree.
     Diagnostic::new(Code::Internal, at, msg::internal_error())
 }
 
 impl<'p> Interp<'p, '_> {
+    // Text work in proportion to its length (`STR_BYTE_STEPS` per byte), charged before it is done.
+    fn charge_text(&mut self, bytes: usize, at: Span) -> R<()> {
+        self.charge((bytes as u64).saturating_mul(STR_BYTE_STEPS), at)
+    }
+
+    // A string literal used as a value; `println` reads its format string from the AST instead.
+    // Each evaluation builds a new `String`, so a literal in a loop is charged every time.
+    fn str_lit(&mut self, pieces: &[FmtPiece], at: Span) -> R<Value> {
+        let mut len = 0;
+        for p in pieces {
+            match p {
+                FmtPiece::Lit(t) => len += t.len(),
+                FmtPiece::Hole => return Err(internal(at)),
+            }
+        }
+        self.charge_text(len, at)?;
+        let mut text = String::with_capacity(len);
+        for p in pieces {
+            if let FmtPiece::Lit(t) = p {
+                text.push_str(t);
+            }
+        }
+        Ok(Value::Str(text.into()))
+    }
+
+    // `String` `+` (either side a `String`), `==` and `!=`, charged by the text they touch.
+    fn str_binary(&mut self, op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
+        match op {
+            BinOp::Add => {
+                let (a, b) = (concat_text(&l, at)?, concat_text(&r, at)?);
+                self.charge_text(a.len() + b.len(), at)?;
+                let mut text = String::with_capacity(a.len() + b.len());
+                text.push_str(&a);
+                text.push_str(&b);
+                Ok(Value::Str(text.into()))
+            }
+            BinOp::Eq | BinOp::Ne => {
+                let (Value::Str(a), Value::Str(b)) = (&l, &r) else {
+                    return Err(internal(at));
+                };
+                self.charge_text(a.len().min(b.len()), at)?;
+                Ok(Value::Bool((a == b) == (op == BinOp::Eq)))
+            }
+            _ => Err(internal(at)),
+        }
+    }
+
     fn charge(&mut self, steps: u64, at: Span) -> R<()> {
         self.steps = self.steps.saturating_add(steps);
         if self.steps > self.limits.max_steps {
@@ -559,7 +599,7 @@ impl<'p> Interp<'p, '_> {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Double(v) => Ok(Value::Double(*v)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
-            ExprKind::Str(pieces) => str_lit(pieces, e.span),
+            ExprKind::Str(pieces) => self.str_lit(pieces, e.span),
             ExprKind::Var(name) => self.var(f, name, e.span),
             ExprKind::Call { name, args } => self.call(c, f, name, args, e.span),
             ExprKind::Index { base, index } => self.index(c, f, base, index, e.span),
@@ -665,6 +705,9 @@ impl<'p> Interp<'p, '_> {
             _ => {}
         }
         let r = self.expr(c, f, rhs)?;
+        if matches!(l, Value::Str(_)) || matches!(r, Value::Str(_)) {
+            return self.str_binary(*op, l, r, span);
+        }
         binary(*op, l, r, span)
     }
 
@@ -853,7 +896,10 @@ impl<'p> Interp<'p, '_> {
 
     fn len(&mut self, c: &mut Circuit, f: &mut Frame<'p>, arg: &'p Expr, span: Span) -> R<Value> {
         match self.expr(c, f, arg)? {
-            Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+            Value::Str(s) => {
+                self.charge_text(s.len(), span)?;
+                Ok(Value::Int(s.chars().count() as i64))
+            }
             Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
             Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
             _ => Err(internal(span)),
@@ -883,7 +929,8 @@ impl<'p> Interp<'p, '_> {
                     Some(Value::Int(n)) => OutPiece::Text(n.to_string()),
                     Some(Value::Double(v)) => OutPiece::Text(format!("{v:?}")),
                     Some(Value::Bool(b)) => OutPiece::Text(b.to_string()),
-                    Some(Value::Str(s)) => OutPiece::Text(s),
+                    // `emit` charges the copy to the output budget.
+                    Some(Value::Str(s)) => OutPiece::Text(s.to_string()),
                     Some(Value::Bit(b)) => OutPiece::Bit(b),
                     Some(Value::Bits(v)) => OutPiece::Bits(v, BitsFmt::Array),
                     Some(Value::ShotView(v, fmt)) => OutPiece::Bits(v, fmt),
@@ -985,7 +1032,10 @@ impl<'p> Interp<'p, '_> {
                 Value::Int(n) => HostValue::Int(n),
                 Value::Double(v) => HostValue::Double(v),
                 Value::Bool(b) => HostValue::Bool(b),
-                Value::Str(s) => HostValue::Str(s),
+                Value::Str(s) => {
+                    self.charge_text(s.len(), a.span)?;
+                    HostValue::Str(s.to_string())
+                }
                 _ => return Err(internal(a.span)),
             });
         }
@@ -996,7 +1046,12 @@ impl<'p> Interp<'p, '_> {
             Ok(HostValue::Int(n)) => Ok(Value::Int(n)),
             Ok(HostValue::Double(v)) => Ok(Value::Double(v)),
             Ok(HostValue::Bool(b)) => Ok(Value::Bool(b)),
-            Ok(HostValue::Str(s)) => Ok(Value::Str(s)),
+            // Hosts cap what they read (16 MiB for `std.fs` and `std.http`); the program pays for
+            // bringing it in like for text it builds itself.
+            Ok(HostValue::Str(s)) => {
+                self.charge_text(s.len(), span)?;
+                Ok(Value::Str(s.into()))
+            }
             Err(e) => {
                 let code = match e.kind {
                     StdErrorKind::Unavailable => Code::StdUnavailable,
@@ -1110,13 +1165,6 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
         (Value::Double(a), Value::Int(b)) => double_op(op, a, b as f64, at)?,
         (Value::Int(a), Value::Double(b)) => double_op(op, a as f64, b, at)?,
         (Value::Double(a), Value::Double(b)) => double_op(op, a, b, at)?,
-        (Value::Str(a), b) if op == Add => Value::Str(a + &concat_text(b, at)?),
-        (a, Value::Str(b)) if op == Add => Value::Str(concat_text(a, at)? + &b),
-        (Value::Str(a), Value::Str(b)) => match op {
-            Eq => Value::Bool(a == b),
-            Ne => Value::Bool(a != b),
-            _ => return Err(internal(at)),
-        },
         (Value::Bool(a), Value::Bool(b)) => match op {
             And => Value::Bool(a && b),
             Or => Value::Bool(a || b),
@@ -1129,12 +1177,13 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
 }
 
 // The text of a build-time value in `String` concatenation, spelled like `println` prints it.
-fn concat_text(v: Value, at: Span) -> R<String> {
+fn concat_text(v: &Value, at: Span) -> R<std::borrow::Cow<'_, str>> {
+    use std::borrow::Cow;
     Ok(match v {
-        Value::Int(n) => n.to_string(),
-        Value::Double(v) => format!("{v:?}"),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => s,
+        Value::Int(n) => Cow::Owned(n.to_string()),
+        Value::Double(v) => Cow::Owned(format!("{v:?}")),
+        Value::Bool(b) => Cow::Owned(b.to_string()),
+        Value::Str(s) => Cow::Borrowed(s),
         _ => return Err(internal(at)),
     })
 }
