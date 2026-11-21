@@ -6,6 +6,7 @@ mod check;
 mod diag;
 mod explain;
 mod fmt;
+pub mod ide;
 mod interp;
 mod lexer;
 mod link;
@@ -206,6 +207,12 @@ pub fn format(name: &str, src: &str) -> Result<String, Failure> {
 /// `qxide explain`: the catalog entry for an error code such as `Q0302` (case-insensitive).
 pub fn explain(arg: &str) -> Option<String> {
     explain::explain(&explain::normalize(arg)?)
+}
+
+/// Every catalog entry as (code, text), for tests outside `lang`.
+#[cfg(test)]
+pub fn explain_entries() -> Vec<(String, String)> {
+    explain::entries()
 }
 
 /// `qxide qasm`: elaborate once and print the OpenQASM 3 of the resulting circuit.

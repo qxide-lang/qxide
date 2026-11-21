@@ -1,0 +1,89 @@
+{
+  "name": "qxide",
+  "displayName": "Qxide",
+  "description": "Syntax highlighting and language server support for Qxide (.qx): diagnostics, formatting, and completion",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "qxide-lang",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qxide-lang/qxide",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "qx",
+        "aliases": [
+          "Qxide",
+          "qx"
+        ],
+        "extensions": [
+          ".qx"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "qx",
+        "scopeName": "source.qx",
+        "path": "./syntaxes/qx.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Qxide",
+      "properties": {
+        "qxide.path": {
+          "type": "string",
+          "default": "qxide",
+          "scope": "machine-overridable",
+          "description": "Path to the `qxide` executable used to run the language server. Defaults to `qxide` on `PATH`. Changing this setting restarts the language server."
+        },
+        "qxide.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces communication between VS Code and the Qxide language server in the output channel."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "qxide.restartServer",
+        "category": "Qxide",
+        "title": "Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "vscode-languageclient": "11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.91.0",
+    "typescript": "5.9.3",
+    "vscode-jsonrpc": "10.0.0",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
+  }
+}
