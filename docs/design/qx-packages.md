@@ -66,6 +66,7 @@ dev-only  = { path = "../dev-only" }                # path-only: cannot be publi
 - Package names consist of lowercase ASCII letters, digits, and single hyphens. They must start with a letter, must not end with a hyphen, are at most 64 characters long, and cannot contain underscores.
 - In `.qx` source files, a package is addressed by its import name, formed by replacing hyphens with underscores (`bell-utils` becomes `bell_utils`). Because underscores are disallowed in package names, the mapping between package names and import names is one-to-one.
 - Dependency values are either a version requirement string or an inline table with `version` and/or `path`. Bare version strings are caret requirements (`"0.1.0"` is equivalent to `^0.1.0`).
+- A `path` is relative to the project directory and may use `..` (for example `../local-pkg`). Absolute paths, paths starting with `/` or `\` (including Windows network paths such as `//host/share`), and paths containing `:` (drive letters) are rejected with `Q0602`, and the same `path+` sources in `qxide.lock` with `Q0603`, so a cloned project cannot point `qxide` at an arbitrary directory or network share by an absolute path.
 - `qxide add` and `qxide remove` edit `qxide.toml` using a format-preserving TOML editor (`toml_edit`), preserving comments and layout.
 
 ## 3. Modules and import syntax

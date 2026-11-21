@@ -331,6 +331,47 @@ fn lock_entries_cannot_escape_the_cache() {
     env.ok(&app, &["run"]);
 }
 
+// B-P13: a cloned project's manifest or lock could name any directory, including a network path
+// such as `//host/share/x`. Path dependencies stay relative (`../shared` still works).
+#[test]
+fn path_dependencies_must_be_relative() {
+    let env = Env::new("abspath");
+    let mid = env.lib("mid", "0.1.0", "");
+    let absolute = mid.to_str().unwrap().replace('\\', "/");
+    for path in [
+        absolute.as_str(),
+        "/mid",
+        "//host/share/mid",
+        "C:/mid",
+        "C:mid",
+    ] {
+        let app = env.app("demo", PLAIN_MAIN);
+        let m = format!(
+            "{}\n[dependencies]\nmid = {{ path = \"{path}\" }}\n",
+            read(&app.join("qxide.toml"))
+        );
+        std::fs::write(app.join("qxide.toml"), m).unwrap();
+        env.fails(&app, &["install"], "Q0602");
+        env.fails(&app, &["run"], "Q0602");
+        let _ = std::fs::remove_dir_all(&app);
+    }
+    // `qxide add --path` with an absolute directory leaves the manifest as it was.
+    let app = env.app("demo", PLAIN_MAIN);
+    let before = read(&app.join("qxide.toml"));
+    env.fails(&app, &["add", "mid", "--path", &absolute], "Q0602");
+    assert_eq!(read(&app.join("qxide.toml")), before);
+    // The relative form works, and its lock entry cannot be pointed elsewhere.
+    env.ok(&app, &["add", "mid", "--path", "../mid-0.1.0"]);
+    env.ok(&app, &["run"]);
+    for source in [format!("path+{absolute}"), "path+//host/share/mid".into()] {
+        env.edit_lock(&app, |l| l.replace("path+../mid-0.1.0", &source));
+        env.fails(&app, &["run"], "Q0603");
+        env.fails(&app, &["install", "--locked"], "Q0603");
+        env.edit_lock(&app, |l| l.replace(&source, "path+../mid-0.1.0"));
+    }
+    env.ok(&app, &["run"]);
+}
+
 #[test]
 fn checksums_are_enforced() {
     let env = Env::new("cksum");

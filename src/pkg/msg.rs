@@ -54,6 +54,12 @@ pub fn reason_bad_dep(name: &str) -> String {
     format!("dependency `{name}` must be a version string or a table with `version` and/or `path`")
 }
 
+pub fn reason_absolute_path(name: &str, path: &str) -> String {
+    format!(
+        "path of dependency `{name}` must be relative to the project, like `../{name}`, not `{path}`"
+    )
+}
+
 pub fn reason_lock_format(version: i64) -> String {
     format!("missing or unsupported lock file version, expected {version}")
 }
