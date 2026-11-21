@@ -75,6 +75,19 @@ pub struct Elaborated {
     pub counts: OpCounts,
     // Upper bound of the length of `circuit.to_qasm()`, so `qxide qasm` can refuse before building it.
     pub qasm_bytes: u64,
+    // What the run used of `Limits`, for measuring the defaults.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub usage: Usage,
+}
+
+/// Budgets an elaboration used, for measuring the defaults (src/lang/app_limits_tests.rs).
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Usage {
+    pub steps: u64,
+    pub ops: u64,
+    pub out_bytes: u64,
+    pub cond_depth: usize,
 }
 
 // Registers share their storage, so reading a variable or indexing `r[i]` copies no qubit list (B-09).
@@ -176,6 +189,7 @@ struct Interp<'p, 'h> {
     counts: OpCounts,
     // `if` blocks on measured bits that enclose the operations being recorded, across calls.
     cond_depth: usize,
+    peak_cond_depth: usize,
 }
 
 // `OPENQASM 3.0;`, `include`, `qubit[n] q;` and `bit[n] c;` lines.
@@ -217,6 +231,7 @@ pub fn elaborate_call(
         qasm_bytes: QASM_HEADER_BYTES,
         counts: OpCounts::default(),
         cond_depth: 0,
+        peak_cond_depth: 0,
     };
     let f = *it.fns.get(name).ok_or_else(|| internal(Span::default()))?;
     let mut c = Circuit::new();
@@ -229,6 +244,12 @@ pub fn elaborate_call(
             slots: it.slots,
             counts: it.counts,
             qasm_bytes: it.qasm_bytes,
+            usage: Usage {
+                steps: it.steps,
+                ops: it.ops,
+                out_bytes: it.out_bytes,
+                cond_depth: it.peak_cond_depth,
+            },
         },
         ret,
     ))
@@ -564,6 +585,7 @@ impl<'p> Interp<'p, '_> {
         // Checker forbids `return` here, so the bodies always fall through.
         self.record(Rec::If, i.cond.span)?;
         self.cond_depth += 1;
+        self.peak_cond_depth = self.peak_cond_depth.max(self.cond_depth);
         let mut res = Ok(Flow::Next);
         c.if_one(bit, |c| res = self.block(c, f, &i.then));
         self.cond_depth -= 1;
@@ -571,6 +593,7 @@ impl<'p> Interp<'p, '_> {
         if let Some(els) = &i.els {
             self.record(Rec::If, i.cond.span)?;
             self.cond_depth += 1;
+            self.peak_cond_depth = self.peak_cond_depth.max(self.cond_depth);
             let mut res = Ok(Flow::Next);
             c.if_zero(bit, |c| {
                 res = match els {

@@ -140,6 +140,8 @@ const CALL_LIMITS: lang::Limits = lang::Limits::APP;
 const MAX_WORKERS: usize = 4;
 /// Largest script handed to the webview at once (a call result, an event, a dev log line).
 pub const MAX_SCRIPT_BYTES: usize = 32 << 20;
+// A call's output budget is sized to what can still reach the page.
+const _: () = assert!(CALL_LIMITS.max_output_bytes as usize <= MAX_SCRIPT_BYTES);
 /// Longest page token accepted in a message.
 const MAX_PAGE_TOKEN: usize = 64;
 
@@ -711,6 +713,22 @@ mod tests {
         }
         let n = ids.lock().unwrap().len();
         assert!(n <= 2, "16 queued calls used {n} threads");
+    }
+
+    // The bell-app example at the most shots a call accepts stays within the app limits.
+    #[test]
+    fn example_app_runs_at_the_shot_limit() {
+        let src = include_str!("../../../examples/apps/bell-app/src/app.qx");
+        let app = bundled_app(
+            src,
+            "measure_bell",
+            "public void unused() {\n}\n",
+            &["log", "time", "fs"],
+        );
+        let shots = lang::command::MAX_SHOTS;
+        let r = call_app(&app, "measure_bell", &[], shots, 1, &mut LogOnly::default()).unwrap();
+        let json = r.unwrap_or_else(|e| panic!("{e}"));
+        assert!(json.contains("\"counts\":["), "{json}");
     }
 
     // The deepest legal nesting under the deepest recursion runs on a worker like in `qxide run`.

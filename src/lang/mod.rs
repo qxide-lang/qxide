@@ -36,6 +36,9 @@ mod app_tests;
 #[cfg(test)]
 mod limits_tests;
 
+#[cfg(test)]
+mod app_limits_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -489,19 +492,24 @@ impl Limits {
     };
 
     /// Each call of a desktop app (commands and `std.qxide.run`); the runtime bounds how many
-    /// run at once, so the total stays within one budget.
+    /// run at once, so the total stays within one budget. Calls can be cancelled from the page,
+    /// so time budgets are larger than the CLI's; memory budgets are per call and four calls may
+    /// run at once. docs/security/EXECUTION_LIMITS_FIXES.md (part 2) records the measurements.
     #[allow(dead_code)]
     pub const APP: Limits = Limits {
         max_state_vector_qubits: Some(APP_STATE_VECTOR_QUBITS),
         stabilizer_bytes: APP_STABILIZER_BYTES,
         scope: LimitScope::App,
-        max_steps: Limits::CLI.max_steps,
-        max_ops: Limits::CLI.max_ops,
-        max_sim_work: Limits::CLI.max_sim_work,
-        max_output_bytes: Limits::CLI.max_output_bytes,
-        max_diagnostics: Limits::CLI.max_diagnostics,
-        max_line_chars: Limits::CLI.max_line_chars,
-        max_cond_depth: Limits::CLI.max_cond_depth,
+        max_steps: 1 << 31,
+        // About 40 bytes of circuit per operation: 160 MiB per call.
+        max_ops: 1 << 22,
+        // One shot cannot be cancelled, so this stays at the CLI's worst case.
+        max_sim_work: 1 << 36,
+        // Anything larger could not reach the page (`MAX_SCRIPT_BYTES` in the runtime, Q0716).
+        max_output_bytes: 32 << 20,
+        max_diagnostics: 100,
+        max_line_chars: 240,
+        max_cond_depth: 128,
     };
 }
 

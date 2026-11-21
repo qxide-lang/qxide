@@ -507,6 +507,35 @@ fn cancelling_stops_between_shots() {
     let _ = Ret::Null;
 }
 
+// Elaboration asks the host every few thousand budget steps, so even a loop without statements
+// (which never reached the old per-statement poll) stops when the page cancels the call.
+#[test]
+fn cancelling_stops_a_loop_without_statements() {
+    let src =
+        "public int spin() {\n    for i in 0..9000000000000000000 {\n    }\n    return 0;\n}\n";
+    let commands = vec!["spin".to_string()];
+    let mut input = Input::file("app.qx", src);
+    input.perms = Permissions::app(&[]);
+    let mut host = CancelAfter {
+        left: std::cell::Cell::new(100),
+    };
+    let e = command::call(
+        &input,
+        &Call {
+            module: "app",
+            commands: &commands,
+            name: "spin",
+            args: &[],
+            shots: 1,
+            seed: 0,
+            limits: Limits::APP,
+        },
+        &mut host,
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "Q0713", "{}", e.rendered);
+}
+
 // B-03 for commands: each distinct record of a multi-shot call adds its row to the output budget.
 #[test]
 fn command_counts_stop_at_the_output_limit() {
@@ -589,4 +618,27 @@ fn studio_runs_use_app_limits() {
     };
     assert!(json.contains("\"Q0406\""), "{json}");
     assert!(json.contains("desktop app limit"), "{json}");
+}
+
+// M-10 in Studio: `std.qxide.qasm` checks the QASM size estimate against the app output limit
+// before it builds the text.
+#[test]
+fn studio_qasm_uses_the_app_output_limit() {
+    let src = "void main() {\n    QReg q = qreg(1000000);\n    h(q[0]);\n    for i in 1..1000000 {\n        cx(q[0], q[i]);\n        cx(q[i], q[0]);\n    }\n    discard(q);\n}\n";
+    let r = std::thread::Builder::new()
+        .stack_size(super::STACK_SIZE)
+        .spawn(move || super::studio::call("qasm", &[HostValue::Str(src.into())], &|| false))
+        .unwrap()
+        .join()
+        .unwrap()
+        .unwrap();
+    let HostValue::Str(json) = r else {
+        panic!("std.qxide.qasm returns a String");
+    };
+    assert!(json.len() < 1 << 20, "{} bytes", json.len());
+    assert!(
+        json.contains("\"Q0415\""),
+        "{}",
+        &json[..json.len().min(400)]
+    );
 }
