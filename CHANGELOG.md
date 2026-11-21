@@ -2,6 +2,13 @@
 
 Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` language) are listed here by version; older releases (0.5.0 and earlier) are documented on [GitHub Releases](https://github.com/qxide-lang/qxide/releases) and in `docs/release-notes/`.
 
+## [Unreleased]
+
+### Added
+
+- **Language server (`qxide lsp`)**: Added the `qxide lsp` subcommand (`docs/design/lsp.md`), which runs a Language Server Protocol server over stdio and accepts an optional `--stdio` flag. It publishes the same diagnostics and error codes as `qxide check` at the same lines and columns (using UTF-16 columns for the protocol), including in projects with `qxide.toml` and imports—errors inside an imported module are shown on the importing file's `import` lines, and unsaved edits of open modules are seen by the files that import them. Supported features include formatting via `qxide fmt`, hover (showing the `qxide explain` entry of the error under the cursor plus the declaration or signature of the name), document symbols, go to definition for locals, parameters, and functions (including across imported modules), and completion of keywords, types, built-in functions, `PI`, the file's and imported functions, local names in scope, and `BitReg` methods. Built on the `lsp-server` crate behind the default `cli` feature, so the library (`default-features = false`) still has no dependencies.
+- **VS Code extension**: Added a VS Code extension in `editors/vscode/` (not published to any marketplace yet) providing `.qx` syntax highlighting through a TextMate grammar, a language configuration, and a client that starts `qxide lsp`. It includes the `qxide.path` (defaulting to `qxide` from `PATH`) and `qxide.trace.server` settings and a `Qxide: Restart Language Server` command, requires VS Code 1.91 or newer, and can be built with `npm install` and `npm run compile` inside `editors/vscode`.
+
 ## [0.7.0] - 2026-11-21
 
 `qxide v0.7.0` builds on `v0.6.0` by adding modules (`import`, `public`), a package manager (`qxide.toml`, `qxide.lock`, and registry commands `add`, `remove`, `install`, `publish`, `search`), and new CLI commands (`qxide fmt`, `qxide repl`, `qxide explain`, and an updated `qxide new` project layout). This release also fixes seeded sampling so each shot uses an independent seed, tightens linearity soundness checks (`Q0315`), and rejects non-finite rotation angles (`Q0411`). For Rust library users, `qxide::shot_seed` and `Circuit::simulate_shots` are new, `rx`/`ry`/`rz` now panic on non-finite angles, and package manager dependencies are gated behind the default `cli` feature so `default-features = false` keeps the library dependency-free.
