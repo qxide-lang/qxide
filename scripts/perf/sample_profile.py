@@ -238,6 +238,9 @@ def main():
             if args.focus in where and where not in seen:
                 seen.add(where)
                 incl[(where, name)] += 1
+    if not own:
+        # Seen in about one run in four: the stacks lack the binary's frames. Running again helps.
+        print("warning: no sample reached a frame under --focus; run again")
     n = max(len(own), 1)
     print(f"wall {wall:.2f}s, {len(stacks)} thread samples, {len(own)} on the checking thread "
           f"(a frame under {args.focus})")
