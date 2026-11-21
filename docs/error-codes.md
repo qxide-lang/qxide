@@ -1996,7 +1996,7 @@ const r = await qxide.invoke("measure_bell", {}, { shots: 1000000 });
 
 ## Q0714: invalid command signature
 
-A function listed in `[app]` `commands` cannot be called from the page because it is missing, is not declared `public`, or accepts a parameter whose type is not `int`, `double`, `boolean`, or `String`. This error is reported when the app starts or by `qxide app build` because page code can only pass plain values across the boundary and cannot own qubits or measurement results.
+A function listed in `[app]` `commands` cannot be called from the page because it is missing, is not declared `public`, or accepts a parameter whose type is not `int`, `double`, `boolean`, or `String`. This error is reported by `qxide app dev` and `qxide app build` before the app runs, and by the runtime on each call, because page code can only pass plain values across the boundary and cannot own qubits or measurement results.
 
 Erroneous code example:
 
@@ -2020,7 +2020,7 @@ public Bit flip() {
 
 ## Q0715: invalid `[app]` section
 
-The `[app]` section of `qxide.toml` is malformed, such as when `commands` is missing or empty, a key has the wrong type, `permissions` names an unknown module, or `module` is not a valid module path. Reported by `qxide app dev`, `qxide app build`, and app startup, this validation catches configuration mistakes upfront so the runtime never launches with an inconsistent app manifest.
+The `[app]` section of `qxide.toml` is malformed, such as when `commands` is missing or empty, a key has the wrong type, `permissions` names an unknown module, or `module` is not a valid module path. Reported by `qxide app dev` and `qxide app build` (the built app carries an already checked manifest), this validation catches configuration mistakes upfront so the runtime never launches with an inconsistent app manifest.
 
 Erroneous code example:
 

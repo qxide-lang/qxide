@@ -1,0 +1,21 @@
+// Quantum teleportation of |1>: measured bits steer the corrections on bob.
+void main() {
+    Qubit msg = qubit();
+    Qubit alice = qubit();
+    Qubit bob = qubit();
+    x(msg);
+    h(alice);
+    cx(alice, bob);
+    cx(msg, alice);
+    h(msg);
+    Bit m0 = measure(msg);
+    Bit m1 = measure(alice);
+    if m1 {
+        x(bob);
+    }
+    if m0 {
+        z(bob);
+    }
+    Bit out = measure(bob);
+    println("bob={}", out);
+}

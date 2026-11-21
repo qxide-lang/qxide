@@ -1092,7 +1092,7 @@ MVP 단계의 표준 모듈은 다음과 같다.
 | --- | --- |
 | `qxide run` / `qxide check` | `std.log`(stderr 출력)와 `std.time`은 항상 허용된다. `std.fs`는 `--allow fs` 지정 시에만 허용되며 `qxide.toml` 옆의 `data/` 또는 `./data`를 루트로 한다. `std.app`과 `std.qxide`는 사용할 수 없다(`Q0702`). |
 | `qxide qasm` | `std.log`는 폐기되며 `std.time`은 동작한다. 내보내기에 부수 효과가 없도록 `std.fs`와 `std.app` 호출은 `Q0702`로 거부된다. |
-| `qxide repl` 및 플레이그라운드 | `std.log`만 허용되며 stderr에 `info: ...` 형식으로 출력된다. |
+| `qxide repl` 및 플레이그라운드 | 둘 다 `std.log`만 허용된다. 플레이그라운드는 stderr에 `info: ...` 형식으로 출력하지만, REPL은 매 입력마다 전체 세션을 다시 실행하므로 호출은 허용하되 출력하지 않는다. |
 | 데스크톱 앱 | `std.log`는 항상 허용되며, 그 외 모듈은 `[app] permissions`에 나열된 경우에만 허용된다. 의존성은 `std.log`만 사용할 수 있다. |
 
 ### 17.5 신규 오류 코드

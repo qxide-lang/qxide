@@ -1,6 +1,6 @@
 # Desktop apps with `.qx` (Qxide app framework and Qxide Studio)
 
-Status: design written 2026-11-21 on the `app-framework` branch; MVP implementation in progress on the same branch; not merged or released.
+Status: design written 2026-11-21 on the `app-framework` branch; MVP implemented on the same branch and tested on Windows; not merged or released.
 
 This document describes a framework for building desktop applications whose UI is written in HTML, CSS, and JavaScript and whose logic is written in `.qx`, without requiring a Rust toolchain or per-app compilation step. Capabilities are exposed through a Qxide standard library provided by a prebuilt runtime under explicit permissions, and the same framework is used to build Qxide Studio, a desktop IDE for `.qx`.
 
@@ -77,7 +77,7 @@ When JavaScript calls `qxide.invoke("measure_bell", {}, {shots: 1000})`, the bri
 
 ## 4. Project layout and the `[app]` section
 
-An app is a normal Qxide project (using the `qxide new` layout) with an `[app]` section in `qxide.toml` and a `ui/` folder. Command functions live in a single module, defaulting to `src/app.qx` (module path `app`), controlled by `module`. Only functions listed in `commands` can be called from the page; each listed function must be `public` and accept only `int`, `double`, `boolean`, or `String` parameters. Both the runtime on load and `qxide app build` verify these rules.
+An app is a normal Qxide project (using the `qxide new` layout) with an `[app]` section in `qxide.toml` and a `ui/` folder. Command functions live in a single module, defaulting to `src/app.qx` (module path `app`), controlled by `module`. Only functions listed in `commands` can be called from the page; each listed function must be `public` and accept only `int`, `double`, `boolean`, or `String` parameters. Both `qxide app dev` and `qxide app build` verify these rules before the window opens or the executable is written, and the runtime checks them again on every call.
 
 ```toml
 [package]
@@ -213,7 +213,7 @@ App-level errors use codes `Q0711` through `Q0715`.
 
 ### Threads and cancellation
 
-Each command call runs on a worker thread (at most one per CPU core, with additional calls waiting in a queue), so the window never freezes. Canceling a call through `AbortSignal` or `qxide.cancel` sets a flag that the worker checks between shots, inside `std.time.sleep_millis`, and every 4096 interpreter steps; the `Promise` then rejects with `Q0713`. Closing the window cancels all running calls.
+Each command call runs on a worker thread (at most one per CPU core, with additional calls waiting in a queue), so the window never freezes. Canceling a call through the `signal` option (an `AbortSignal`) sets a flag that the worker checks between shots, inside `std.time.sleep_millis`, and every 4096 interpreter steps; the `Promise` then rejects with `Q0713`. Closing the window cancels all running calls. Every message carries a random token for the page that sent it, so after a reload (F5) a response to a call made by the previous page is ignored.
 
 ### Determinism and state
 
@@ -272,8 +272,8 @@ Every standard-library call passes through the `Host` trait supplied by the embe
 | `qxide run` | Always (`stderr`) | Always | Only with `--allow fs` (`data/` or `./data`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
 | `qxide check` | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs | Checked against app permissions or CLI scope; nothing runs |
 | `qxide qasm` | Discarded | Always | Refused (`Q0702`) | Refused (`Q0702`) | Refused (`Q0702`) |
-| `qxide repl` | Always (printed as output lines) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
-| Playground | Always (printed as output lines) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
+| `qxide repl` | Accepted, not printed (the REPL replays the whole session on every input) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
+| Playground | Always (printed to stderr as `info: message`, like `qxide run`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) | Unavailable (`Q0702`) |
 
 `std.qxide` is available only to apps granted the `qxide` permission (such as Qxide Studio). Dependencies from `[dependencies]` may import only `std.log` in the MVP. Importing or calling a module unavailable in the current host fails with `Q0702`, and importing or calling a module not granted by `[app]` `permissions` or `--allow` fails with `Q0703`.
 
@@ -379,7 +379,7 @@ The CLI searches for `qxide-app` (or `qxide-app.exe` on Windows) in order:
 
 - **Installers**: the MVP outputs portable executables only and requires no global packaging tools. Windows installers (MSI needs WiX; NSIS needs NSIS) and macOS DMG packages are later work. Candidate approaches include a built-in per-user self-install (`app.exe --install` copying the executable to `%LOCALAPPDATA%\Programs` and adding a Start menu entry) or generating MSI files from Rust.
 - **Code signing**: sign executables after `qxide app build`. Windows Authenticode covers the appended bundle, so signing before attaching the bundle would be invalidated.
-- **Icons and version resources**: on Windows, the executable keeps the runtime's icon (the Qxide mark) and version information until PE resource editing is added; the window title comes from `[app]`.
+- **Icons and version resources**: on Windows, the runtime executable has no icon or version resources yet (Windows shows the default application icon); adding the Qxide mark to the runtime and per-app icons through PE resource editing are later work; the window title comes from `[app]`.
 
 ### CI and releases
 
@@ -467,12 +467,12 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 | `Q0711` | Unknown command (not listed in `[app]` `commands`) | App call |
 | `Q0712` | Bad command arguments (missing, extra, or wrong type) | App call |
 | `Q0713` | Call canceled | App call |
-| `Q0714` | Invalid command signature (not `public`, or uses a quantum or measurement parameter) | App load / build |
-| `Q0715` | Invalid `[app]` section in `qxide.toml` | App load / build |
+| `Q0714` | Invalid command signature (not `public`, or uses a quantum or measurement parameter) | `qxide app dev` / `qxide app build`, and on each call |
+| `Q0715` | Invalid `[app]` section in `qxide.toml` | `qxide app dev` / `qxide app build` |
 
 ## 14. MVP status and follow-ups
 
-### MVP planned on this branch
+### MVP implemented on this branch
 
 - `String` type and `std` module imports.
 - `Host` trait with CLI, REPL, `qasm`, playground, and app hosts.
@@ -482,7 +482,7 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 - `qxide-app` runtime on `wry` and `tao` for Windows.
 - `qxide app new`, `qxide app dev`, and `qxide app build`.
 - Example app in `examples/apps/bell-app`.
-- Minimal Qxide Studio (editor, run, chart, and QASM view).
+- Qxide Studio (`apps/studio`, built with `qxide app build`): editor with syntax highlighting, line numbers, and error markers; Run with shots and seed, Stop, Check, Format, QASM view, distribution chart, and Problems list; examples from `examples/qx`, autosave through `std.fs`, and window title through `std.app.set_title`, using system font stacks instead of the website's web fonts.
 
 ### Not in the MVP
 
@@ -494,3 +494,7 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 - Per-package permissions.
 - Circuit diagram.
 - LSP.
+- CI does not build or lint the runtime yet, and the runtime is not included in release archives or PyPI wheels.
+- Keeping the runtime version equal to the `qxide` version is manual.
+- A built app whose bundle is missing or from a different version exits without a visible message because built apps have no console window (an error dialog is later work).
+- `qxide --help` does not mention `--allow fs` yet.

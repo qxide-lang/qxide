@@ -410,3 +410,14 @@ fn library_modules_need_no_main() {
     let e = errs("import bell_utils.f;\nvoid main() {}\n", &files);
     assert_eq!(e, vec![("Q0105", path("bell_utils/src/lib.qx"), 1, 16)]);
 }
+
+#[test]
+fn dependencies_may_only_import_std_log() {
+    let lib =
+        "import std.log;\nimport std.time;\n\npublic void note() {\n    log.info(\"x\");\n}\n";
+    let entry = "import bell_utils.note;\nimport std.time;\n\nvoid main() {\n    note();\n}\n";
+    let e = errs(entry, &[("bell_utils/src/lib.qx", lib)]);
+    assert_eq!(e, vec![("Q0703", path("bell_utils/src/lib.qx"), 2, 1)]);
+    let ok = "import std.log;\n\npublic void note() {\n    log.info(\"x\");\n}\n";
+    assert_eq!(errs(entry, &[("bell_utils/src/lib.qx", ok)]), vec![]);
+}

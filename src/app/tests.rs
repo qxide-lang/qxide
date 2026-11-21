@@ -126,3 +126,45 @@ fn usage_errors() {
     };
     assert_eq!(f.code, 2);
 }
+
+fn repo(p: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(p)
+}
+
+#[test]
+fn shipped_apps_pass_the_build_checks() {
+    for dir in ["apps/studio", "examples/apps/bell-app"] {
+        let app = load(&repo(dir))
+            .ok()
+            .unwrap_or_else(|| panic!("{dir} loads"));
+        if let Err(f) = validate(&app) {
+            panic!("{dir}: {}", f.text);
+        }
+    }
+}
+
+#[test]
+fn studio_examples_match_the_repository() {
+    let lf = |p: &Path| std::fs::read_to_string(p).unwrap().replace("\r\n", "\n");
+    let names = |dir: &str| {
+        let mut v: Vec<String> = std::fs::read_dir(repo(dir))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    let originals = names("examples/qx");
+    assert_eq!(
+        originals,
+        names("apps/studio/ui/examples"),
+        "copy examples/qx/*.qx to apps/studio/ui/examples/"
+    );
+    for n in &originals {
+        assert_eq!(
+            lf(&repo(&format!("examples/qx/{n}"))),
+            lf(&repo(&format!("apps/studio/ui/examples/{n}"))),
+            "{n} differs from examples/qx"
+        );
+    }
+}

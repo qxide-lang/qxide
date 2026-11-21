@@ -1,0 +1,16 @@
+// Qubit parameters are borrowed by default; `consume` hands ownership to the callee.
+void bellPair(Qubit a, Qubit b) {
+    h(a);
+    cx(a, b);
+}
+
+void measureAll(consume QReg r) {
+    BitReg m = measure(r);
+    println("{}", m);
+}
+
+void main() {
+    QReg r = qreg(2);
+    bellPair(r[0], r[1]);
+    measureAll(r);
+}

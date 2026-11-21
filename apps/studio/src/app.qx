@@ -1,0 +1,38 @@
+// Qxide Studio's commands. The editor's program never runs with these permissions:
+// `std.qxide` checks and runs it like the playground does (only `std.log`).
+import std.app;
+import std.fs;
+import std.qxide;
+
+public String check(String source) {
+    return qxide.check(source);
+}
+
+public String run(String source, int shots, int seed) {
+    return qxide.run(source, shots, seed);
+}
+
+public String qasm(String source) {
+    return qxide.qasm(source);
+}
+
+public String format(String source) {
+    return qxide.format(source);
+}
+
+// The editor buffer is kept in the app's data folder between sessions.
+public String load() {
+    if (!fs.exists("workspace/main.qx")) {
+        return "";
+    }
+    return fs.read_text("workspace/main.qx");
+}
+
+public void save(String source) {
+    fs.write_text("workspace/main.qx", source);
+}
+
+// Shows the open program in the window title.
+public void set_file(String name) {
+    app.set_title(name + " - Qxide Studio");
+}

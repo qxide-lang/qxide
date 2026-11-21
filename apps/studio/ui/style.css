@@ -1,0 +1,335 @@
+/* Qxide brand tokens (site/src/styles.css): paper background, teal accent, dark code panel.
+   Fonts are the system stacks; the site's web fonts are npm packages, which apps do not use. */
+:root {
+  --bg: #f6f4ee;
+  --ink: #16161a;
+  --muted: #55555e;
+  --line: #d9d5ca;
+  --panel: #ffffff;
+  --accent: #0e8a8a;
+  --accent-text: #0b6e6e;
+  --on-accent: #ffffff;
+  --code-bg: #16161a;
+  --code-ink: #f1eee6;
+  --code-dim: #8d8a82;
+  --error: #e5484d;
+  --font-body: system-ui, "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c21;
+    --ink: #f1eee6;
+    --muted: #a7a49c;
+    --line: #34343b;
+    --panel: #16161a;
+    --accent: #3cc8c4;
+    --accent-text: #3cc8c4;
+    --on-accent: #16161a;
+    --code-bg: #111114;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 var(--font-body);
+}
+
+/* ---------- toolbar ---------- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 0.5rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+}
+
+input,
+select {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+input {
+  width: 6.5rem;
+}
+
+button {
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary {
+  border-color: var(--accent-text);
+  background: var(--accent-text);
+  color: var(--on-accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- editor ---------- */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(18rem, 2fr);
+  min-height: 0;
+}
+
+.editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  overflow: auto;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  font: 14px/1.7 var(--font-mono);
+  font-variant-ligatures: none;
+  tab-size: 4;
+  color-scheme: dark;
+}
+
+.editor:focus-within {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-height: 100%;
+  margin: 0;
+  padding: 1rem 0.6rem 1rem 1rem;
+  background: var(--code-bg);
+  color: var(--code-dim);
+  font: inherit;
+  text-align: right;
+  user-select: none;
+}
+
+.ln,
+.line {
+  display: block;
+  min-height: 1.7em;
+}
+
+.ln-err {
+  color: var(--error);
+  font-weight: 700;
+}
+
+.ln-err::before {
+  content: "▸ ";
+}
+
+.code {
+  position: relative;
+  min-width: 100%;
+  width: max-content;
+}
+
+.hl,
+.input {
+  margin: 0;
+  padding: 1rem 1.25rem 1rem 0.5rem;
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.hl {
+  pointer-events: none;
+}
+
+.line-err {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+  box-shadow: inset 2px 0 var(--error);
+}
+
+.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--code-ink);
+  outline: none;
+}
+
+.input::selection {
+  background: color-mix(in srgb, var(--code-ink) 28%, transparent);
+  color: transparent;
+}
+
+.tk-kw {
+  color: #3cc8c4;
+}
+
+.tk-ty {
+  color: #c4b5f4;
+}
+
+.tk-cm {
+  color: #a8a59b;
+}
+
+.tk-str {
+  color: #e6c78a;
+}
+
+/* ---------- side panels ---------- */
+.side {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.panel {
+  margin: 0;
+  padding: 1rem;
+  overflow: auto;
+  font: 13px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.problems {
+  list-style: none;
+  white-space: normal;
+}
+
+.problems li + li {
+  margin-top: 0.4rem;
+}
+
+.problems button {
+  width: 100%;
+  border-color: color-mix(in srgb, var(--error) 45%, var(--line));
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+#panel-chart {
+  white-space: normal;
+}
+
+.note {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-family: var(--font-body);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(3rem, auto) 1fr minmax(7rem, auto);
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.bar {
+  display: block;
+  height: 1.1rem;
+  min-width: 1px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.count {
+  color: var(--muted);
+  text-align: right;
+}
+
+/* ---------- status ---------- */
+.status {
+  padding: 0.35rem 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -155,16 +155,27 @@ struct Shared {
     app: App,
     proxy: EventLoopProxy<UserEvent>,
     slots: Slots,
-    calls: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    // In-flight calls by (page token, call id), for cancellation.
+    calls: Mutex<HashMap<(String, u64), Arc<AtomicBool>>>,
 }
 
-fn settle(proxy: &EventLoopProxy<UserEvent>, id: u64, ok: bool, json: &str) {
+/// Where an answer goes: the page token and the call id of the request.
+#[derive(Clone)]
+struct Reply {
+    page: String,
+    id: u64,
+}
+
+fn settle(proxy: &EventLoopProxy<UserEvent>, to: &Reply, ok: bool, json: &str) {
+    let mut page = String::new();
+    command::json_str(&mut page, &to.page);
     let _ = proxy.send_event(UserEvent::Eval(format!(
-        "window.__qxide_settle && window.__qxide_settle({id},{ok},{json});"
+        "window.__qxide_settle && window.__qxide_settle({page},{},{ok},{json});",
+        to.id
     )));
 }
 
-fn reject_app(proxy: &EventLoopProxy<UserEvent>, id: u64, code: &str, message: String) {
+fn reject_app(proxy: &EventLoopProxy<UserEvent>, id: &Reply, code: &str, message: String) {
     let mut s = String::from("{\"code\":");
     command::json_str(&mut s, code);
     s.push_str(",\"message\":");
@@ -210,24 +221,31 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
     let Ok(Value::Object(m)) = serde_json::from_str::<Value>(body) else {
         return;
     };
-    let Some(id) = m.get("id").and_then(Value::as_u64) else {
+    let (Some(n), Some(page)) = (
+        m.get("id").and_then(Value::as_u64),
+        m.get("page").and_then(Value::as_str),
+    ) else {
         return;
+    };
+    let id = Reply {
+        page: page.to_string(),
+        id: n,
     };
     let kind = m.get("kind").and_then(Value::as_str).unwrap_or("");
     let allowed: &[&str] = match kind {
-        "invoke" => &["kind", "id", "command", "args", "shots", "seed"],
-        "cancel" => &["kind", "id", "target"],
-        "commands" => &["kind", "id"],
+        "invoke" => &["kind", "id", "page", "command", "args", "shots", "seed"],
+        "cancel" => &["kind", "id", "page", "target"],
+        "commands" => &["kind", "id", "page"],
         _ => &[],
     };
     if allowed.is_empty() || m.keys().any(|k| !allowed.contains(&k.as_str())) {
-        reject_app(&shared.proxy, id, "Q0712", msg::bad_message());
+        reject_app(&shared.proxy, &id, "Q0712", msg::bad_message());
         return;
     }
     match kind {
         "cancel" => {
             if let Some(t) = m.get("target").and_then(Value::as_u64) {
-                if let Some(flag) = shared.calls.lock().unwrap().get(&t) {
+                if let Some(flag) = shared.calls.lock().unwrap().get(&(id.page.clone(), t)) {
                     flag.store(true, Ordering::Relaxed);
                 }
             }
@@ -241,10 +259,10 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
                 });
                 match r {
                     Ok(Ok(sigs)) => {
-                        settle(&shared.proxy, id, true, &command::signatures_json(&sigs))
+                        settle(&shared.proxy, &id, true, &command::signatures_json(&sigs))
                     }
-                    Ok(Err(e)) => settle(&shared.proxy, id, false, &e.to_json()),
-                    Err(e) => reject_app(&shared.proxy, id, "Q0412", e),
+                    Ok(Err(e)) => settle(&shared.proxy, &id, false, &e.to_json()),
+                    Err(e) => reject_app(&shared.proxy, &id, "Q0412", e),
                 }
             });
         }
@@ -258,7 +276,7 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
                 Some(Value::Object(a)) => a.iter().map(|(k, v)| (k.clone(), js_arg(v))).collect(),
                 None | Some(Value::Null) => Vec::new(),
                 Some(_) => {
-                    reject_app(&shared.proxy, id, "Q0712", msg::bad_message());
+                    reject_app(&shared.proxy, &id, "Q0712", msg::bad_message());
                     return;
                 }
             };
@@ -270,21 +288,26 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
                 _ => None,
             };
             let Some(seed) = seed else {
-                reject_app(&shared.proxy, id, "Q0712", msg::bad_message());
+                reject_app(&shared.proxy, &id, "Q0712", msg::bad_message());
                 return;
             };
             let flag = Arc::new(AtomicBool::new(false));
-            shared.calls.lock().unwrap().insert(id, flag.clone());
+            let key = (id.page.clone(), id.id);
+            shared
+                .calls
+                .lock()
+                .unwrap()
+                .insert(key.clone(), flag.clone());
             let shared = shared.clone();
             spawn(move || {
                 shared.slots.acquire();
                 let r = run_call(&shared, &command, &args, shots, seed, flag);
                 shared.slots.release();
-                shared.calls.lock().unwrap().remove(&id);
+                shared.calls.lock().unwrap().remove(&key);
                 match r {
-                    Ok(Ok(json)) => settle(&shared.proxy, id, true, &json),
-                    Ok(Err(json)) => settle(&shared.proxy, id, false, &json),
-                    Err(e) => reject_app(&shared.proxy, id, "Q0412", e),
+                    Ok(Ok(json)) => settle(&shared.proxy, &id, true, &json),
+                    Ok(Err(json)) => settle(&shared.proxy, &id, false, &json),
+                    Err(e) => reject_app(&shared.proxy, &id, "Q0412", e),
                 }
             });
         }
@@ -457,4 +480,91 @@ fn run(app: App) -> Result<(), String> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use lang::stdlib::LogOnly;
+
+    // A bundle as `qxide app build` writes it, with a dependency package next to the app.
+    fn bundled(lib: &str) -> App {
+        let manifest = serde_json::json!({
+            "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": false,
+            "title": "t", "identifier": "dev.qxide.app.test", "module": "app",
+            "commands": ["pair"], "permissions": ["log"],
+            "width": 400, "height": 300, "resizable": true,
+            "packages": [
+                {"name": "demo", "src": "pkg/0/demo/src", "deps": [1]},
+                {"name": "bell_utils", "src": "pkg/1/bell_utils/src", "deps": []}
+            ],
+            "entry": "pkg/0/demo/src/app.qx", "ui": "ui", "data": null
+        });
+        let mut files = BTreeMap::new();
+        files.insert(
+            bundle::MANIFEST.to_string(),
+            manifest.to_string().into_bytes(),
+        );
+        let app = "import bell_utils.prepare;\n\npublic BitReg pair() {\n    QReg q = qreg(2);\n    prepare(q[0], q[1]);\n    return measure(q);\n}\n";
+        files.insert("pkg/0/demo/src/app.qx".into(), app.as_bytes().to_vec());
+        files.insert(
+            "pkg/1/bell_utils/src/lib.qx".into(),
+            lib.as_bytes().to_vec(),
+        );
+        files.insert("ui/index.html".into(), b"<p>hi</p>".to_vec());
+        App::parse(manifest.to_string().as_bytes(), app::Files::Bundle(files)).unwrap()
+    }
+
+    fn call(app: &App) -> Result<String, String> {
+        with_input(app, |input| {
+            let call = Call {
+                module: &app.module,
+                commands: &app.commands,
+                name: "pair",
+                args: &[],
+                shots: 200,
+                seed: 1,
+                limits: lang::Limits::CLI,
+            };
+            command::call(input, &call, &mut LogOnly::default())
+                .map(|r| r.to_json())
+                .map_err(|e| e.to_json())
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn bundled_commands_import_dependency_packages() {
+        let lib = "import std.log;\n\npublic void prepare(Qubit a, Qubit b) {\n    log.info(\"prepare\");\n    h(a);\n    cx(a, b);\n}\n";
+        let app = bundled(lib);
+        let r = call(&app).unwrap();
+        assert!(r.contains("\"counts\":[{\"value\":["), "{r}");
+        assert!(!r.contains("[0,1]") && !r.contains("[1,0]"), "{r}");
+        assert_eq!(
+            app.ui_file("index.html").as_deref(),
+            Some(&b"<p>hi</p>"[..])
+        );
+        assert_eq!(app.ui_file("../app.json"), None);
+        assert_eq!(app.ui_file("C:/x"), None);
+    }
+
+    #[test]
+    fn bundled_dependencies_cannot_use_files() {
+        let lib = "import std.fs;\n\npublic void prepare(Qubit a, Qubit b) {\n    h(a);\n    cx(a, b);\n}\n";
+        let e = call(&bundled(lib)).unwrap_err();
+        assert!(e.contains("\"code\":\"Q0703\""), "{e}");
+        assert!(e.contains("bell_utils") && e.contains("lib.qx"), "{e}");
+    }
+
+    #[test]
+    fn origins_and_paths() {
+        assert!(same_origin(origin()));
+        assert!(same_origin(&format!("{}/index.html", origin())));
+        assert!(!same_origin(&format!("{}.evil.com/", origin())));
+        assert!(!same_origin("https://example.com/"));
+        assert_eq!(percent_decode("a%20b%2F"), "a b/");
+        assert_eq!(percent_decode("bad%2"), "bad%2");
+    }
 }

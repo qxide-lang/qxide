@@ -6,6 +6,9 @@
   const pending = new Map();
   const listeners = new Map();
   let next = 1;
+  // Ids restart on every page load; the page token keeps an answer for a call made before a
+  // reload (F5) from settling a new call with the same id.
+  const page = Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join("");
 
   class QxError extends Error {
     constructor(e) {
@@ -36,11 +39,12 @@
     new Promise((resolve, reject) => {
       const id = next++;
       pending.set(id, { resolve, reject });
-      ipc.postMessage(JSON.stringify({ ...msg, id }));
+      ipc.postMessage(JSON.stringify({ ...msg, id, page }));
       return id;
     });
 
-  window.__qxide_settle = (id, ok, payload) => {
+  window.__qxide_settle = (from, id, ok, payload) => {
+    if (from !== page) return;
     const p = pending.get(id);
     if (!p) return;
     pending.delete(id);
@@ -79,7 +83,7 @@
     const promise = send(msg);
     if (signal) {
       // The runtime answers a cancelled call with error Q0713.
-      const abort = () => ipc.postMessage(JSON.stringify({ kind: "cancel", id: 0, target: id }));
+      const abort = () => ipc.postMessage(JSON.stringify({ kind: "cancel", id: 0, page, target: id }));
       if (signal.aborted) abort();
       else {
         signal.addEventListener("abort", abort, { once: true });

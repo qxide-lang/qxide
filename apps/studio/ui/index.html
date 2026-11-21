@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qxide Studio</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="studio.js"></script>
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="brand">
+        <img src="qxide-icon.svg" alt="" width="24" height="24" />
+        <span>Qxide Studio</span>
+      </div>
+      <label class="field"><span data-t="example"></span>
+        <select id="example"></select>
+      </label>
+      <div class="actions">
+        <button id="run" type="button" class="primary" data-t="run"></button>
+        <button id="stop" type="button" data-t="stop" disabled></button>
+        <button id="check" type="button" data-t="check"></button>
+        <button id="format" type="button" data-t="format"></button>
+        <button id="qasm" type="button" data-t="qasm"></button>
+      </div>
+      <label class="field"><span data-t="shots"></span>
+        <input id="shots" type="number" min="1" max="1000000" value="1000" />
+      </label>
+      <label class="field"><span data-t="seed"></span>
+        <input id="seed" type="number" min="0" value="0" />
+      </label>
+    </header>
+    <main class="split">
+      <section class="editor" id="editor-box">
+        <pre class="gutter" id="gutter" aria-hidden="true"></pre>
+        <div class="code">
+          <pre class="hl" id="hl" aria-hidden="true"></pre>
+          <textarea id="source" class="input" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" data-t-label="editor"></textarea>
+        </div>
+      </section>
+      <section class="side">
+        <div class="tabs" role="tablist">
+          <button role="tab" id="tab-output" aria-controls="panel-output" aria-selected="true" data-t="output"></button>
+          <button role="tab" id="tab-chart" aria-controls="panel-chart" aria-selected="false" data-t="chart"></button>
+          <button role="tab" id="tab-circuit" aria-controls="panel-circuit" aria-selected="false" data-t="qasmTab"></button>
+          <button role="tab" id="tab-problems" aria-controls="panel-problems" aria-selected="false" data-t="problems"></button>
+        </div>
+        <pre class="panel" role="tabpanel" id="panel-output" aria-labelledby="tab-output"></pre>
+        <div class="panel" role="tabpanel" id="panel-chart" aria-labelledby="tab-chart" hidden></div>
+        <pre class="panel" role="tabpanel" id="panel-circuit" aria-labelledby="tab-circuit" hidden></pre>
+        <ul class="panel problems" role="tabpanel" id="panel-problems" aria-labelledby="tab-problems" hidden></ul>
+      </section>
+    </main>
+    <footer class="status" id="status" role="status"></footer>
+  </body>
+</html>
