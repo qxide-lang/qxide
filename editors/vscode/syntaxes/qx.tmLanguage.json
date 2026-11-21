@@ -1,0 +1,125 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Qxide",
+  "scopeName": "source.qx",
+  "fileTypes": ["qx"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#import" },
+    { "include": "#function-declaration" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#builtin-call" },
+    { "include": "#method" },
+    { "include": "#function-call" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.qx",
+      "begin": "//",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.qx" } },
+      "end": "$"
+    },
+    "string": {
+      "name": "string.quoted.double.qx",
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.qx" } },
+      "end": "\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.qx" } },
+      "patterns": [
+        { "name": "constant.character.escape.qx", "match": "\\\\[nt\\\\\"]" },
+        { "name": "invalid.illegal.unknown-escape.qx", "match": "\\\\." },
+        { "name": "constant.other.placeholder.qx", "match": "\\{\\}" }
+      ]
+    },
+    "import": {
+      "name": "meta.import.qx",
+      "begin": "\\b(import)\\b",
+      "beginCaptures": { "1": { "name": "keyword.control.import.qx" } },
+      "end": ";",
+      "endCaptures": { "0": { "name": "punctuation.terminator.qx" } },
+      "patterns": [
+        { "include": "#comment" },
+        { "name": "keyword.operator.wildcard.qx", "match": "\\*" },
+        { "name": "punctuation.separator.dot.qx", "match": "\\." },
+        { "name": "entity.name.namespace.qx", "match": "[\\p{L}_][\\p{L}\\p{N}_]*(?=\\s*\\.)" },
+        { "name": "entity.name.function.qx", "match": "[\\p{L}_][\\p{L}\\p{N}_]*" }
+      ]
+    },
+    "function-declaration": {
+      "match": "\\b(int|double|boolean|void|Bit|BitReg|Qubit|QReg)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "storage.type.qx" },
+        "2": { "name": "entity.name.function.qx" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.qx", "match": "\\b(if|else|for|in|return)\\b" },
+        { "name": "storage.modifier.qx", "match": "\\b(final|var|consume|public)\\b" },
+        {
+          "name": "keyword.other.reserved.qx",
+          "match": "\\b(while|loop|break|continue|struct|enum|impl|use|mod|const|match|with_ancilla|apply|let|fn|mut)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "storage.type.primitive.qx", "match": "\\b(int|double|boolean|void)\\b" },
+        { "name": "storage.type.quantum.qx", "match": "\\b(Bit|BitReg|Qubit|QReg)\\b" }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        { "name": "constant.language.boolean.qx", "match": "\\b(true|false)\\b" },
+        { "name": "constant.language.pi.qx", "match": "\\bPI\\b" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.qx",
+          "match": "\\b[0-9][0-9_]*(?:\\.[0-9][0-9_]*(?:[eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)\\b"
+        },
+        { "name": "constant.numeric.integer.qx", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "builtin-call": {
+      "match": "\\b(qubit|qreg|h|x|z|s|sdg|t|tdg|reset|rx|ry|rz|cx|ccx|measure|discard|len|println)\\s*(?=\\()",
+      "captures": { "1": { "name": "support.function.builtin.qx" } }
+    },
+    "method": {
+      "match": "(\\.)\\s*(as_int|to_binary)\\b",
+      "captures": {
+        "1": { "name": "punctuation.accessor.qx" },
+        "2": { "name": "support.function.method.qx" }
+      }
+    },
+    "function-call": {
+      "match": "([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.call.qx" } }
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.range.qx", "match": "\\.\\." },
+        { "name": "keyword.operator.arrow.qx", "match": "->" },
+        { "name": "keyword.operator.comparison.qx", "match": "==|!=|<=|>=|<|>" },
+        { "name": "keyword.operator.logical.qx", "match": "&&|\\|\\||!" },
+        { "name": "keyword.operator.assignment.qx", "match": "=" },
+        { "name": "keyword.operator.arithmetic.qx", "match": "[-+*/%]" }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.terminator.qx", "match": ";" },
+        { "name": "punctuation.separator.comma.qx", "match": "," },
+        { "name": "punctuation.accessor.qx", "match": "\\." }
+      ]
+    }
+  }
+}
