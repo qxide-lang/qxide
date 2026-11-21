@@ -120,7 +120,11 @@ The slowest run the playground limits admit took 14.4 s, inside the page's 30 s 
 
 - M-05 (quadratic checker time) is unchanged; `check` of about 1 MB can still take 40 s.
 - Playground limits were checked in Node, not in a browser; page-side rendering of the (now at most 1 MiB) output was not measured.
-- Rotation gates cost about twice the calibration unit on the state vector (188.5 s at the CLI limit, 14.4 s in the playground). Weighting non-Clifford operations by 2 would halve those worst cases but refuse rotation-heavy simulations earlier; left for a decision.
+- Rotation gates cost about twice the calibration unit on the state vector (188.5 s at the CLI limit, 14.4 s in the playground); see the decision below.
+
+## Decision: rotation gates keep weight 1
+
+Decided by the maintainer on 2026-11-21: every state-vector operation, rotations included, keeps a weight of one unit in `shot_work`, and the code is unchanged. A weight of 2 for non-Clifford operations would halve the measured worst cases, but it would also refuse legitimate long simulations that are heavy in rotations at about half the size they are allowed today, and legitimate long runs take priority. The cost of this choice is bounded and known: a run admitted by the defaults takes at most about 3 minutes in the CLI (188.5 s measured) and 14.4 s in the playground, which stays inside the page's 30 s worker limit. Runs at the extreme end are left to a wall-clock limit, planned as separate work.
 - No CLI flag to raise the limits; a legitimate simulation above the estimate (up to about 3 minutes of real time) is now refused with Q0417; the state-vector unit weight could be raised for non-Clifford gates.
 - No wall-clock limit and no wasm maximum memory; the page still renders up to 1 MiB of output and up to 50 diagnostic buttons on its main thread.
 - `app-framework-next` also changes `Limits` (`Limits::APP`, `scope`); merging needs the new fields added to `Limits::APP`.
