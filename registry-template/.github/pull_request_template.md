@@ -1,6 +1,7 @@
 <!--
-CI (scripts/validate.py) checks the checksum and archive, and lists the
-archive's files in the job summary for reviewers.
+CI (scripts/validate.py) checks the checksum and archive, checks that the
+account opening this pull request owns the package (owners/<prefix>/<name>),
+and lists the archive's files in the job summary for reviewers.
 -->
 
 - **Package & version:** `<name> <version>`
@@ -12,6 +13,7 @@ To have a version yanked, open an issue instead: only maintainers change `yanked
 
 - [ ] I am the author or have permission to publish this package.
 - [ ] The archive and index line were produced by `qxide publish` (not edited by hand).
+- [ ] New package: this pull request adds `owners/<prefix>/<name>` listing only my account (`qxide publish` writes it). Existing package: my account is listed in its owner file on `main`.
 - [ ] `qxide publish --dry-run` / `qxide check` passed locally.
 - [ ] The license in `qxide.toml` allows redistribution.
 - [ ] The package does not impersonate another project and is not a name reservation without code.

@@ -237,6 +237,7 @@ A registry uses the same layout whether accessed as a local directory, a `file:/
 config.json                      {"dl": "packages/{prefix}/{name}/{name}-{version}.tar.gz", "api": null}
 index/<prefix>/<name>            one JSON object per line, one line per published version
 packages/<prefix>/<name>/<name>-<version>.tar.gz   archives (GitHub-hosted registry)
+owners/<prefix>/<name>           package owners, one JSON object per line (GitHub-hosted registry, see section 10)
 search.json                      generated list for `qxide search`
 ```
 
@@ -311,8 +312,8 @@ The same source files produce identical archive bytes and the same SHA-256 check
 If `--dry-run` is passed, `qxide publish` stops after printing this summary. Otherwise:
 
 - **Local directory registry** (for example, a local clone of the registry repository): appends the index line (rejecting duplicate versions with `Q0614`) and writes the archive to its resolved `dl` path.
-- **Default GitHub registry with `gh` available and authenticated**: forks `qxide-lang/registry`, shallow-clones the fork into a temporary directory, creates branch `publish/<name>-<version>` from upstream `main`, writes the index line and archive, commits, pushes, and opens a pull request via `gh pr create`. This automated `gh` path has not yet been run against GitHub (tests never invoke `gh`).
-- **Otherwise**: prints the two files to add and where to open the pull request manually.
+- **Default GitHub registry with `gh` available and authenticated**: forks `qxide-lang/registry`, shallow-clones the fork into a temporary directory, creates branch `publish/<name>-<version>` from upstream `main`, writes the index line and archive (and, for the first version of a package, the owner file listing the account `gh` is logged in as, with the id and login from `gh api user`), commits, pushes, and opens a pull request via `gh pr create`. This automated `gh` path has not yet been run against GitHub (tests never invoke `gh`).
+- **Otherwise**: prints the files to add (index line, archive, and for a new package the owner file) and where to open the pull request manually.
 
 ### Registry validation and CI (`registry-template/`)
 
@@ -328,15 +329,42 @@ If `--dry-run` is passed, `qxide publish` stops after printing this summary. Oth
   - Every dependency listed in an entry names a package present in the registry, and no entry depends on its own package.
   - Index file names are not Windows device names (`con`, `nul`, `com1`, and so on).
   - Malformed input (invalid UTF-8, JSON or TOML nested deeper than the client accepts, numbers too long to be versions) is reported as an error instead of stopping the script.
+  - Owner files are well formed (see Package owners) and exist only for packages that have an index file.
+  - Against the pull request's base branch, with the pull request author from the workflow event: every package whose index file, archives, or owner file the pull request changes is owned by the author on the base branch, or is new and gets an owner file listing exactly the author (see Package owners); every file added under `packages/` is the archive of a version in the index; a pull request that changes `index/`, `packages/`, or `owners/` changes nothing else.
   - Against the pull request's base branch: previously published lines are unchanged, including `yanked`; no version or index file is removed; no archive under `packages/` is modified or deleted; `search.json` is not manually edited; `config.json` is not changed in a pull request; every changed path can be checked out on Windows; and a new package name is not a look-alike of another package, existing or added in the same pull request, nor reserved (names are compared after removing hyphens and folding look-alike digits, `i`, `rn`, `vv`, and `cl`; names starting like `qxide` and the name `std` are reserved).
   - Outputs a summary listing the files inside each newly added archive for reviewers; file names and messages are escaped so that they cannot add Markdown or new lines to the summary or the job log.
 - `scripts/build_search.py` regenerates `search.json` with the newest non-yanked version and description for each package, where newest is determined by semver precedence (numeric pre-release identifiers compare as numbers, so `1.0.0-rc.10` is newer than `1.0.0-rc.2`). The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`. The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`.
 - `.gitattributes` keeps index files LF-terminated and marks archives as binary.
 - Human review on pull requests covers name squatting, malicious or misleading packages, and licensing issues according to the policy documented in the registry `README`.
 
+### Package owners
+
+The GitHub registry records which accounts may change a package in `owners/<prefix>/<name>`, with the same `<prefix>` as the index. Each line names one owner:
+
+```json
+{"id":295735711,"login":"rigelx2b"}
+```
+
+- `id` is the GitHub user id, and it is the only value CI compares. `login` is there for people reading the file. A login can be renamed, and a freed login can be registered by another account, so a login grants nothing. `gh api users/<login> --jq .id` prints an account's id.
+- A file lists 1 to 32 owners, each id once, with no other keys. An owner file exists only for a package that has an index file. The client does not read owner files.
+
+`validate.py --base` applies these rules to pull requests:
+
+- **Pull request author.** The workflow passes `github.event.pull_request.user.id` and `.login` from the `pull_request_target` event. GitHub sets them to the account that opened the pull request. Later pushes do not change them, and nothing in the pull request can set them. The workflow does not use `github.actor`, which is whoever triggered the run (for example a re-run), or commit author fields, which anyone can write. Without an author, `--base` fails.
+- **New package** (no index file on the base branch). The pull request must add the owner file, listing exactly its author. `qxide publish` writes this file. The first account to publish a name owns it.
+- **Existing package.** A pull request that changes the package's index file, adds one of its archives, or changes its owner file must be opened by an account listed in the owner file on the base branch. Owners added by the pull request itself do not count, so an account cannot add itself and publish in the same pull request.
+- **Adding, removing, and transferring owners.** An owner opens a pull request that edits the owner file. To transfer a package, replace the lines with the new owner's. The file cannot be emptied or deleted. The added account is not asked to confirm.
+- **Packages without an owner file.** A package that has an index file but no owner file on the base branch is locked: no pull request can change it until a maintainer adds the owner file.
+- **Archives.** Every file that a pull request adds under `packages/` must be the archive of a version in the index. Without this, an account could place a file at the path of another package's next version and block that publication.
+- **Maintainers.** Disputes, lost accounts, and abuse are handled by maintainers in commits to `main`. The push run checks the format of owner files but not who made the change.
+
+Registries created before owner files have none. The push run does not require them, so a maintainer adds one owner file per existing package (listing the account that opened the pull request that published its first version) in a commit to `main`, together with the updated scripts. Each package stays locked until its owner file exists.
+
+An owner who opens a pull request from a branch that other accounts can push to is responsible for what they push: the author stays the same, so CI accepts their commits too.
+
 ### Yanking
 
-Yanking a version is performed by a registry maintainer, who sets `"yanked": true` on that version's index line in a commit to `main` at the request of the account that published it. The registry has no record of package ownership, so CI rejects pull requests that change `yanked` in either direction. Versions are never deleted or overwritten.
+Yanking a version is performed by a registry maintainer, who sets `"yanked": true` on that version's index line in a commit to `main` at the request of an owner of the package. Owner files do not extend to yanking: CI rejects pull requests that change `yanked` in either direction, including pull requests from owners. Versions are never deleted or overwritten.
 
 Yanked versions are skipped during fresh version resolution and by `qxide add`, while projects whose `qxide.lock` already pins a yanked version continue to install it.
 
@@ -387,6 +415,7 @@ The cache root is `$QXIDE_HOME`, defaulting to `~/.qxide` (resolved from `HOME` 
 - **Defensive extraction:** Archives are verified prior to unpacking and extracted into a temporary directory with path, entry-type, size (10 MiB compressed, 50 MiB unpacked), and file-count (2000 files) restrictions, rejecting `..`, absolute paths, drive letters, backslashes, symlinks, and hard links; entry paths must be portable and must not collide after case folding (see Archive format), and every entry is checked before the first file is written.
 - **Transport:** Plain `http://` registries are refused; HTTPS requests require TLS 1.2 or higher.
 - **Index trust:** The index is trusted as served by GitHub over TLS. Cryptographic index signatures (such as signed index commits or TUF-style metadata) are not implemented yet and remain a follow-up.
+- **Ownership:** Only accounts listed in a package's owner file on the registry's `main` branch can publish its new versions or change its owners; CI matches the numeric GitHub user id that GitHub reports for the pull request author (see Package owners).
 - **Moderation:** Name squatting and malicious packages are mitigated through pull-request review, look-alike name checks in CI, and yanking.
 - **No install-time code execution:** Packages have no build scripts and cannot execute arbitrary code during installation; `.qx` code runs only inside the `qxide` simulator.
 
@@ -541,7 +570,7 @@ All tests run without network access, without `gh`, and without touching the use
 
 - The automated `gh` publishing path has not been tested against GitHub yet.
 - The `qxide-lang/registry` repository must still be created from `registry-template/`.
-- `qxide yank`, `qxide owner`, and `qxide login` are not implemented.
+- `qxide yank`, `qxide owner`, and `qxide login` are not implemented. Owners are changed by pull requests that edit the owner file by hand.
 - Only one version per package name can appear in a build (no side-by-side major versions).
 - Dependency renaming, optional package features, and dev-dependencies are not supported.
 - Version resolution does not perform backtracking.

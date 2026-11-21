@@ -2,7 +2,7 @@
 
 Package index for [Qxide](https://qxide.dev) ([qxide-lang/qxide](https://github.com/qxide-lang/qxide)), a programming language for classical and quantum computers (`.qx` files) with compile-time qubit safety.
 
-This registry is a git-backed index, modeled on early Cargo and Homebrew. There is no server and there are no user accounts; publishing a package version is a pull request that maintainers review and merge. The design is documented in `docs/design/qx-packages.md` in the [qxide](https://github.com/qxide-lang/qxide) repository.
+This registry is a git-backed index, modeled on early Cargo and Homebrew. There is no server and there are no registry accounts (package owners are GitHub accounts); publishing a package version is a pull request that maintainers review and merge. The design is documented in `docs/design/qx-packages.md` in the [qxide](https://github.com/qxide-lang/qxide) repository.
 
 Clients read the registry from `https://raw.githubusercontent.com/qxide-lang/registry/main/` by default. Override this with `--registry` or the `QXIDE_REGISTRY` environment variable.
 
@@ -36,12 +36,30 @@ Package archives are gzip-compressed tar files (`.tar.gz`) containing all files 
    ```sh
    qxide publish
    ```
-   - **With GitHub CLI (`gh`) installed and logged in**: `qxide publish` forks this repository, adds the archive and index line on branch `publish/<name>-<version>`, and opens a pull request.
-   - **Without `gh`**: `qxide publish` prints the two files to add. Add them to your fork—or run `qxide publish --registry <path to your clone>` to write both files into your local clone—and open the pull request manually.
+   - **With GitHub CLI (`gh`) installed and logged in**: `qxide publish` forks this repository, adds the archive and index line (and, for a new package, the owner file listing your account) on branch `publish/<name>-<version>`, and opens a pull request.
+   - **Without `gh`**: `qxide publish` prints the files to add. Add them to your fork—or run `qxide publish --registry <path to your clone>` to write the index line and archive into your local clone, then add the owner file of a new package yourself—and open the pull request manually.
+
+## Package owners
+
+Each package has an owner file, `owners/<prefix>/<name>`, with one line per GitHub account that may publish new versions of it and change its owners:
+
+```json
+{"id":295735711,"login":"rigelx2b"}
+```
+
+CI compares only `id`, the numeric GitHub user id (`gh api users/<login> --jq .id` prints it). `login` is for readers: logins can be renamed and then registered by someone else, so a login grants nothing. A file lists 1 to 32 owners.
+
+- **New package**: the pull request that adds the first version also adds the owner file, listing exactly the account that opened the pull request. `qxide publish` does this for you. Names are first come, first served.
+- **New version**: the pull request must be opened by an account listed in the owner file on `main`.
+- **Adding, removing, or transferring owners**: an owner opens a pull request that edits the owner file (to transfer, replace the lines with the new owner's). The file cannot be emptied or deleted, and owners added in a pull request count only after it is merged.
+- **Packages without an owner file** (published before owner files existed) are locked until a maintainer adds one.
+- Lost accounts and disputes: open an issue; maintainers change owner files in a commit to `main`.
+
+CI takes the pull request author from the event GitHub sends for the pull request (`pull_request.user`), never from commits or text in the pull request. Open pull requests only from branches that nobody else can push to: CI accepts every commit in a pull request opened by an owner.
 
 ## Yanking a version
 
-Only maintainers yank versions. The registry does not record who owns a package, so CI rejects any pull request that changes `yanked`. To have a version yanked, open an issue from the account that published it (or that owns the source repository) naming the package and version; a maintainer sets `"yanked": true` on that version's index line in a commit to `main` (with branch protection that requires pull requests, this needs a maintainer allowed to bypass it). Yanked versions are not restored.
+Only maintainers yank versions. Owner files do not extend to yanking, so CI rejects any pull request that changes `yanked`, including one from an owner. To have a version yanked, open an issue from an account listed in the package's owner file naming the package and version; a maintainer sets `"yanked": true` on that version's index line in a commit to `main` (with branch protection that requires pull requests, this needs a maintainer allowed to bypass it). Yanked versions are not restored.
 
 - Yanked versions are not selected for new dependency resolutions.
 - Projects whose `qxide.lock` already pins a yanked version continue to work.
@@ -60,6 +78,7 @@ Only maintainers yank versions. The registry does not record who owns a package,
 | `config.json` | Registry configuration: `{"dl": "packages/{prefix}/{name}/{name}-{version}.tar.gz", "api": null}`. `dl` is the download URL template relative to the repository root; `api` is reserved for a future publish API. |
 | `index/<prefix>/<name>` | Package metadata, one JSON object per line, one line per published version in publication order. |
 | `packages/<prefix>/<name>/<name>-<version>.tar.gz` | Published package archives. |
+| `owners/<prefix>/<name>` | Package owners, one `{"id", "login"}` JSON object per line (see Package owners). |
 | `search.json` | Search index generated by CI after each merge for `qxide search`. Never edit by hand. |
 | `scripts/validate.py` | Pull request validation script. |
 | `scripts/build_search.py` | Generator for `search.json`. |
@@ -110,6 +129,10 @@ Every pull request runs `scripts/validate.py` from the target branch (the workfl
 - `qxide.toml` inside the archive matches `name`, `vers`, and `deps` and defines `description`, `license`, and `qxide`
 - `src/lib.qx` is present in the archive
 - All declared dependencies exist in the registry and a package does not depend on itself
+- The pull request author owns every package whose index file, archives, or owner file the pull request changes, according to the owner files on `main`; a new package adds an owner file that lists exactly the author
+- Owner files are well formed and belong to a package with an index file
+- Every file added under `packages/` is the archive of a version in the index
+- A pull request that changes `index/`, `packages/`, or `owners/` changes no other files
 - Existing published index lines are unchanged, including `yanked`
 - No published version or index file is removed
 - Every changed path can be checked out on Windows
@@ -128,13 +151,13 @@ The workflow job summary lists the files included in each new version for review
 Maintainers review pull requests according to the following rules:
 
 1. One package version per pull request is preferred.
-2. The pull request author should be the package author or have permission from them.
+2. CI checks that the pull request author owns the package; for a new package, the author should also be the package author or have permission from them.
 3. Read the source files listed in the job summary before merging.
 4. Reject names that impersonate other projects, organizations, or existing packages, or that reserve names without code (name squatting).
 5. Reject code that is malicious, deceptive, or misrepresents what it does.
 6. Require an OSI-approved or otherwise clearly redistributable license.
 7. Otherwise, package names are granted first-come, first-served.
-8. Maintainers yank versions at the request of the account that published them, and may yank versions or transfer package names in cases of abuse or legal requests.
+8. Maintainers yank versions at the request of a package owner, and may yank versions or change owner files in cases of abuse, lost accounts, or legal requests.
 
 ## License
 

@@ -212,10 +212,98 @@ The steps of part 1 apply. In addition:
 
 ## Not done here
 
-- Package ownership as a whole: anyone can still open a pull request that publishes a new version of an existing package, and only review prevents it (alternative (b) for B-P5 would cover both).
+- Package ownership as a whole: anyone can still open a pull request that publishes a new version of an existing package, and only review prevents it (alternative (b) for B-P5 would cover both). Addressed for publishing in part 3 (owner files); yanking stays maintainer-only.
 - B-P10 costs one archive unpack per package on every `run`, `check`, and `qasm`; the comparison is not cached.
 - Look-alike folding is ASCII only (package names are ASCII) and does not cover every pair a font can confuse (for example `u` and `v`).
 - The baseline's `index/3/c/con` remark for the client: the client still reads such paths; the registry can no longer contain them.
 - B-P12: a `curl.exe`, `gh.exe`, or `git.exe` planted in a directory that is on `PATH` before the real one is still run.
 - B-P10: a read-only cache now fails with `Q0611`, and tampering has no message of its own (see the policy table).
 - The commit messages of `ba90642`, `97aa843`, and `25b1728` name the weakness each fixes in one sentence; they were not rewritten.
+
+# Part 3: package owners
+
+- **Date:** 2026-11-21
+- **Branch:** `feat/registry-owners`, created from local `main` at `846d18e` (parts 1 and 2 merged). Not merged or pushed.
+- **Decision:** the user chose alternative (b) of B-P5 for publishing: an owner list per package, created by the first publishing pull request and enforced by CI instead of by review alone.
+- **Scope:** `registry-template/`, `src/pkg/`, their tests, and documentation in this repository. Nothing was sent to `qxide-lang/registry` or any other remote. This record and the commit messages were written by hand; nothing was sent to an external text service.
+- **Commits:** `9ca1222` (validator, workflow, tests), `dbbe8b7` (`qxide publish` writes the owner file), then the documentation commit that adds this record.
+
+## Design
+
+| Item | Choice | Reason |
+| --- | --- | --- |
+| Storage | `owners/<prefix>/<name>`, one `{"id": <int>, "login": <str>}` JSON object per line, 1 to 32 lines | Same sharding and line format as `index/`; the client never reads it, so the index format and old clients are unaffected. |
+| Identity | GitHub numeric user id; `login` only for readers | A login can be renamed and then registered by someone else; the id cannot be reused. |
+| Author source | `github.event.pull_request.user.id` and `.login`, passed through `env` to `--author-id` and `--author-login` | Set by GitHub when the pull request is opened and not changed by later pushes. Not used: `github.actor` (whoever triggered the run, such as a re-run by a maintainer), `sender`, the head repository owner, commit author or committer (written by the pull request), title or body. |
+| Authority | Owner file on the base branch (`git show <base>:owners/...`), never the merge result | Otherwise a pull request could add its author and publish in the same change. |
+| New package | No index file in `git ls-tree <base> -- index/`; the pull request must add the owner file listing exactly its author | First come, first served, as before. Defined by the base listing, which fails closed, rather than by a missing owner file. |
+| Published package without owner file | Locked for pull requests until a maintainer adds the file | Migration-safe: a missing file cannot be claimed by the next pull request. |
+| Missing author | `--base` without a valid `--author-id` and `--author-login` is an error | Fail closed if the workflow is changed or run without the event. |
+| Changes to owners | Only by an author listed on the base branch; the file cannot become empty or be deleted; no confirmation by added accounts | Smallest rule that allows adding, removing, and transferring. |
+| Maintainer override | Commit to `main` (admin bypass); the push run checks the format only | No maintainer list inside CI, which would be one more thing to protect. |
+| Files under `packages/` | Every added file must be the archive of a version in the index | Without this, a non-owner could add `packages/<prefix>/<name>/<name>-<next>.tar.gz` with no index line; the owner's publication of that version would then modify an existing archive and be rejected. |
+| Diff parsing | `git diff --name-status -z` | Without `-z`, git quotes paths with unusual characters, and a quoted path does not start with `packages/`. |
+| Yanking | Unchanged: maintainers only (B-P5) | Allowing owners to yank is a separate decision. |
+
+`qxide publish` (the `gh` path) now asks `gh api user --jq '.id, .login'` and writes the owner file into the pull request for the first version of a package. Without `gh`, it prints the owner file as a third file to add. A local directory registry gets no owner file.
+
+## Regression tests
+
+`ValidateOwners` in `ci/test_registry_scripts.py` (the base branch is owned by `alice`, id 1001):
+
+| Test | Input | Expected |
+| --- | --- | --- |
+| `test_owner_publishes_a_new_version` | `alice` adds `evil 1.0.1` | passes |
+| `test_non_owner_cannot_publish_a_new_version` | `mallory` adds `evil 1.0.1` | `index/ev/il/evil` rejected |
+| `test_same_login_with_another_id_is_not_the_owner` | author login `alice` with id 4242 | rejected |
+| `test_new_package_by_anyone` | `mallory` adds `mallory-tools` with an owner file listing `mallory` | passes; summary names the author |
+| `test_owner_line_written_by_qxide_publish` | owner line in the exact form `Owner::to_json` writes | passes |
+| `test_new_package_needs_an_owner_file` | new package, no owner file | rejected |
+| `test_new_package_owner_file_lists_exactly_the_author` | someone else, author plus another, matching login with another id | rejected |
+| `test_non_owner_cannot_add_themselves` | `mallory` adds its own account (with and without a new version), or replaces the owners | rejected |
+| `test_owner_adds_and_transfers` | `alice` adds `bob`; after merge `bob` publishes and becomes the only owner | passes |
+| `test_owner_cannot_leave_a_package_without_owners` | empty owner file; deleted owner file | rejected |
+| `test_package_without_owner_file_is_locked` | no owner file on base; `alice` or `mallory` publish and add themselves; then a maintainer adds the file | rejected, then passes |
+| `test_archive_without_index_line_in_another_package` | archive at the path of `evil 1.0.1` with no index line; a non-ASCII file name | rejected (the unquoted path is reported) |
+| `test_author_is_required_with_base` | no author, only one of the two, leading zero, non-digit id, invalid login | rejected |
+| `test_malformed_owner_files` | 16 malformed files (empty, invalid JSON, `true`/string/float/zero/oversized id, extra key, bad or long login, duplicate id, invalid UTF-8, nesting 5000 deep, 33 owners) | rejected without a traceback |
+| `test_owner_files_need_a_package` | owner file without an index file; owner file at a wrong prefix | rejected |
+| `test_owner_files_are_optional_outside_pull_requests` | package without owner file, no `--base` | passes |
+| `test_owner_pull_request_may_not_change_other_files` | owner file change plus `README.md` | rejected |
+
+`ValidateWorkflow.test_author_comes_from_the_pull_request_event` pins the two `pull_request.user` expressions and the arguments, and rejects `github.actor`, `triggering_actor`, `head_commit`, `sender`, and head or commit author fields in the workflow.
+
+Existing tests now pass an author (`alice`) with `--base`, and `Registry.add` writes an owner file for a package's first version; no assertion was removed or weakened. With the `check_ownership` call removed (before `test_owner_line_written_by_qxide_publish` was added), 9 of the 16 `ValidateOwners` tests failed, 14 cases counting subtests; the others are cases that must pass, or checks that run without it. With the old diff parsing, the non-ASCII case fails.
+
+Rust: `publishing_a_new_package_writes_its_owner_file` and `gh_user_output_must_be_an_id_and_a_login` in `src/pkg/tests.rs`.
+
+## Verification
+
+Run on Windows 11 with Python 3.14.10 and rustc 1.99.1 at the tip of this branch:
+
+| Command | Result |
+| --- | --- |
+| `python -m unittest ci.test_registry_scripts` | 68 tests OK (1 skipped: `test_windows_device_names_on_disk`, Linux only) |
+| `cargo fmt --check` | clean |
+| `cargo clippy -j 8 --all-targets -- -D warnings` | clean |
+| `cargo test -j 8 --workspace` | all passed (binary unit tests 117) |
+
+Not run: the workflow on GitHub Actions, so the event values were not observed live; the `gh api user` call of `qxide publish` (it needs GitHub); Python 3.12.
+
+## Applying this to `qxide-lang/registry`
+
+1. Make sure parts 1 and 2 are applied first (the live `scripts/validate.py` is older than both).
+2. List the live packages and, for each, the account that opened the pull request that published its first version, with its id (`gh pr list --repo qxide-lang/registry --state merged --json number,author,title`, then `gh api users/<login> --jq .id`). At the time of writing the registry has `bell-utils` 0.1.0, published by `rigelx2b` in pull request #1. The owner's id must be confirmed by the user before it is written.
+3. In one maintainer commit pushed directly to `main`: the new `scripts/validate.py`, `.github/workflows/validate.yml`, README and pull request template, an `owners/.gitkeep`, and one owner file per package. Run `python -I scripts/validate.py` in the clone before pushing. `pull_request_target` uses the workflow from the default branch, so the rules apply from the next pull request on.
+4. Packages left without an owner file are locked until a maintainer adds one; nothing else breaks.
+5. `qxide` 0.7.0 does not write owner files, so its `qxide publish` opens pull requests for new packages that fail the check until the next release. Until then, publishers add the owner file to their pull request by hand (the README describes it), or maintainers add it.
+
+## Not done here
+
+- Yanking by owners (B-P5 stays maintainer-only).
+- An added owner is not asked to accept; an owner can add any account.
+- No `qxide owner` command; owner files are edited by hand.
+- CI cannot check that a `login` matches its `id` for owners other than the author (no API calls from the check); only `id` is used.
+- An owner who opens a pull request from a branch that others can push to (or that has "Allow edits by maintainers" enabled) accepts their later commits; CI cannot tell who pushed a commit.
+- `qxide publish` does not check ownership before opening the pull request; a non-owner learns from CI.
+- If GitHub ever reports a different `pull_request.user` than the account that opened the pull request (for example, transferred or deleted accounts, shown as `ghost`), the pull request fails the check; this was not tested live.
