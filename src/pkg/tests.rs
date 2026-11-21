@@ -855,6 +855,41 @@ fn long_package_paths_round_trip() {
     assert!(out.join(&deep).is_file());
 }
 
+// M-03: the client accepts the download locations `validate.py` accepts, and nothing else.
+#[test]
+fn download_locations_follow_the_registry_checker() {
+    for ok in [
+        "packages/ab/cd/abcd/abcd-1.0.0.tar.gz",
+        "https://github.com/o/r/releases/download/v1.0.0/a-1.0.0.tar.gz",
+        "https://example.com:8443/a+b/c~d%20e.tar.gz",
+        "https://example.com",
+    ] {
+        assert!(index::valid_dl(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "http://example.com/a.tar.gz",
+        "file:///C:/Windows/win.ini",
+        "file:////localhost/C$/Windows/win.ini",
+        "//host/share/a.tar.gz",
+        "\\\\host\\share\\a.tar.gz",
+        "/srv/a.tar.gz",
+        "C:/a.tar.gz",
+        "packages/../a.tar.gz",
+        "packages/./a.tar.gz",
+        "packages//a.tar.gz",
+        "packages\\a.tar.gz",
+        "packages/con/a.tar.gz",
+        "packages/a b.tar.gz",
+        "https://",
+        "https://user@example.com/a.tar.gz",
+        "https://example.com:123456/a.tar.gz",
+        "https://example.com/a b.tar.gz",
+    ] {
+        assert!(!index::valid_dl(bad), "{bad}");
+    }
+}
+
 /// Shared with ci/test_registry_scripts.py, so the registry checker accepts exactly what we parse.
 const SEMVER_CASES: &str = include_str!("../../tests/data/semver_cases.json");
 

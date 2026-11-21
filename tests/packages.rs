@@ -631,3 +631,94 @@ fn path_dependency_example_runs_from_a_checkout() {
     let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/packages/bell-utils");
     env.ok(&lib, &["check", "src/lib.qx"]);
 }
+
+// Regression tests for docs/security/PKG_CLIENT_FIXES.md.
+
+// `s` as a JSON string literal (backslashes only; the values below hold no quotes).
+fn json_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\"))
+}
+
+// M-03: an index `dl` (or the `config.json` template) may only name an `https://` URL or a plain
+// relative path inside the registry. Anything else fails with Q0609 before a file is opened.
+#[test]
+fn download_locations_stay_inside_the_registry() {
+    let env = Env::new("dl-confined");
+    // A valid archive with a matching checksum in a second registry next to the test registry,
+    // so each redirected download below would otherwise install.
+    let elsewhere = env.root.join("elsewhere");
+    let lib = env.lib("outside", "1.0.0", "");
+    env.ok(
+        &lib,
+        &["publish", "--registry", &elsewhere.display().to_string()],
+    );
+    let rel = "packages/ou/ts/outside/outside-1.0.0.tar.gz";
+    let archive = elsewhere.join(rel);
+    assert!(archive.is_file());
+    let line = read(&elsewhere.join("index/ou/ts/outside"))
+        .trim()
+        .to_string();
+    let index = env.registry.join("index/ou/ts/outside");
+    std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+    let abs = archive.display().to_string().replace('\\', "/");
+    let file_url = if abs.starts_with('/') {
+        format!("file://{abs}")
+    } else {
+        format!("file:///{abs}")
+    };
+    let up = format!("../elsewhere/{rel}");
+    let with_dl = |dl: &str| {
+        line.replacen(
+            "\"yanked\"",
+            &format!("\"dl\":{},\"yanked\"", json_str(dl)),
+            1,
+        )
+    };
+    let add = |i: usize| {
+        let app = env.app(&format!("app-{i}"), PLAIN_MAIN);
+        env.qx_home(
+            &app,
+            &env.root.join(format!("home-{i}")),
+            &["add", "outside"],
+        )
+    };
+    let cases = [
+        // The two `dl` values of the M-03 reproduction.
+        "file:///C:/Windows/win.ini".to_string(),
+        "file:////localhost/C$/Windows/win.ini".to_string(),
+        file_url,
+        abs.clone(),
+        up.clone(),
+        up.replace('/', "\\"),
+        format!("packages/../../elsewhere/{rel}"),
+    ];
+    for (i, dl) in cases.iter().enumerate() {
+        std::fs::write(&index, with_dl(dl) + "\n").unwrap();
+        let out = add(i);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{dl}: {err}");
+        assert!(err.contains("error[Q0609]"), "{dl}: {err}");
+    }
+    // The `config.json` template is held to the same rule.
+    std::fs::write(&index, format!("{line}\n")).unwrap();
+    std::fs::write(
+        env.registry.join("config.json"),
+        "{\"dl\": \"../elsewhere/packages/{prefix}/{name}/{name}-{version}.tar.gz\"}",
+    )
+    .unwrap();
+    let out = add(cases.len());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0609]"), "{err}");
+    // Control: the same archive inside the registry, named by a relative `dl`, installs.
+    std::fs::remove_file(env.registry.join("config.json")).unwrap();
+    std::fs::create_dir_all(env.registry.join(rel).parent().unwrap()).unwrap();
+    std::fs::copy(&archive, env.registry.join(rel)).unwrap();
+    std::fs::write(&index, with_dl(rel) + "\n").unwrap();
+    let out = add(cases.len() + 1);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

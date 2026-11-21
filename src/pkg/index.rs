@@ -7,6 +7,7 @@
 //   packages/<prefix>/<name>/...   archives (GitHub-hosted registry only)
 //   search.json                    {"packages": [{"name", "version", "description"}]}
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -306,17 +307,25 @@ impl Registry {
             .to_string())
     }
 
-    /// Where the archive of `e` is downloaded from, relative to the root unless absolute.
+    /// Where the archive of `e` is downloaded from: an `https://` URL, or a path relative to the
+    /// registry root (see `valid_dl`).
     pub fn dl_url(&self, e: &Entry) -> Result<String> {
         let template = match &e.dl {
             Some(dl) => dl.clone(),
             None => self.dl_template()?,
         };
-        Ok(template
+        let url = template
             .replace("{name}", &e.name)
             .replace("{version}", &e.vers.to_string())
             .replace("{prefix}", &prefix(&e.name))
-            .replace("{sha256-checksum}", &e.cksum))
+            .replace("{sha256-checksum}", &e.cksum);
+        if !valid_dl(&url) {
+            return Err(Error::new(
+                Code::InvalidIndex,
+                msg::invalid_dl(&e.name, &e.vers.to_string(), &url),
+            ));
+        }
+        Ok(url)
     }
 
     /// Downloads the archive of `e` (not yet verified).
@@ -333,13 +342,8 @@ impl Registry {
                 return Err(Error::new(Code::Offline, msg::offline_uncached(&url)));
             }
             curl(&url, &self.home.download_dir())?
-        } else if url.starts_with("file://") {
-            read_optional(&file_url_path(&url))?
-        } else if url.contains("://") {
-            return Err(Error::new(
-                Code::RegistryUnavailable,
-                msg::insecure_registry(&url),
-            ));
+        } else if let Location::Dir(d) = &self.loc {
+            read_archive(&d.join(&url))?
         } else {
             self.fetch(&url)?
         };
@@ -413,6 +417,64 @@ fn collect_index_names(dir: &Path, out: &mut Vec<String>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether an expanded download location is one the registry checker accepts (`valid_dl` in
+/// `registry-template/scripts/validate.py`): an `https://` URL, or a relative path of plain
+/// segments, so a `dl` can never name a local file, a UNC path, or a path outside the registry.
+pub fn valid_dl(target: &str) -> bool {
+    if let Some(rest) = target.strip_prefix("https://") {
+        let (authority, path) = match rest.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (rest, None),
+        };
+        let (host, port) = match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        };
+        let host_ok = !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+        let port_ok = port
+            .is_none_or(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
+        let path_ok = path.is_none_or(|p| {
+            p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._~%+!$&'()*,;=:@/-".contains(&b))
+        });
+        return host_ok && port_ok && path_ok;
+    }
+    target.split('/').all(|s| {
+        s != "."
+            && s != ".."
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+            && super::archive::portable_component(s)
+    })
+}
+
+// An archive in a directory registry: a regular file of at most `MAX_ARCHIVE` bytes.
+fn read_archive(path: &Path) -> Result<Option<Vec<u8>>> {
+    let max = super::archive::MAX_ARCHIVE;
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::io(path, &e)),
+    };
+    if !file.metadata().map_err(|e| Error::io(path, &e))?.is_file() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::io(path, &e))?;
+    if bytes.len() as u64 > max {
+        return Err(Error::new(
+            Code::BadArchive,
+            msg::bad_archive(&msg::reason_too_large(max)),
+        ));
+    }
+    Ok(Some(bytes))
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
