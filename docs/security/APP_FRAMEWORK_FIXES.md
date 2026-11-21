@@ -33,7 +33,10 @@ The launch decision moved out of `main` into `start` (`crates/qxide-app-runtime/
 - At most four calls run at once (`MAX_WORKERS`), so simulation memory across concurrent calls stays within 1 GiB; a test checks that bound.
 - Calls run on a fixed pool of worker threads created at start-up. Waiting calls are queued closures instead of threads with 64 MiB stacks, and the `commands` request uses the same pool. A worker survives a panicking call, and that call's `Promise` rejects with `Q0412` instead of staying pending. A call id that is still in flight cannot be reused, so its cancel flag cannot be replaced.
 - A call result larger than 32 MiB is not handed to the webview; the call rejects with the new code `Q0716`. `std.app.emit` refuses events above the same size with `Q0706`, and oversized dev log lines are not forwarded to the page.
+- The page token of an IPC message, which every answer echoes, is limited to 64 characters (commit `2c7e9e4`); a message with a longer token is not answered, so the token cannot push a script past the size cap. `oversized_results_are_rejected_not_sent` covers it and failed before that commit.
 - `docs/design/qx-app.md` (sections 5, 6, 8 and 13), `docs/error-codes.md` and the code table in `docs/design/qx-language.md` describe the new limits and `Q0716`.
+
+Commit `d8d77ff` on its own fails `cargo clippy` for the runtime crate (`large_enum_variant` on the new `Start` enum); `0be050b` boxes the variant, and the branch tip is clean.
 
 ## Not addressed here
 
