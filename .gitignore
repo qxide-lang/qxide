@@ -2,3 +2,6 @@
 qasm-out/
 examples/packages/*/target/
 __pycache__/
+examples/apps/*/target/
+crates/qxide-app-runtime/target/
+apps/*/target/

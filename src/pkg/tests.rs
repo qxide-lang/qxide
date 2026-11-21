@@ -88,6 +88,7 @@ fn names_and_index_paths() {
         "",
         "Bell",
         "bell_utils",
+        "std",
         "-a",
         "a-",
         "a--b",

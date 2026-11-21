@@ -187,11 +187,19 @@ impl Server {
                 None => (None, None),
             };
             let read = |p: &Path| self.read(p);
+            // The standard modules `qxide check` allows: an app's `[app] permissions`, else the
+            // CLI's without `--allow`.
+            let perms = doc
+                .path
+                .as_deref()
+                .and_then(crate::app::permissions_for)
+                .unwrap_or_else(|| lang::stdlib::Permissions::cli(false));
             let input = Input {
                 name: &name,
                 src: &doc.text,
                 project: project.as_ref(),
                 read: &read,
+                perms,
             };
             let analysis = ide::analyze(&input);
             self.cache.insert(

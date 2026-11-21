@@ -413,7 +413,7 @@ pub struct Analysis {
 /// Runs the same front end as `qxide check` (lexing, linking, static checks) on `input`.
 pub fn analyze(input: &Input) -> Analysis {
     let src = strip_bom(input.src);
-    let (map, linked) = link::link(input.name, src, input.project, input.read);
+    let (map, linked) = link::link(input.name, src, input.project, input.read, &input.perms);
     let (linked, diags) = match linked {
         Ok(program) => {
             let errors = check::check_with(&program, !input.is_library());

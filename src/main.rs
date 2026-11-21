@@ -3,6 +3,7 @@
 //! The crate is a library first; this binary is a thin wrapper so the project
 //! can be installed as a standalone tool (cargo-dist installers, PyPI wheel).
 
+mod app;
 mod lang;
 mod lsp;
 mod pkg;
@@ -31,13 +32,14 @@ Commands:
   new <NAME>                         Create a new project folder with main.qx and README.md
   bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
   lsp                                {}
-{}
+{}{}
 Options:
   -V, --version                      Print version
   -h, --help                         Print help
 ",
         LSP_HELP,
-        pkg::cli::usage()
+        pkg::cli::usage(),
+        app::usage()
     )
 }
 
@@ -178,6 +180,8 @@ fn package_name(folder: &str) -> String {
     }
     let mut name = match name.trim_end_matches('-') {
         "" => "app".to_string(),
+        // `std` is reserved for the standard library.
+        "std" => "std-app".to_string(),
         n if n.starts_with(|c: char| c.is_ascii_digit()) => format!("app-{n}"),
         n => n.to_string(),
     };
@@ -303,15 +307,35 @@ fn explain_command(args: &[String]) -> ExitCode {
     }
 }
 
+// `--allow fs`: the only permission `qxide run` can grant (`std.log` and `std.time` need none).
+fn parse_allow(value: Option<&String>) -> Result<(), ExitCode> {
+    match value.map(String::as_str) {
+        Some("fs") => Ok(()),
+        other => {
+            eprintln!(
+                "qxide: invalid value `{}` for --allow (expected `fs`)",
+                other.unwrap_or_default()
+            );
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+fn project_data_dir(entry: &std::path::Path) -> std::path::PathBuf {
+    let dir = entry.parent().unwrap_or(std::path::Path::new("."));
+    pkg::manifest::find(dir).map_or_else(|| std::path::PathBuf::from("data"), |d| d.join("data"))
+}
+
 // Runs one `.qx` command: `run`, `check` or `qasm`.
 fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     // Flags may come before or after the file (`run --shots 9 a.qx` or `run a.qx --shots 9`).
-    let (mut shots, mut seed, mut file) = (1, None, None);
+    let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let parsed = match (cmd, arg.as_str()) {
             ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             ("run", "--seed") => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
+            ("run" | "check", "--allow") => parse_allow(rest.next()).map(|()| allow_fs = true),
             (_, p) if file.is_none() && !p.starts_with('-') => {
                 file = Some(p.to_string());
                 Ok(())
@@ -354,6 +378,13 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     };
     let (seed, announce) = seed.map_or_else(|| (random_seed(), true), |s| (s, false));
     let cmd = cmd.to_string();
+    // `std.fs` paths of `qxide run --allow fs` live in `data/` next to `qxide.toml` (or here).
+    let data_root = project_data_dir(std::path::Path::new(&path));
+    // `qxide check` of an app's modules uses the app's `[app] permissions`.
+    let app_perms = match cmd.as_str() {
+        "check" => app::permissions_for(std::path::Path::new(&path)),
+        _ => None,
+    };
     let worker = std::thread::Builder::new()
         .stack_size(LANG_STACK)
         .spawn(move || {
@@ -362,6 +393,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                 src: &src,
                 project: project.as_ref(),
                 read: &lang::read_file,
+                perms: app_perms.unwrap_or_else(|| lang::stdlib::Permissions::cli(allow_fs)),
             };
             match cmd.as_str() {
                 "check" => lang::check_input(&input).map(|()| {
@@ -370,7 +402,8 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                     (line, false)
                 }),
                 "qasm" => lang::qasm_input(&input).map(|out| (out, false)),
-                _ => lang::run_input_report(&input, shots, seed).map(|r| (r.out, r.simulated)),
+                _ => lang::run_input_report(&input, shots, seed, &mut lang::cli_host(data_root))
+                    .map(|r| (r.text, r.simulated)),
             }
         });
     match worker.map(|h| h.join()) {
@@ -404,6 +437,7 @@ fn main() -> ExitCode {
         Some("fmt") => return fmt_command(&args[1..]),
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),
+        Some("app") => return app::command(&args[1..]),
         Some("repl") => return repl_command(&args[1..]),
         // Language clients may pass `--stdio`; stdio is the only transport anyway.
         Some("lsp") if args.len() > 1 && !(args.len() == 2 && args[1] == "--stdio") => {

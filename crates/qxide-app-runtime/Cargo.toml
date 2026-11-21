@@ -1,0 +1,30 @@
+[package]
+name = "qxide-app-runtime"
+version = "0.7.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Prebuilt desktop runtime for Qxide apps (docs/design/qx-app.md)"
+
+[[bin]]
+name = "qxide-app"
+path = "src/main.rs"
+
+[dependencies]
+qxide = { path = "../..", default-features = false }
+serde_json = "1.0"
+tao = "0.37"
+# `devtools` lets `qxide app dev` open the inspector; built apps never enable it.
+wry = { version = "0.57", features = ["devtools"] }
+
+# Not a member of the qxide workspace: wry needs WebKitGTK on Linux, which CI does not install yet.
+[workspace]
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# Same as the qxide crate: the shared interpreter tests need optimised frames and run many shots.
+[profile.test]
+opt-level = 2

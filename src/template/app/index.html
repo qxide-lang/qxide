@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>{title}</h1>
+      <p id="intro"></p>
+      <div class="controls">
+        <label><span id="shots-label"></span> <input id="shots" type="number" min="1" max="1000000" value="1000" /></label>
+        <button id="measure" type="button"></button>
+        <button id="save" type="button" disabled></button>
+      </div>
+      <div id="chart" class="chart" aria-live="polite"></div>
+      <p id="status" class="status" role="status"></p>
+    </main>
+  </body>
+</html>

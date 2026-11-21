@@ -9,11 +9,14 @@ use qxide::{Bit, Circuit, Qubit};
 
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
+use super::stdlib::{Host, HostValue, StdErrorKind};
 use super::{msg, Limits};
 
 pub const MAX_CALL_DEPTH: usize = 200;
 // Caps allocations so a huge `qreg(n)` fails with a diagnostic instead of aborting on OOM.
 pub const MAX_QUBITS: usize = 1 << 20;
+// How often (in budget steps) elaboration asks the host whether the call was cancelled.
+const CANCEL_POLL: u64 = 4096;
 
 // How a `BitReg` is printed: `{}` gives an array, `.to_binary()` and `.as_int()` give numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,14 +75,28 @@ pub struct Elaborated {
     pub counts: OpCounts,
     // Upper bound of the length of `circuit.to_qasm()`, so `qxide qasm` can refuse before building it.
     pub qasm_bytes: u64,
+    // What the run used of `Limits`, for measuring the defaults.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub usage: Usage,
+}
+
+/// Budgets an elaboration used, for measuring the defaults (src/lang/app_limits_tests.rs).
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Usage {
+    pub steps: u64,
+    pub ops: u64,
+    pub out_bytes: u64,
+    pub cond_depth: usize,
 }
 
 // Registers share their storage, so reading a variable or indexing `r[i]` copies no qubit list (B-09).
 #[derive(Debug, Clone)]
-enum Value {
+pub enum Value {
     Int(i64),
     Double(f64),
     Bool(bool),
+    Str(Rc<str>),
     Bit(Bit),
     Bits(Rc<[Bit]>),
     ShotView(Rc<[Bit]>, BitsFmt),
@@ -151,8 +168,11 @@ impl<'p> Frame<'p> {
     }
 }
 
-struct Interp<'p> {
+struct Interp<'p, 'h> {
     fns: HashMap<&'p str, &'p FnDecl>,
+    host: &'h mut dyn Host,
+    // `steps` at which the host is next asked whether the call was cancelled.
+    next_poll: u64,
     pool: Vec<Option<Qubit>>,
     output: Vec<OutPiece>,
     measured: Vec<Bit>,
@@ -169,14 +189,35 @@ struct Interp<'p> {
     counts: OpCounts,
     // `if` blocks on measured bits that enclose the operations being recorded, across calls.
     cond_depth: usize,
+    peak_cond_depth: usize,
 }
 
 // `OPENQASM 3.0;`, `include`, `qubit[n] q;` and `bit[n] c;` lines.
 const QASM_HEADER_BYTES: u64 = 96;
 
-pub fn elaborate(p: &Program, limits: &Limits) -> R<Elaborated> {
+// Steps per byte of `String` text built, compared, measured or passed to or from the host. Every
+// live byte was charged when it was built, so the step budget also bounds string memory:
+// `max_steps / 8` bytes (128 MiB for the CLI, 256 MiB per desktop-app call).
+const STR_BYTE_STEPS: u64 = 8;
+
+/// Runs `main` once, recording its circuit. Std calls go to `host`.
+pub fn elaborate(p: &Program, host: &mut dyn Host, limits: &Limits) -> R<Elaborated> {
+    elaborate_call(p, "main", Vec::new(), host, limits).map(|(e, _)| e)
+}
+
+/// Runs the function `name` once with `args` and returns its circuit and return value, whose
+/// `Bit`s refer to the circuit's measurements.
+pub fn elaborate_call(
+    p: &Program,
+    name: &str,
+    args: Vec<Value>,
+    host: &mut dyn Host,
+    limits: &Limits,
+) -> R<(Elaborated, Value)> {
     let mut it = Interp {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
+        host,
+        next_poll: CANCEL_POLL,
         pool: Vec::new(),
         output: Vec::new(),
         measured: Vec::new(),
@@ -190,21 +231,28 @@ pub fn elaborate(p: &Program, limits: &Limits) -> R<Elaborated> {
         qasm_bytes: QASM_HEADER_BYTES,
         counts: OpCounts::default(),
         cond_depth: 0,
+        peak_cond_depth: 0,
     };
-    let main = *it
-        .fns
-        .get("main")
-        .ok_or_else(|| internal(Span::default()))?;
+    let f = *it.fns.get(name).ok_or_else(|| internal(Span::default()))?;
     let mut c = Circuit::new();
-    it.call_fn(&mut c, main, Vec::new(), main.name.span)?;
-    Ok(Elaborated {
-        circuit: c,
-        output: it.output,
-        measured: it.measured,
-        slots: it.slots,
-        counts: it.counts,
-        qasm_bytes: it.qasm_bytes,
-    })
+    let ret = it.call_fn(&mut c, f, args, f.name.span)?;
+    Ok((
+        Elaborated {
+            circuit: c,
+            output: it.output,
+            measured: it.measured,
+            slots: it.slots,
+            counts: it.counts,
+            qasm_bytes: it.qasm_bytes,
+            usage: Usage {
+                steps: it.steps,
+                ops: it.ops,
+                out_bytes: it.out_bytes,
+                cond_depth: it.peak_cond_depth,
+            },
+        },
+        ret,
+    ))
 }
 
 // What a recorded operation is, for the operation budget, the QASM size and the work estimate.
@@ -242,7 +290,54 @@ fn internal(at: Span) -> Diagnostic {
     Diagnostic::new(Code::Internal, at, msg::internal_error())
 }
 
-impl<'p> Interp<'p> {
+impl<'p> Interp<'p, '_> {
+    // Text work in proportion to its length (`STR_BYTE_STEPS` per byte), charged before it is done.
+    fn charge_text(&mut self, bytes: usize, at: Span) -> R<()> {
+        self.charge((bytes as u64).saturating_mul(STR_BYTE_STEPS), at)
+    }
+
+    // A string literal used as a value; `println` reads its format string from the AST instead.
+    // Each evaluation builds a new `String`, so a literal in a loop is charged every time.
+    fn str_lit(&mut self, pieces: &[FmtPiece], at: Span) -> R<Value> {
+        let mut len = 0;
+        for p in pieces {
+            match p {
+                FmtPiece::Lit(t) => len += t.len(),
+                FmtPiece::Hole => return Err(internal(at)),
+            }
+        }
+        self.charge_text(len, at)?;
+        let mut text = String::with_capacity(len);
+        for p in pieces {
+            if let FmtPiece::Lit(t) = p {
+                text.push_str(t);
+            }
+        }
+        Ok(Value::Str(text.into()))
+    }
+
+    // `String` `+` (either side a `String`), `==` and `!=`, charged by the text they touch.
+    fn str_binary(&mut self, op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
+        match op {
+            BinOp::Add => {
+                let (a, b) = (concat_text(&l, at)?, concat_text(&r, at)?);
+                self.charge_text(a.len() + b.len(), at)?;
+                let mut text = String::with_capacity(a.len() + b.len());
+                text.push_str(&a);
+                text.push_str(&b);
+                Ok(Value::Str(text.into()))
+            }
+            BinOp::Eq | BinOp::Ne => {
+                let (Value::Str(a), Value::Str(b)) = (&l, &r) else {
+                    return Err(internal(at));
+                };
+                self.charge_text(a.len().min(b.len()), at)?;
+                Ok(Value::Bool((a == b) == (op == BinOp::Eq)))
+            }
+            _ => Err(internal(at)),
+        }
+    }
+
     fn charge(&mut self, steps: u64, at: Span) -> R<()> {
         self.steps = self.steps.saturating_add(steps);
         if self.steps > self.limits.max_steps {
@@ -251,6 +346,12 @@ impl<'p> Interp<'p> {
                 at,
                 msg::step_limit(self.limits.max_steps),
             ));
+        }
+        if self.steps >= self.next_poll {
+            self.next_poll = self.steps.saturating_add(CANCEL_POLL);
+            if self.host.cancelled() {
+                return Err(Diagnostic::new(Code::Cancelled, at, msg::cancelled()));
+            }
         }
         Ok(())
     }
@@ -402,6 +503,7 @@ impl<'p> Interp<'p> {
         let ty = ty.unwrap_or(match v {
             Value::Double(_) => Ty::Double,
             Value::Bool(_) => Ty::Boolean,
+            Value::Str(_) => Ty::String,
             _ => Ty::Int,
         });
         f.bind(&name.name, v, ty);
@@ -483,6 +585,7 @@ impl<'p> Interp<'p> {
         // Checker forbids `return` here, so the bodies always fall through.
         self.record(Rec::If, i.cond.span)?;
         self.cond_depth += 1;
+        self.peak_cond_depth = self.peak_cond_depth.max(self.cond_depth);
         let mut res = Ok(Flow::Next);
         c.if_one(bit, |c| res = self.block(c, f, &i.then));
         self.cond_depth -= 1;
@@ -490,6 +593,7 @@ impl<'p> Interp<'p> {
         if let Some(els) = &i.els {
             self.record(Rec::If, i.cond.span)?;
             self.cond_depth += 1;
+            self.peak_cond_depth = self.peak_cond_depth.max(self.cond_depth);
             let mut res = Ok(Flow::Next);
             c.if_zero(bit, |c| {
                 res = match els {
@@ -519,11 +623,11 @@ impl<'p> Interp<'p> {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Double(v) => Ok(Value::Double(*v)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
-            ExprKind::Str(_) => Err(internal(e.span)),
+            ExprKind::Str(pieces) => self.str_lit(pieces, e.span),
             ExprKind::Var(name) => self.var(f, name, e.span),
             ExprKind::Call { name, args } => self.call(c, f, name, args, e.span),
             ExprKind::Index { base, index } => self.index(c, f, base, index, e.span),
-            ExprKind::Method { recv, name } => self.method(c, f, recv, name, e.span),
+            ExprKind::Method { recv, name, .. } => self.method(c, f, recv, name, e.span),
             ExprKind::Cast { ty, expr } => self.cast(c, f, ty, expr, e.span),
             ExprKind::Unary { op, expr } => self.unary(c, f, op, expr, e.span),
             ExprKind::Binary { op, lhs, rhs } => self.binary_expr(c, f, op, lhs, rhs, e.span),
@@ -625,6 +729,9 @@ impl<'p> Interp<'p> {
             _ => {}
         }
         let r = self.expr(c, f, rhs)?;
+        if matches!(l, Value::Str(_)) || matches!(r, Value::Str(_)) {
+            return self.str_binary(*op, l, r, span);
+        }
         binary(*op, l, r, span)
     }
 
@@ -715,6 +822,7 @@ impl<'p> Interp<'p> {
             "println" => self.println(c, f, args, span),
             _ if super::check::ROTATIONS.contains(&n) => self.rotation(c, f, n, args, span),
             _ if super::check::ONE_QUBIT_OPS.contains(&n) => self.one_qubit(c, f, n, args, span),
+            _ if n.starts_with("std.") => self.std_call(c, f, n, args, span),
             _ => return Ok(None),
         };
         v.map(Some)
@@ -812,6 +920,10 @@ impl<'p> Interp<'p> {
 
     fn len(&mut self, c: &mut Circuit, f: &mut Frame<'p>, arg: &'p Expr, span: Span) -> R<Value> {
         match self.expr(c, f, arg)? {
+            Value::Str(s) => {
+                self.charge_text(s.len(), span)?;
+                Ok(Value::Int(s.chars().count() as i64))
+            }
             Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
             Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
             _ => Err(internal(span)),
@@ -841,6 +953,8 @@ impl<'p> Interp<'p> {
                     Some(Value::Int(n)) => OutPiece::Text(n.to_string()),
                     Some(Value::Double(v)) => OutPiece::Text(format!("{v:?}")),
                     Some(Value::Bool(b)) => OutPiece::Text(b.to_string()),
+                    // `emit` charges the copy to the output budget.
+                    Some(Value::Str(s)) => OutPiece::Text(s.to_string()),
                     Some(Value::Bit(b)) => OutPiece::Bit(b),
                     Some(Value::Bits(v)) => OutPiece::Bits(v, BitsFmt::Array),
                     Some(Value::ShotView(v, fmt)) => OutPiece::Bits(v, fmt),
@@ -925,6 +1039,56 @@ impl<'p> Interp<'p> {
             _ => c.reset(q),
         }
         Ok(Value::Unit)
+    }
+
+    // `std.fs.read_text(p)`: evaluates the arguments and lets the host run the effect.
+    fn std_call(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        n: &str,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(match self.expr(c, f, a)? {
+                Value::Int(n) => HostValue::Int(n),
+                Value::Double(v) => HostValue::Double(v),
+                Value::Bool(b) => HostValue::Bool(b),
+                Value::Str(s) => {
+                    self.charge_text(s.len(), a.span)?;
+                    HostValue::Str(s.to_string())
+                }
+                _ => return Err(internal(a.span)),
+            });
+        }
+        let rest = &n["std.".len()..];
+        let (module, function) = rest.split_once('.').ok_or_else(|| internal(span))?;
+        match self.host.call(module, function, vals) {
+            Ok(HostValue::Unit) => Ok(Value::Unit),
+            Ok(HostValue::Int(n)) => Ok(Value::Int(n)),
+            Ok(HostValue::Double(v)) => Ok(Value::Double(v)),
+            Ok(HostValue::Bool(b)) => Ok(Value::Bool(b)),
+            // Hosts cap what they read (16 MiB for `std.fs` and `std.http`); the program pays for
+            // bringing it in like for text it builds itself.
+            Ok(HostValue::Str(s)) => {
+                self.charge_text(s.len(), span)?;
+                Ok(Value::Str(s.into()))
+            }
+            Err(e) => {
+                let code = match e.kind {
+                    StdErrorKind::Unavailable => Code::StdUnavailable,
+                    StdErrorKind::Io => Code::StdIo,
+                    StdErrorKind::Path => Code::StdPath,
+                    StdErrorKind::Argument => Code::StdArgument,
+                    StdErrorKind::Http => Code::StdHttp,
+                    StdErrorKind::Url => Code::StdUrl,
+                    StdErrorKind::Cancelled => Code::Cancelled,
+                };
+                Err(Diagnostic::new(code, span, e.message))
+            }
+        }
     }
 
     fn emit(&mut self, piece: OutPiece, at: Span) -> R<()> {
@@ -1032,6 +1196,18 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
             Ne => Value::Bool(a != b),
             _ => return Err(internal(at)),
         },
+        _ => return Err(internal(at)),
+    })
+}
+
+// The text of a build-time value in `String` concatenation, spelled like `println` prints it.
+fn concat_text(v: &Value, at: Span) -> R<std::borrow::Cow<'_, str>> {
+    use std::borrow::Cow;
+    Ok(match v {
+        Value::Int(n) => Cow::Owned(n.to_string()),
+        Value::Double(v) => Cow::Owned(format!("{v:?}")),
+        Value::Bool(b) => Cow::Owned(b.to_string()),
+        Value::Str(s) => Cow::Borrowed(s),
         _ => return Err(internal(at)),
     })
 }

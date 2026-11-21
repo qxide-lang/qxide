@@ -331,6 +331,7 @@ fn check_library(m: &Manifest) -> Result<()> {
                 src: &src,
                 project: project.as_ref(),
                 read: &crate::lang::read_file,
+                perms: crate::lang::stdlib::Permissions::cli(true),
             };
             crate::lang::check_input(&input)
         });

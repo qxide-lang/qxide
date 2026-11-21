@@ -334,7 +334,8 @@ fn types_and_names() {
         )),
         ["Q0212"]
     );
-    assert_eq!(codes(&main_body("int s = \"hi\";")), ["Q0214"]);
+    assert_eq!(codes(&main_body("int s = \"hi\";")), ["Q0204"]);
+    assert_eq!(codes(&main_body("String s = \"a{}\";")), ["Q0214"]);
     assert_eq!(codes("void f() {}\nvoid f() {}\nvoid main() {}"), ["Q0205"]);
     assert_eq!(codes("void f(int a, int a) {}\nvoid main() {}"), ["Q0205"]);
     assert_eq!(codes("void helper() {}"), ["Q0206"]);

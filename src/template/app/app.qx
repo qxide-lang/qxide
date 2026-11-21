@@ -1,0 +1,20 @@
+import std.fs;
+import std.log;
+import std.time;
+
+// Called by the page with `qxide.invoke("measure_bell", {}, { shots: 1000 })`.
+// The runtime simulates the shots and returns how often each result occurred.
+public BitReg measure_bell() {
+    QReg q = qreg(2);
+    h(q[0]);
+    cx(q[0], q[1]);
+    return measure(q);
+}
+
+// Appends one line to results.txt in the app's data folder and returns it.
+public String save_result(String text) {
+    String line = time.now_iso() + "  " + text;
+    fs.append_text("results.txt", line + "\n");
+    log.info("saved " + line);
+    return line;
+}

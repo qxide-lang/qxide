@@ -1,0 +1,10 @@
+// Bell pair: the two measured bits are always equal.
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    h(a);
+    cx(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    println("a={} b={}", ma, mb);
+}

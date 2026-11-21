@@ -416,7 +416,9 @@ impl Session {
                 return Err(Failure(msg::repl_return()));
             }
         }
-        let e = interp::elaborate(&program, &Limits::CLI).map_err(|d| p.render(&[d]))?;
+        // The session is replayed on every input, so effects other than logging are refused.
+        let mut host = super::stdlib::LogOnly::default();
+        let e = interp::elaborate(&program, &mut host, &Limits::CLI).map_err(|d| p.render(&[d]))?;
         Ok((p, e))
     }
 

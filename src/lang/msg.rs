@@ -123,7 +123,7 @@ pub fn missing_return(name: &str, ty: &str) -> String {
 }
 
 pub fn string_not_allowed() -> String {
-    "string literals are only allowed as the format argument of `println`".into()
+    "string literal contains `{}` placeholders, which are only allowed in the format string of `println`; write literal braces as `{{` and `}}`".into()
 }
 
 pub fn bad_condition(ty: &str) -> String {
@@ -254,6 +254,14 @@ pub fn help_playground_qubit_limit() -> String {
     "use fewer qubits, or install `qxide` to run locally with `qxide run` (no qubit cap); the QASM button still exports the circuit".into()
 }
 
+pub fn app_qubit_limit(qubits: usize, limit: usize) -> String {
+    format!("state-vector simulation of {qubits} qubits exceeds the desktop app limit of {limit} qubits per call")
+}
+
+pub fn help_app_qubit_limit() -> String {
+    "use fewer qubits, or run the program with `qxide run`, which has no qubit cap".into()
+}
+
 pub fn no_return(name: &str) -> String {
     format!("function `{name}` ended without returning a value")
 }
@@ -358,7 +366,7 @@ pub fn help(code: Code) -> Option<String> {
     Some(match code {
         Code::InvalidEscape => "supported escapes are `\\n`, `\\t`, `\\\\`, and `\\\"`".into(),
         Code::TooDeep => "split the expression into smaller parts and store them in local variables".into(),
-        Code::UnknownType => "use one of the available types: `int`, `double`, `boolean`, `Bit`, `BitReg`, `Qubit`, `QReg`, or `void` for functions that return nothing".into(),
+        Code::UnknownType => "use one of the available types: `int`, `double`, `boolean`, `String`, `Bit`, `BitReg`, `Qubit`, `QReg`, or `void` for functions that return nothing".into(),
         Code::BadFormat => "use `{}` to insert a value, and `{{` or `}}` to print literal braces".into(),
         Code::ImmutableAssign => "remove `final` from its declaration".into(),
         Code::BuiltinRedefined => "rename the function to avoid conflicting with a built-in".into(),
@@ -398,6 +406,17 @@ pub fn help(code: Code) -> Option<String> {
         Code::MisplacedImport => "move every `import` to the top of the file, before the first function".into(),
         Code::AmbiguousName => "import the function by full path, e.g. `import pkg.module.function;`, to override wildcard imports".into(),
         Code::ImportConflict => "rename the local function or remove one of the conflicting imports".into(),
+        Code::StdUnknown => "available standard modules are `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`; check the spelling".into(),
+        Code::StdUnavailable => "apps built with `qxide app build` offer more standard modules than this command, and `std.app` is only available in apps".into(),
+        Code::StdDenied => "add the module name to `permissions` in the `[app]` section of `qxide.toml`, or pass `--allow fs` to `qxide run` for `std.fs`".into(),
+        Code::StdIo => "check that the file exists in the data folder (use `fs.exists` first) and is UTF-8 text no larger than 16 MiB".into(),
+        Code::StdPath => "use a relative path such as `results/run.txt`, without `..`, drive letters, or a leading slash".into(),
+        Code::StdArgument => "pass a value within the documented range for this standard function".into(),
+        Code::UnknownCommand => "add the function to `commands` in the `[app]` section of `qxide.toml`, or fix the name passed to `qxide.invoke`".into(),
+        Code::BadArguments => "pass an object whose keys match the exact parameter names with values of the expected types; `qxide.commands()` lists them".into(),
+        Code::Cancelled => "the run was stopped by the page or because the window closed, so you can simply start it again".into(),
+        Code::BadCommand => "mark the function `public` and use only `int`, `double`, `boolean`, or `String` parameters".into(),
+        Code::BadAppConfig => "see the `[app]` section reference in `docs/design/qx-app.md`".into(),
         _ => return None,
     })
 }
@@ -559,4 +578,114 @@ pub fn note_first_import() -> String {
 
 pub fn ambiguous_name(name: &str, modules: &str) -> String {
     format!("ambiguous call to `{name}`: imported via wildcard from {modules}")
+}
+
+// ---- standard library and app commands (docs/design/qx-app.md) ----
+
+pub fn std_unknown_module(name: &str) -> String {
+    format!("unknown standard library module `std.{name}`")
+}
+
+pub fn std_unknown_fn(name: &str, module: &str) -> String {
+    format!("standard module `{module}` has no public function `{name}`")
+}
+
+pub fn std_unavailable(what: &str, host: &str) -> String {
+    format!("standard library item `{what}` is not available in {host}")
+}
+
+pub fn std_denied(module: &str, how: &str) -> String {
+    format!("standard module `std.{module}` is not permitted here; grant access with {how}")
+}
+
+pub fn std_dependency_denied(module: &str, package: &str) -> String {
+    format!("dependency package `{package}` cannot import `std.{module}`; dependencies may only import `std.log`")
+}
+
+pub fn std_sleep_range(ms: i64, max: i64) -> String {
+    format!("duration {ms} ms for `sleep_millis` is outside the allowed range 0 to {max}")
+}
+
+pub fn std_io(path: &str, err: &str) -> String {
+    format!("file operation on `{path}` failed: {err}")
+}
+
+pub fn std_file_too_large(path: &str, mib: u64) -> String {
+    format!("file `{path}` exceeds the {mib} MiB read limit")
+}
+
+pub fn std_not_utf8(path: &str) -> String {
+    format!("file `{path}` is not valid UTF-8 text")
+}
+
+pub fn http_bad_url(url: &str) -> String {
+    format!("invalid URL `{url}`; only `https://` URLs on port 443 without user info are accepted")
+}
+
+pub fn http_host_denied(host: &str) -> String {
+    format!("host `{host}` is not listed in `[app]` `http_hosts` in `qxide.toml`; add it to `http_hosts` to allow requests")
+}
+
+pub fn http_failed(url: &str, reason: &str) -> String {
+    format!("request to `{url}` failed: {reason}")
+}
+
+pub fn http_status(url: &str, status: u16) -> String {
+    format!("request to `{url}` returned HTTP status {status}; only 200-299 is accepted (redirects are not followed)")
+}
+
+pub fn http_too_large(url: &str, mib: usize) -> String {
+    format!("response from `{url}` exceeds the {mib} MiB size limit")
+}
+
+pub fn http_not_utf8(url: &str) -> String {
+    format!("response from `{url}` is not valid UTF-8 text")
+}
+
+pub fn std_bad_path(path: &str) -> String {
+    format!("path `{path}` is not allowed: `std.fs` paths must be relative paths inside the data folder")
+}
+
+pub fn cancelled() -> String {
+    "call was cancelled before it finished".into()
+}
+
+pub fn unknown_command(name: &str) -> String {
+    format!("unknown app command `{name}`: not listed in `[app]` `commands`")
+}
+
+pub fn command_not_found(name: &str, module: &str) -> String {
+    format!("command `{name}` listed in `[app]` `commands` is not a function in module `{module}`")
+}
+
+pub fn command_not_public(name: &str) -> String {
+    format!("command `{name}` must be declared `public` to be called from the page")
+}
+
+pub fn command_bad_param(name: &str, param: &str, ty: &str) -> String {
+    format!("command `{name}` has parameter `{param}` of unsupported type `{ty}`; command parameters must be `int`, `double`, `boolean`, or `String`")
+}
+
+pub fn arg_missing(param: &str, name: &str) -> String {
+    format!("missing argument `{param}` in call to command `{name}`")
+}
+
+pub fn arg_unknown(arg: &str, name: &str) -> String {
+    format!("command `{name}` has no parameter named `{arg}`")
+}
+
+pub fn arg_type(param: &str, name: &str, want: &str, got: &str) -> String {
+    format!("invalid argument `{param}` for command `{name}`: expected `{want}`, got {got}")
+}
+
+pub fn too_many_shots(shots: u64, max: u64) -> String {
+    format!("requested {shots} shots, exceeding the app limit of {max} shots per call")
+}
+
+pub fn bad_app_config(reason: &str) -> String {
+    format!("invalid `[app]` section in `qxide.toml`: {reason}")
+}
+
+pub fn std_size_range(width: i64, height: i64) -> String {
+    format!("invalid window size {width}x{height} in `std.app.set_size`: each side must be between 200 and 8192 pixels")
 }

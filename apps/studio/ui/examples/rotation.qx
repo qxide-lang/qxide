@@ -1,0 +1,12 @@
+// `var` for classical locals, `PI` for angles, `(int)` to truncate a double.
+void main() {
+    var steps = 4;
+    var angle = PI / 2 / steps;
+    Qubit q = qubit();
+    for i in 0..steps {
+        ry(q, angle);
+    }
+    Bit m = measure(q);
+    var degrees = angle * steps * 180 / PI;
+    println("ry total {} degrees ({}), m={}", (int) degrees, degrees, m);
+}

@@ -1,0 +1,15 @@
+[package]
+name = "qxide-studio"
+version = "0.1.0"
+qxide = ">=0.7"
+
+[dependencies]
+
+[app]
+title = "Qxide Studio"
+identifier = "dev.qxide.studio"
+module = "app"
+commands = ["check", "run", "qasm", "format", "load", "save", "set_file"]
+permissions = ["log", "fs", "app", "qxide"]
+width = 1280
+height = 820

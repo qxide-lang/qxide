@@ -240,6 +240,10 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
     let needs_project = [
         "Q0501", "Q0502", "Q0503", "Q0504", "Q0505", "Q0506", "Q0507", "Q0509", "Q0510",
     ];
+    let needs_host = [
+        "Q0703", "Q0704", "Q0705", "Q0707", "Q0708", "Q0711", "Q0712", "Q0713", "Q0714", "Q0715",
+        "Q0716",
+    ];
     for (code, entry) in explain::entries() {
         let blocks = qx_blocks(&entry);
         // Package-manager errors come from commands, not from a `.qx` program.
@@ -249,6 +253,16 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
         }
         if untriggerable.contains(&code.as_str()) {
             assert!(blocks.is_empty(), "{code}");
+            continue;
+        }
+        // Effects that need a granted permission, and app-level errors raised by the desktop
+        // runtime (their examples are `java`, `js` or `toml` blocks; app_tests.rs covers them).
+        if needs_host.contains(&code.as_str()) {
+            assert!(blocks.is_empty(), "{code}");
+            assert!(
+                entry.matches("```").count() >= 4,
+                "{code} needs an example and a fix"
+            );
             continue;
         }
         if needs_project.contains(&code.as_str()) {

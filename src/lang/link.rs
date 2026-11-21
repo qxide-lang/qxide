@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use super::ast::*;
 use super::check::BUILTINS;
 use super::diag::{Code, Diagnostic, Note, SourceMap, Span};
+use super::stdlib::{self, Access, Permissions};
 use super::{lexer, msg, parser};
 
 /// One package whose modules can be imported.
@@ -38,6 +39,9 @@ pub type ReadFn<'a> = &'a dyn Fn(&Path) -> std::io::Result<String>;
 // Caps the module graph so hostile input fails with a diagnostic instead of exhausting memory.
 const MAX_MODULES: usize = 4096;
 
+// Package index of the built-in standard library (`std`), which is not part of any `Project`.
+const STD_PKG: usize = usize::MAX;
+
 struct Module {
     pkg: Option<usize>,
     // `bell_utils.gates`; empty for the entry file.
@@ -47,6 +51,8 @@ struct Module {
     program: Program,
     // Target module of each import; `None` once an error has been reported for it.
     targets: Vec<Option<usize>>,
+    // For each import, the alias of a module import (`import std.fs;` -> `fs`).
+    aliases: Vec<Option<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,6 +63,7 @@ enum Visit {
 
 struct Linker<'a> {
     project: Option<&'a Project>,
+    perms: &'a Permissions,
     read: ReadFn<'a>,
     map: SourceMap,
     modules: Vec<Module>,
@@ -74,9 +81,11 @@ pub fn link(
     src: &str,
     project: Option<&Project>,
     read: ReadFn,
+    perms: &Permissions,
 ) -> (SourceMap, Result<Program, Vec<Diagnostic>>) {
     let mut l = Linker {
         project,
+        perms,
         read,
         map: SourceMap::new(name, src),
         modules: Vec::new(),
@@ -173,6 +182,7 @@ impl Linker<'_> {
             prefix,
             program: p,
             targets: vec![None; n],
+            aliases: vec![None; n],
         });
         self.visit.push(None);
     }
@@ -186,7 +196,12 @@ impl Linker<'_> {
         self.visit[m] = Some(Visit::Active);
         for i in 0..self.modules[m].program.imports.len() {
             let imp = self.modules[m].program.imports[i].clone();
-            let Some((pkg, path)) = self.import_module(m, &imp) else {
+            let resolved = if imp.module[0].name == stdlib::PACKAGE {
+                self.std_import(m, i, &imp)
+            } else {
+                self.import_module(m, &imp)
+            };
+            let Some((pkg, path)) = resolved else {
                 continue;
             };
             let key = (pkg, path);
@@ -243,6 +258,77 @@ impl Linker<'_> {
         d.notes = notes;
     }
 
+    // `import std.fs;` (a module alias), `import std.fs.read_text;` or `import std.fs.*;`:
+    // checks that the module exists and that this host and the importing package may use it.
+    fn std_import(&mut self, m: usize, i: usize, imp: &Import) -> Option<(usize, Vec<String>)> {
+        let (module, alias) = match (imp.module.len(), &imp.item) {
+            (1, Some(item)) => (item.clone(), true),
+            (2, _) => (imp.module[1].clone(), false),
+            _ => {
+                let name: Vec<&str> = imp.module[1..].iter().map(|s| s.name.as_str()).collect();
+                let name = if name.is_empty() {
+                    "*".to_string()
+                } else {
+                    name.join(".")
+                };
+                self.err(Code::StdUnknown, imp.span, msg::std_unknown_module(&name));
+                return None;
+            }
+        };
+        if stdlib::module_source(&module.name).is_none() {
+            self.err(
+                Code::StdUnknown,
+                module.span,
+                msg::std_unknown_module(&module.name),
+            );
+            return None;
+        }
+        // Packages other than the entry package (dependencies) may only log.
+        let dependency = match (self.project, self.modules[m].pkg) {
+            (Some(p), Some(pkg)) if pkg != p.entry_package && pkg != STD_PKG => {
+                Some(p.packages[pkg].name.clone())
+            }
+            _ => None,
+        };
+        let access = match &dependency {
+            Some(_) if module.name != "log" => None,
+            _ => self.perms.access(&module.name),
+        };
+        match (access, dependency) {
+            (Some(Access::Allowed), _) => {}
+            (Some(Access::Unavailable(host)), _) => {
+                let what = format!("std.{}", module.name);
+                self.err(
+                    Code::StdUnavailable,
+                    imp.span,
+                    msg::std_unavailable(&what, host),
+                );
+                return None;
+            }
+            (Some(Access::Denied(how)), _) => {
+                self.err(
+                    Code::StdDenied,
+                    imp.span,
+                    msg::std_denied(&module.name, how),
+                );
+                return None;
+            }
+            (None, dep) => {
+                let dep = dep.unwrap_or_default();
+                self.err(
+                    Code::StdDenied,
+                    imp.span,
+                    msg::std_dependency_denied(&module.name, &dep),
+                );
+                return None;
+            }
+        }
+        if alias {
+            self.modules[m].aliases[i] = Some(module.name.clone());
+        }
+        Some((STD_PKG, vec![module.name]))
+    }
+
     // Resolves the package and module path of an import, reporting unknown packages.
     fn import_module(&mut self, m: usize, imp: &Import) -> Option<(usize, Vec<String>)> {
         let first = &imp.module[0];
@@ -281,6 +367,9 @@ impl Linker<'_> {
     }
 
     fn load(&mut self, key: (usize, Vec<String>), imp: &Import) -> Option<usize> {
+        if key.0 == STD_PKG {
+            return self.load_std(key);
+        }
         let project = self.project?;
         let root = &project.packages[key.0];
         let display = std::iter::once(root.name.clone())
@@ -327,6 +416,26 @@ impl Linker<'_> {
         Some(id)
     }
 
+    // A standard module: its `.qx` declarations, shown in diagnostics as `std/fs.qx`.
+    fn load_std(&mut self, key: (usize, Vec<String>)) -> Option<usize> {
+        let name = key.1.first()?.clone();
+        let src = stdlib::module_source(&name)?;
+        let base = self.map.add(&format!("std/{name}.qx"), src);
+        let program = match parse_at(src, base) {
+            Ok(p) => p,
+            Err(d) => {
+                self.errors.push(d);
+                return None;
+            }
+        };
+        let display = format!("std.{name}");
+        let prefix = format!("{display}.");
+        let id = self.modules.len();
+        self.push_module(Some(STD_PKG), display, prefix, program);
+        self.by_key.insert(key, id);
+        Some(id)
+    }
+
     fn find_fn(&self, m: usize, name: &str) -> Option<&FnDecl> {
         self.modules[m]
             .program
@@ -365,8 +474,14 @@ impl Linker<'_> {
         let mut wildcards = Vec::new();
         let imports = self.modules[m].program.imports.clone();
         let targets = self.modules[m].targets.clone();
-        for (imp, target) in imports.iter().zip(targets) {
+        let module_aliases = self.modules[m].aliases.clone();
+        let mut aliases = HashMap::new();
+        for ((imp, target), alias) in imports.iter().zip(targets).zip(module_aliases) {
             let Some(t) = target else { continue };
+            if let Some(a) = alias {
+                aliases.insert(a, t);
+                continue;
+            }
             let Some(item) = &imp.item else {
                 wildcards.push(t);
                 continue;
@@ -435,6 +550,7 @@ impl Linker<'_> {
         }
         Scope {
             prefix,
+            aliases,
             local: local.into_iter().map(|(k, (q, _))| (k, q)).collect(),
             explicit: explicit.into_iter().map(|(k, (q, _))| (k, q)).collect(),
             wild,
@@ -514,7 +630,39 @@ impl Linker<'_> {
                 self.rewrite_expr(scope, base);
                 self.rewrite_expr(scope, index);
             }
-            ExprKind::Method { recv, .. } => self.rewrite_expr(scope, recv),
+            ExprKind::Method { recv, name, args } => {
+                // `fs.read_text(p)` through a module alias becomes a call of `std.fs.read_text`.
+                let target = match &recv.kind {
+                    ExprKind::Var(a) => scope.aliases.get(a).copied(),
+                    _ => None,
+                };
+                for a in args.iter_mut() {
+                    self.rewrite_expr(scope, a);
+                }
+                let Some(t) = target else {
+                    self.rewrite_expr(scope, recv);
+                    return;
+                };
+                let public = self
+                    .find_fn(t, &name.name)
+                    .is_some_and(|f| f.public.is_some());
+                if !public {
+                    let module = self.modules[t].display.clone();
+                    self.err(
+                        Code::StdUnknown,
+                        name.span,
+                        msg::std_unknown_fn(&name.name, &module),
+                    );
+                }
+                let call = ExprKind::Call {
+                    name: Ident {
+                        name: format!("{}{}", self.modules[t].prefix, name.name),
+                        span: name.span,
+                    },
+                    args: std::mem::take(args),
+                };
+                e.kind = call;
+            }
             ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
                 self.rewrite_expr(scope, expr)
             }
@@ -533,6 +681,8 @@ impl Linker<'_> {
 
 struct Scope {
     prefix: String,
+    // Module aliases (`fs` for `import std.fs;`) and their modules.
+    aliases: HashMap<String, usize>,
     local: HashMap<String, String>,
     explicit: HashMap<String, String>,
     wild: HashMap<String, Vec<(String, String)>>,

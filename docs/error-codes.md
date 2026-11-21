@@ -573,25 +573,27 @@ void main() {
 }
 ```
 
-## Q0214: string literal used outside `println`
+## Q0214: `{}` placeholder in a string value
 
-A string literal was used outside the first argument of a `println` call. In `.qx`, string literals are only allowed as the format argument to `println` and cannot be assigned to variables or used as general expression values. Restricting string literals to `println` ensures they are only used where the language supports them.
+A string literal used as a `String` value contains a `{}` placeholder. In `.qx`, string literals evaluate to immutable `String` values that are combined with `+`, and only the format string passed as the first argument to `println` may contain `{}` placeholders. Outside of `println`, a placeholder has no argument to fill it and is therefore rejected. To include literal brace characters in a string, write `{{` and `}}`.
 
 Erroneous code example:
 
 ```qx
 void main() {
-    int n = "three";  // error[Q0214]
-    println("{}", n);
+    String name = "Ada";
+    String greeting = "hello {}";  // error[Q0214]
+    println("{}", greeting);
 }
 ```
 
-To fix it, replace the string literal with a value of the expected type and use string literals only as the format argument of `println`. In the corrected program, `n` is initialized with the `int` value `3` instead of a string literal.
+To fix it, build the text with `+` instead of using a `{}` placeholder.
 
 ```qx
 void main() {
-    int n = 3;
-    println("{}", n);
+    String name = "Ada";
+    String greeting = "hello " + name;
+    println("{}", greeting);
 }
 ```
 
@@ -1442,7 +1444,7 @@ Because static checking should catch invalid programs before execution, seeing Q
 
 ## Q0413: execution step limit exceeded
 
-The interpreter counts its work in steps: one for every evaluated expression, loop iteration, and function call, one for every variable it compares while looking up a name, and one per qubit or bit for whole-register work such as `qreg`, `measure` or `discard` on a register, passing a register to a function, or printing one. It reports `Q0413` when a program needs more steps than the limit, which is 1073741824 (2^30) for the `qxide` command and 67108864 (2^26) in the browser playground. The limit stops programs that would otherwise run for hours or forever, such as a loop with a huge bound or a recursion that doubles at every level, while ordinary programs use far fewer steps.
+The interpreter counts its work in steps: one for every evaluated expression, loop iteration, and function call, one for every variable it compares while looking up a name, and one per qubit or bit for whole-register work such as `qreg`, `measure` or `discard` on a register, passing a register to a function, or printing one. It reports `Q0413` when a program needs more steps than the limit, which is 1073741824 (2^30) for the `qxide` command, 67108864 (2^26) in the browser playground, and 2147483648 (2^31) for each call in a desktop app, whose page can cancel a call that runs too long. Building, comparing, measuring, or passing a `String` to or from a standard library call costs 8 steps per byte of text, so the limit also bounds the memory that strings can take. The limit stops programs that would otherwise run for hours or forever, such as a loop with a huge bound or a recursion that doubles at every level, while ordinary programs use far fewer steps.
 
 Erroneous code example:
 
@@ -1467,7 +1469,7 @@ void main() {
 
 ## Q0414: circuit operation limit exceeded
 
-Every gate, measurement, `reset`, and `if` block on a measured bit is recorded as an operation of the circuit the program builds, and the interpreter reports `Q0414` once the circuit would hold more operations than the limit: 16777216 (2^24) for the `qxide` command and 1048576 (2^20) in the browser playground. The recorded circuit is kept in memory, so the limit bounds the memory a program can use before it is simulated or exported.
+Every gate, measurement, `reset`, and `if` block on a measured bit is recorded as an operation of the circuit the program builds, and the interpreter reports `Q0414` once the circuit would hold more operations than the limit: 16777216 (2^24) for the `qxide` command, 1048576 (2^20) in the browser playground, and 4194304 (2^22) for each call in a desktop app, where up to four calls run at once. The recorded circuit is kept in memory, so the limit bounds the memory a program can use before it is simulated or exported.
 
 Erroneous code example:
 
@@ -1495,7 +1497,7 @@ void main() {
 
 ## Q0415: output size limit exceeded
 
-`Q0415` reports output that would grow past the limit of 268435456 bytes (256 MiB) for the `qxide` command or 1048576 bytes (1 MiB) in the browser playground. The limit applies to the text printed with `println`, to the table that `qxide run --shots N` prints (each distinct measurement record prints its own copy of the program output), and to the OpenQASM text of `qxide qasm`, which is checked before it is built. Output is held in memory until the program ends, so the limit bounds that memory.
+`Q0415` reports output that would grow past the limit of 268435456 bytes (256 MiB) for the `qxide` command, 1048576 bytes (1 MiB) in the browser playground, or 33554432 bytes (32 MiB) for each call in a desktop app, the most a call result can carry to the page. The limit applies to the text printed with `println`, to the table that `qxide run --shots N` prints (each distinct measurement record prints its own copy of the program output), and to the OpenQASM text of `qxide qasm`, which is checked before it is built. Output is held in memory until the program ends, so the limit bounds that memory.
 
 Erroneous code example:
 
@@ -1519,7 +1521,7 @@ void main() {
 
 ## Q0416: `if` blocks on measured bits nested too deeply
 
-An `if` on a `Bit` becomes a conditional block of the circuit, and a function called inside such a block can open further blocks, so nesting is counted across function calls. The interpreter reports `Q0416` when blocks would be nested more than 64 levels deep. Every level adds indentation to each line of the OpenQASM output and recursion to the simulators, so deep nesting reached through recursive calls could otherwise produce very large output from a short program. A single function can still nest as deeply as the parser allows.
+An `if` on a `Bit` becomes a conditional block of the circuit, and a function called inside such a block can open further blocks, so nesting is counted across function calls. The interpreter reports `Q0416` when blocks would be nested more than 64 levels deep (128 levels for a call in a desktop app). Every level adds indentation to each line of the OpenQASM output and recursion to the simulators, so deep nesting reached through recursive calls could otherwise produce very large output from a short program. A single function can still nest as deeply as the parser allows.
 
 Erroneous code example:
 
@@ -1568,7 +1570,7 @@ void main() {
 
 ## Q0417: simulation work limit exceeded
 
-Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to at most about three minutes of simulation for the `qxide` command and a few seconds in the browser playground. Branch bodies are counted as if they always run.
+Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to at most about three minutes of simulation for the `qxide` command and a few seconds in the browser playground. Desktop apps use the same limit as the `qxide` command, because a single shot cannot be cancelled. Branch bodies are counted as if they always run.
 
 Erroneous code example:
 
@@ -1600,7 +1602,7 @@ void main() {
 
 ## Q0418: too many errors to show
 
-`qxide check`, `qxide run`, and `qxide qasm` print at most 50 errors and stop the error report before it passes the output limit of `Q0415`; each echoed source line is also shortened to a window of 120 characters around the error column. When errors are left out, the report ends with `Q0418`, which says how many were not shown. Without these limits, a short file with thousands of errors on one long line produced gigabytes of output, because every error repeated the whole line.
+`qxide check`, `qxide run`, and `qxide qasm` print at most 50 errors and stop the error report before it passes the output limit of `Q0415`; each echoed source line is also shortened to a window of 120 characters around the error column. Desktop apps, including Qxide Studio, show at most 100 errors with windows of 240 characters. When errors are left out, the report ends with `Q0418`, which says how many were not shown. Without these limits, a short file with thousands of errors on one long line produced gigabytes of output, because every error repeated the whole line.
 
 Erroneous code example:
 
@@ -1984,3 +1986,299 @@ Check the reported path and its permissions, or set `QXIDE_HOME` to a writable f
 `qxide remove <package>` was given a package name that is not listed in `[dependencies]` of `qxide.toml`.
 
 Check the spelling against `qxide.toml`. Package names use hyphens, whereas `.qx` imports use underscores (for example, `bell-utils` is imported as `bell_utils`).
+
+## Q0701: unknown standard library module or function
+
+The program imports a `std` module that does not exist or calls a function that the module does not define, such as `fs.read(...)` instead of `fs.read_text(...)`. Qxide validates standard library imports and member calls at compile time so typos and nonexistent APIs fail before execution. The available standard library modules are `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`.
+
+Erroneous code example:
+
+```qx
+import std.net;  // error[Q0701]
+
+void main() {
+    println("hello");
+}
+```
+
+To fix it, import an existing standard library module and call a function it provides.
+
+```qx
+import std.log;
+
+void main() {
+    log.info("hello");
+}
+```
+
+## Q0702: standard module not available here
+
+A standard library module was imported in an execution environment that does not offer it. Specifically, `std.app` and `std.qxide` exist only in desktop apps (`qxide app`), the playground and REPL offer only `std.log`, and `qxide qasm` refuses `std.fs` and `std.app` calls because exporting a circuit must not have side effects. Limiting modules per host keeps each execution target safe and predictable for its environment.
+
+Erroneous code example:
+
+```qx
+import std.app;  // error[Q0702]
+
+void main() {
+    app.set_title("Bell lab");
+}
+```
+
+To fix it, use only the standard modules offered by the current host, or move the code into a desktop app.
+
+```qx
+import std.log;
+
+void main() {
+    log.info("Bell lab");
+}
+```
+
+## Q0703: standard module not permitted
+
+The program imports a standard library module that exists in the current host but has not been granted permission. Under `qxide run`, `std.fs` requires `--allow fs`; in an app, the module name must be listed in `permissions` under the `[app]` section of `qxide.toml`; and packages used as dependencies may only import `std.log`. This rule enforces least privilege so code cannot touch files or host capabilities unless explicitly granted.
+
+Erroneous code example:
+
+```java
+// qxide run note.qx   (no --allow fs)
+import std.fs;  // error[Q0703]
+
+void main() {
+    fs.write_text("note.txt", "hello");
+}
+```
+
+To fix it, grant the required permission via the CLI flag or `qxide.toml` as shown in the comments below.
+
+```java
+// qxide run --allow fs note.qx
+// in an app: [app] permissions = ["fs"] in qxide.toml
+import std.fs;
+
+void main() {
+    fs.write_text("note.txt", "hello");
+}
+```
+
+## Q0704: file operation failed
+
+A `std.fs` call failed at run time because the file does not exist, is larger than 16 MiB, is not valid UTF-8 text, or triggered an operating system I/O error. The diagnostic includes the underlying OS error message to identify the cause. Because `.qx` does not have runtime error handling yet, the program stops immediately rather than continuing with missing or invalid file data.
+
+Erroneous code example:
+
+```java
+// qxide run --allow fs read.qx   (data/missing.txt does not exist)
+String text = fs.read_text("missing.txt");  // error[Q0704]
+```
+
+To fix it, check whether the file exists with `fs.exists` before reading it.
+
+```java
+String text = "";
+if (fs.exists("missing.txt")) {
+    text = fs.read_text("missing.txt");
+}
+```
+
+## Q0705: path not allowed
+
+A path passed to `std.fs` is not a valid relative path inside the sandboxed data folder (`data/` for `qxide run --allow fs`, or the per-user app data folder in an app). Absolute paths, drive letters, UNC paths, `..`, empty segments, Windows device names such as `CON` or `NUL`, and paths that leave the folder through a symlink are all rejected. Restricting paths to the data folder prevents programs from reading or modifying arbitrary files on the host system.
+
+Erroneous code example:
+
+```java
+fs.write_text("../secrets.txt", "x");  // error[Q0705]
+```
+
+To fix it, use a relative path that stays inside the data folder.
+
+```java
+fs.write_text("notes/secrets.txt", "x");
+```
+
+## Q0706: standard function argument out of range
+
+A standard library function received an argument outside its allowed range, such as passing a negative duration or a value greater than 60000 milliseconds to `time.sleep_millis`. Enforcing argument bounds prevents invalid runtime operations and protects execution from unbounded waits or resource exhaustion.
+
+Erroneous code example:
+
+```qx
+import std.time;
+
+void main() {
+    time.sleep_millis(120000);  // error[Q0706]
+}
+```
+
+To fix it, pass a value that falls within the function's allowed range.
+
+```qx
+import std.time;
+
+void main() {
+    time.sleep_millis(10);
+}
+```
+
+## Q0707: failed `http.get` request
+
+A call to `http.get` in a desktop app fails when the request cannot be completed due to a network or TLS error or a 30-second timeout, when the server returns a status outside 200-299 (redirects are not followed), when the response body exceeds 16 MiB, or when the body is not valid UTF-8 text. HTTP requests are build-time effects that run once per command call before any shot executes, so a failed request fails the entire command call with this error. The timeout, response size cap, and redirect restriction prevent a single command call from hanging indefinitely or consuming unbounded memory.
+
+Erroneous code example:
+
+```java
+import std.http;
+
+public String latest() {
+    return http.get("https://api.example.com/moved");  // error[Q0707]: status 301
+}
+```
+
+To fix it, verify the URL and server availability, request a UTF-8 text resource of 16 MiB or less, or call the final destination URL directly instead of a URL that redirects.
+
+```java
+import std.http;
+
+public String latest() {
+    return http.get("https://api.example.com/v2/latest");
+}
+```
+
+## Q0708: disallowed `http.get` URL
+
+`http.get` only accepts `https://` URLs on port 443 without user info whose host matches an entry in `http_hosts` under `[app]` in `qxide.toml` using exact lowercase matching with no wildcards. The runtime validates the URL before sending any network traffic. Because the allow-list is embedded in the built app, neither page scripts nor dependencies can widen it.
+
+Erroneous code example:
+
+```java
+// qxide.toml: [app] permissions = ["http"], http_hosts = ["api.example.com"]
+import std.http;
+
+public String page() {
+    return http.get("http://example.org/");  // error[Q0708]
+}
+```
+
+To fix it, use an `https://` URL on port 443 without user info and add its host to `http_hosts` under `[app]` in `qxide.toml`.
+
+```java
+// qxide.toml: [app] permissions = ["http"], http_hosts = ["api.example.com", "example.org"]
+import std.http;
+
+public String page() {
+    return http.get("https://example.org/");
+}
+```
+
+## Q0711: unknown app command
+
+The page called `qxide.invoke` with a command name that is not listed in `commands` under the `[app]` section of `qxide.toml`, so the runtime refused the call before running any code. Restricting invocation to explicitly listed functions prevents page code from calling arbitrary internal functions in your Qxide program.
+
+Erroneous code example:
+
+```js
+// [app] commands = ["measure_bell"]
+await qxide.invoke("measure", {});  // rejects with code Q0711
+```
+
+To fix it, call a command that is already listed in `[app]` or add the function to `commands`.
+
+```js
+await qxide.invoke("measure_bell", {});
+```
+
+## Q0712: bad command arguments
+
+The arguments object passed to `qxide.invoke` does not match the command's parameters or shot limits: a parameter is missing, an unexpected key is present, a value has the wrong type (for example, a number for a `String`), or the requested shot count is 0 or above 1,000,000. The runtime validates arguments before executing anything so malformed requests fail cleanly without running invalid or excessive work.
+
+Erroneous code example:
+
+```js
+// public String save_result(String text)
+await qxide.invoke("save_result", { text: 42 });  // rejects with code Q0712
+```
+
+To fix it, pass matching argument keys, value types, and a valid shot count, using `qxide.commands()` to check the expected parameter names and types.
+
+```js
+await qxide.invoke("save_result", { text: "00=493 11=507" });
+```
+
+## Q0713: call cancelled
+
+An in-flight call was cancelled through its `AbortSignal` or because the window closed. The runtime checks for cancellation between shots, inside `time.sleep_millis`, and during elaboration so aborted calls stop promptly rather than continuing to consume resources. Nothing is wrong with the program itself; the runtime is reporting that execution was stopped externally.
+
+Erroneous code example:
+
+```js
+const ctrl = new AbortController();
+const run = qxide.invoke("measure_bell", {}, { shots: 1000000, signal: ctrl.signal });
+ctrl.abort();  // run rejects with code Q0713
+```
+
+To fix it, start the call again without cancelling its `AbortSignal` or allow the call to finish before closing the window.
+
+```js
+const r = await qxide.invoke("measure_bell", {}, { shots: 1000000 });
+```
+
+## Q0714: invalid command signature
+
+A function listed in `[app]` `commands` cannot be called from the page because it is missing, is not declared `public`, or accepts a parameter whose type is not `int`, `double`, `boolean`, or `String`. This error is reported by `qxide app dev` and `qxide app build` before the app runs, and by the runtime on each call, because page code can only pass plain values across the boundary and cannot own qubits or measurement results.
+
+Erroneous code example:
+
+```java
+// [app] commands = ["flip"]
+public Bit flip(Qubit q) {  // error[Q0714]
+    h(q);
+    return measure(q);
+}
+```
+
+To fix it, ensure the command exists, make it `public`, accept only `int`, `double`, `boolean`, or `String` parameters, and allocate any qubits inside the command.
+
+```java
+public Bit flip() {
+    Qubit q = qubit();
+    h(q);
+    return measure(q);
+}
+```
+
+## Q0715: invalid `[app]` section
+
+The `[app]` section of `qxide.toml` is malformed, such as when `commands` is missing or empty, a key has the wrong type, `permissions` names an unknown module, or `module` is not a valid module path. Reported by `qxide app dev` and `qxide app build` (the built app carries an already checked manifest), this validation catches configuration mistakes upfront so the runtime never launches with an inconsistent app manifest.
+
+Erroneous code example:
+
+```toml
+[app]
+commands = []  # error[Q0715]: at least one command is required
+```
+
+To fix it, correct the `[app]` section in `qxide.toml` so that all keys have valid types, `module` is a valid module path, `commands` is non-empty, and every entry in `permissions` names a known module.
+
+```toml
+[app]
+commands = ["measure_bell"]
+```
+
+## Q0716: call result too large
+
+The desktop app runtime hands each call result to the page as one script, and it refuses results larger than 32 MiB. The call's `Promise` rejects with `Q0716` instead, so a command cannot stall or exhaust the webview with a huge reply. Large results usually come from many shots that each produce a different measurement record or `println` output, or from a long `String` return value.
+
+Erroneous code example:
+
+```js
+// `noise` measures 24 qubits; a million shots give hundreds of thousands of distinct records.
+await qxide.invoke("noise", {}, { shots: 1000000 });  // rejects with code Q0716
+```
+
+To fix it, request fewer shots, return less data (for example a summary computed in `.qx`), or split the work into several calls.
+
+```js
+await qxide.invoke("noise", {}, { shots: 1000 });
+```
