@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validates the Qxide registry: index format, archive checksums and contents, and (with
---base) that a pull request only appends versions or toggles `yanked`.
+--base) that a pull request only appends versions.
 
 Usage: python scripts/validate.py [--base <git ref>] [--summary <file>] [--root <dir>]
 Standard library only (Python 3.11+ for tomllib).
@@ -8,15 +8,15 @@ Standard library only (Python 3.11+ for tomllib).
 
 import argparse
 import hashlib
-import io
 import json
 import re
 import subprocess
 import sys
-import tarfile
 import tomllib
 import unicodedata
-from pathlib import Path, PurePosixPath
+import zlib
+from collections import Counter
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # Patterns are used with fullmatch (`$` would also accept a trailing newline).
@@ -32,9 +32,15 @@ DL_SEGMENT = re.compile(r"[A-Za-z0-9._+-]+")
 REQUIRED = {"name", "vers", "deps", "cksum", "yanked", "v"}
 KNOWN = REQUIRED | {"qxide", "description", "dl"}
 DEFAULT_DL = "packages/{prefix}/{name}/{name}-{version}.tar.gz"
+# Archive limits, the same as the client's in src/pkg/archive.rs.
 MAX_ARCHIVE = 10 << 20
 MAX_UNPACKED = 50 << 20
 MAX_FILES = 2000
+# Decompressed tar stream: MAX_UNPACKED plus room for headers, padding and long names.
+MAX_TAR = MAX_UNPACKED + (16 << 20)
+# GNU long-name entry (`qxide publish` writes one for paths over 100 bytes).
+MAX_LONG_NAME = 4096
+BLOCK = 512
 
 # Windows device names, reserved with or without an extension (mirrors src/pkg/archive.rs).
 RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
@@ -45,9 +51,50 @@ ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTU
 INVALID_VALUE = "`{key}` has invalid value {value}"
 CONFIG_LOCKED = "cannot be modified in a pull request"
 SELF_DEPENDENCY = "cannot depend on itself"
+# Deepest JSON nesting accepted (serde_json in the client allows 128).
+MAX_JSON_DEPTH = 100
+# toml_edit's limit in the client; this count includes the document and `[package]` tables.
+MAX_TOML_DEPTH = 80
+# A string (to the end of the text if unterminated, so the scan stays linear) or a bracket.
+JSON_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"?|[\[\]{}]', re.DOTALL)
+# Folded before new package names are compared (B-P7): hyphens are dropped, then characters and
+# pairs that look alike in common fonts are mapped to one form.
+LOOK_ALIKE_CHARS = str.maketrans("0123456789i", "olzeasbtbgl")
+LOOK_ALIKE_PAIRS = (("rn", "m"), ("vv", "w"), ("cl", "d"))
+# New names may not pass for official packages: none may start like `qxide` or equal `std`.
+RESERVED_PREFIXES = ("qxide",)
+RESERVED_NAMES = ("std",)
 
 errors: list[str] = []
 summary: list[str] = []
+
+
+def shown(text: str) -> str:
+    """`text` with every character that is not printable (controls, line and paragraph separators,
+    format characters such as bidirectional overrides) written as `\\u{XXXX}`. Text from a pull
+    request then stays on its own line in the job log, where a line starting with `::` is a
+    workflow command, and in the job summary (B-P8).
+    """
+    return "".join(c if c.isprintable() else f"\\u{{{ord(c):04x}}}" for c in text)
+
+
+def code(text: str) -> str:
+    """`text` as one Markdown code span: `shown`, then fenced by more backticks than its longest
+    run of backticks, so no Markdown, HTML, link, or mention inside it is rendered (B-P8).
+    """
+    t = shown(text)
+    fence = "`" * (max(map(len, re.findall("`+", t)), default=0) + 1)
+    # CommonMark strips one space from each end of a span when both are present.
+    pad = " " if t[:1] in ("`", " ") or t[-1:] in ("`", " ") else ""
+    return f"{fence}{pad}{t}{pad}{fence}"
+
+
+def skeleton(name: str) -> str:
+    """Form of a package name in which look-alike names are equal (B-P7)."""
+    s = name.replace("-", "").translate(LOOK_ALIKE_CHARS)
+    for pair, single in LOOK_ALIKE_PAIRS:
+        s = s.replace(pair, single)
+    return s
 
 
 def portable(part: str) -> bool:
@@ -83,7 +130,15 @@ def dl_template() -> str:
     config = ROOT / "config.json"
     if not config.is_file():
         return DEFAULT_DL
-    dl = json.loads(config.read_text(encoding="utf-8")).get("dl", DEFAULT_DL)
+    try:
+        doc = strict_json(config.read_bytes().decode("utf-8"))
+    except ValueError as e:
+        error("config.json", f"invalid JSON: {e}")
+        return DEFAULT_DL
+    if not isinstance(doc, dict):
+        error("config.json", "not a JSON object")
+        return DEFAULT_DL
+    dl = doc.get("dl", DEFAULT_DL)
     if not isinstance(dl, str):
         error("config.json", INVALID_VALUE.format(key="dl", value=repr(dl)))
         return DEFAULT_DL
@@ -120,7 +175,8 @@ def _number(s: str, i: int) -> tuple[int, int]:
     j = i
     while j < len(s) and "0" <= s[j] <= "9":
         j += 1
-    if j == i or (j - i > 1 and s[i] == "0"):
+    # 20 digits hold any u64; Python refuses to convert more than 4300 (B-P6).
+    if j == i or (j - i > 1 and s[i] == "0") or j - i > 20:
         raise _Bad
     value = int(s[i:j])
     if value > U64_MAX:
@@ -178,62 +234,85 @@ def registry_version(s) -> bool:
     return v is not None and v[4] == ""
 
 
-def _comparator(s: str) -> int:
-    """Parses one comparator at the start of `s` and returns the index past it and its trailing
-    spaces.
+def _comparator(s: str) -> tuple[tuple, int]:
+    """Parses one comparator at the start of `s`. Returns it as `semver::Comparator` stores it,
+    `(op, major, minor, patch, pre)` with `None` for a missing or wildcard part and build metadata
+    dropped, and the index past it and its trailing spaces.
     """
     i = 0
+    op = "^"  # `Op::DEFAULT`
     if s.startswith((">=", "<=")):
-        i = 2
+        op, i = s[:2], 2
     elif s[:1] in ("=", ">", "<", "~", "^"):
-        i = 1
+        op, i = s[:1], 1
+    default_op = i == 0
     while s[i : i + 1] == " ":
         i += 1
-    _, i = _number(s, i)
+    major, i = _number(s, i)
     wild = False
-    patch = None
+    minor = patch = None
+    pre = ""
     if s[i : i + 1] == ".":
         i += 1
         if s[i : i + 1] in ("*", "x", "X"):
             wild, i = True, i + 1
+            if default_op:
+                op = "*"
         else:
-            _, i = _number(s, i)
+            minor, i = _number(s, i)
     if s[i : i + 1] == ".":
         i += 1
         if s[i : i + 1] in ("*", "x", "X"):
             i += 1
+            if default_op:
+                op = "*"
         elif wild:
             raise _Bad
         else:
             patch, i = _number(s, i)
     if patch is not None and s[i : i + 1] == "-":
-        _, i = _identifier(s, i + 1, True)
+        pre, i = _identifier(s, i + 1, True)
     if patch is not None and s[i : i + 1] == "+":
         _, i = _identifier(s, i + 1, False)
     while s[i : i + 1] == " ":
         i += 1
-    return i
+    return (op, major, minor, patch, pre), i
+
+
+def parse_req(s):
+    """Returns the comparators of requirement `s` as the client's `semver::VersionReq` holds them,
+    so two requirements are equal for the client exactly when the results are equal, or `None` if
+    the client rejects `s`.
+    """
+    if not isinstance(s, str):
+        return None
+    try:
+        s = s.lstrip(" ")
+        if s[:1] in ("*", "x", "X"):
+            return () if s[1:].lstrip(" ") == "" else None
+        out = []
+        while True:
+            comparator, i = _comparator(s)
+            out.append(comparator)
+            s = s[i:]
+            if not s:
+                return tuple(out)
+            if s[0] != "," or len(out) == MAX_COMPARATORS:
+                raise _Bad
+            s = s[1:].lstrip(" ")
+    except _Bad:
+        return None
 
 
 def valid_req(s) -> bool:
     """Reports whether the client accepts `s` as a version requirement."""
-    if not isinstance(s, str):
-        return False
-    try:
-        s = s.lstrip(" ")
-        if s[:1] in ("*", "x", "X"):
-            return s[1:].lstrip(" ") == ""
-        count = 0
-        while True:
-            s = s[_comparator(s) :]
-            count += 1
-            if not s:
-                return True
-            if s[0] != "," or count == MAX_COMPARATORS:
-                raise _Bad
-            s = s[1:].lstrip(" ")
-    except _Bad:
-        return False
+    return parse_req(s) is not None
+
+
+def same_req(a, b) -> bool:
+    """Reports whether the client parses `a` and `b` to equal requirements."""
+    ra = parse_req(a)
+    return ra is not None and ra == parse_req(b)
 
 
 def precedence(vers: str):
@@ -241,7 +320,9 @@ def precedence(vers: str):
     major, minor, patch, pre, _ = parse_version(vers)
     if not pre:
         return (major, minor, patch, 1, ())
-    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+    # Numeric identifiers have no leading zeros, so length then digits is numeric order, without
+    # `int()`, which refuses more than 4300 digits (B-P6).
+    ids = tuple((0, len(p), p) if p.isdigit() else (1, 0, p) for p in pre.split("."))
     return (major, minor, patch, 0, ids)
 
 
@@ -286,6 +367,10 @@ def check_entry(where: str, entry: dict, file_name: str) -> bool:
         if key in entry and not isinstance(entry[key], str):
             error(where, INVALID_VALUE.format(key=key, value=repr(entry[key])))
             ok = False
+    # `qxide search` prints descriptions to terminals: no C0, DEL or C1 controls (escape sequences).
+    if isinstance(entry.get("description"), str) and any(unicodedata.category(c) == "Cc" for c in entry["description"]):
+        error(where, "`description` contains control characters")
+        ok = False
     if not isinstance(entry["deps"], list):
         error(where, "`deps` must be a list")
         return False
@@ -299,6 +384,114 @@ def check_entry(where: str, entry: dict, file_name: str) -> bool:
             error(where, f"bad dependency {d!r}")
             ok = False
     return ok
+
+
+class BadArchive(Exception):
+    pass
+
+
+def gunzip(data: bytes) -> bytes:
+    """Decompresses the single gzip member the client reads, refusing anything after it (Python's
+    gzip would read further members, the client would not) and output over `MAX_TAR`.
+    """
+    d = zlib.decompressobj(wbits=31)
+    try:
+        out = d.decompress(data, MAX_TAR + 1)
+    except zlib.error as e:
+        raise BadArchive(f"not a gzip file: {e}") from None
+    if len(out) > MAX_TAR:
+        raise BadArchive(f"decompressed archive is larger than {MAX_TAR >> 20} MiB")
+    if not d.eof:
+        raise BadArchive("gzip data is truncated")
+    if d.unused_data:
+        raise BadArchive("data after the first gzip member")
+    return out
+
+
+def _octal(field: bytes, what: str) -> int:
+    # Plain octal digits only: no base-256 numbers, signs, or other forms some readers accept.
+    text = field.split(b"\0", 1)[0].strip(b" ")
+    if not text or any(c not in b"01234567" for c in text):
+        raise BadArchive(f"tar header has an invalid {what} field")
+    return int(text.decode("ascii"), 8)
+
+
+def _text(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BadArchive(f"path {raw!r} is not UTF-8") from None
+
+
+def tar_entries(tar: bytes):
+    """Yields `(type, path, data)` for each tar entry, reading headers like the client (the `tar`
+    crate in raw mode): a GNU long name of at most `MAX_LONG_NAME` bytes names the next entry, and
+    every other extension header (PAX, GNU long link, sparse) is an entry of its own, which the
+    caller rejects as not a regular file. Anything other readers could see differently is refused:
+    a bad checksum, a non-octal size, truncated data, a ustar prefix on a non-ustar header, and
+    non-zero bytes after the end-of-archive block.
+    """
+    pos, long_name = 0, None
+    while pos < len(tar):
+        header = tar[pos : pos + BLOCK]
+        if len(header) < BLOCK:
+            raise BadArchive("tar data is truncated")
+        if not any(header):
+            if any(tar[pos:]):
+                raise BadArchive("data after the end of the tar archive")
+            break
+        if sum(header[:148]) + sum(header[156:]) + 8 * 32 != _octal(header[148:156], "checksum"):
+            raise BadArchive("tar header checksum mismatch")
+        kind = header[156:157]
+        size = _octal(header[124:136], "size")
+        start = pos + BLOCK
+        pos = start + size + (-size % BLOCK)
+        if pos > len(tar):
+            raise BadArchive("tar data is truncated")
+        data = memoryview(tar)[start : start + size]
+        if kind == b"L":
+            if size > MAX_LONG_NAME or long_name is not None:
+                raise BadArchive("invalid GNU long name entry")
+            long_name = _text(bytes(data).rstrip(b"\0"))
+            continue
+        name = header[:100].split(b"\0", 1)[0]
+        if header[257:265] == b"ustar\x0000":
+            field = header[345:500].split(b"\0", 1)[0]
+            if field:
+                name = field + b"/" + name
+        elif any(header[345:500]):
+            # Python's tarfile reads this area as a path prefix, the client does not.
+            raise BadArchive("non-ustar tar header has data in the prefix field")
+        if long_name is not None:
+            path, long_name = long_name, None
+        else:
+            path = _text(name)
+        yield kind, path, data
+    if long_name is not None:
+        raise BadArchive("GNU long name entry is not followed by an entry")
+
+
+def manifest_deps(where: str, table) -> Counter | None:
+    """Returns the `[dependencies]` of a package's qxide.toml as `(name, requirement)` pairs, the
+    way `installed_deps` in the client reads them, or `None` after reporting an error.
+    """
+    if not isinstance(table, dict):
+        error(where, "qxide.toml `dependencies` is not a table")
+        return None
+    deps = Counter()
+    for name, value in table.items():
+        # The client refuses a manifest whose `path` is not a relative string (B-P13).
+        path = value.get("path", "") if isinstance(value, dict) else ""
+        if not isinstance(path, str) or path.startswith(("/", "\\")) or ":" in path:
+            error(where, f"qxide.toml dependency `{name}` has a `path` the client rejects")
+            return None
+        req = value.get("version") if isinstance(value, dict) else value
+        parsed = parse_req(req)
+        if not NAME.fullmatch(name) or parsed is None:
+            error(where, f"qxide.toml has an invalid or path-only dependency `{name}`")
+            return None
+        deps[(name, parsed)] += 1
+    return deps
 
 
 def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
@@ -316,63 +509,75 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
     folded_files: set[tuple[str, ...]] = set()
     folded_dirs: set[tuple[str, ...]] = set()
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            count = 0
-            # Iterate lazily: a huge member list is refused without being read in full.
-            for m in tar:
-                count += 1
-                if count > MAX_FILES:
-                    error(where, f"more than {MAX_FILES} files")
-                    break
-                p = PurePosixPath(m.name)
-                if (
-                    p.is_absolute()
-                    or ".." in p.parts
-                    or p.parts[:1] != (root,)
-                    or any(":" in s or "\\" in s for s in p.parts)
-                    or not all(portable(s) for s in p.parts[1:])
-                ):
-                    error(where, f"unsafe path `{m.name}`")
-                    continue
-                if m.isdir():
-                    continue
-                if not m.isfile():
-                    error(where, f"`{m.name}` is not a regular file")
-                    continue
-                rel = "/".join(p.parts[1:])
-                if not rel:
-                    error(where, f"unsafe path `{m.name}`")
-                    continue
-                folded = tuple(fold(s) for s in p.parts[1:])
-                prefixes = [folded[:k] for k in range(1, len(folded))]
-                if folded in folded_files or folded in folded_dirs or any(d in folded_files for d in prefixes):
-                    error(where, "entry `{path}` collides case-insensitively with another entry".format(path=m.name))
-                    continue
-                folded_files.add(folded)
-                folded_dirs.update(prefixes)
-                shipped.add(rel)
-                total += m.size
-                files.append(f"{rel} ({m.size} B)")
-                if rel == "qxide.toml":
-                    manifest = tar.extractfile(m).read().decode("utf-8")
-    except (tarfile.TarError, OSError, EOFError) as e:
-        error(where, f"not a gzip tar archive: {e}")
+        count = 0
+        for kind, name, content in tar_entries(gunzip(data)):
+            count += 1
+            if count > MAX_FILES:
+                error(where, f"more than {MAX_FILES} files")
+                break
+            parts = name.split("/")
+            if kind == b"5" and len(parts) > 1 and parts[-1] == "":
+                parts.pop()
+            if (
+                parts[0] != root
+                or any(s in ("", ".", "..") or ":" in s or "\\" in s for s in parts)
+                or not all(portable(s) for s in parts[1:])
+            ):
+                error(where, f"unsafe path `{name}`")
+                continue
+            if kind == b"5":
+                continue
+            if kind not in (b"0", b"\0"):
+                error(where, f"`{name}` is not a regular file")
+                continue
+            rel = "/".join(parts[1:])
+            if not rel:
+                error(where, f"unsafe path `{name}`")
+                continue
+            folded = tuple(fold(s) for s in parts[1:])
+            prefixes = [folded[:k] for k in range(1, len(folded))]
+            if folded in folded_files or folded in folded_dirs or any(d in folded_files for d in prefixes):
+                error(where, "entry `{path}` collides case-insensitively with another entry".format(path=name))
+                continue
+            folded_files.add(folded)
+            folded_dirs.update(prefixes)
+            shipped.add(rel)
+            total += len(content)
+            if total > MAX_UNPACKED:
+                error(where, "unpacked size is larger than 50 MiB")
+                break
+            files.append(f"{rel} ({len(content)} B)")
+            if rel == "qxide.toml":
+                manifest = bytes(content)
+    except BadArchive as e:
+        error(where, f"not a valid archive: {e}")
         return []
-    if total > MAX_UNPACKED:
-        error(where, "unpacked size is larger than 50 MiB")
     if manifest is None:
         error(where, "archive has no qxide.toml")
         return files
     try:
-        pkg = tomllib.loads(manifest).get("package", {})
-    except tomllib.TOMLDecodeError as e:
-        error(where, f"qxide.toml is not valid TOML: {e}")
+        doc = tomllib.loads(manifest.decode("utf-8"))
+    # ValueError: also integers too long to convert; RecursionError: deeply nested values (B-P6).
+    except (ValueError, RecursionError) as e:
+        error(where, f"qxide.toml is not valid UTF-8 TOML: {type(e).__name__}: {e}")
+        return files
+    # The client's TOML parser (toml_edit) refuses nesting deeper than 80 levels.
+    if nesting(doc) > MAX_TOML_DEPTH:
+        error(where, f"qxide.toml is nested deeper than {MAX_TOML_DEPTH} levels")
+        return files
+    pkg = doc.get("package", {})
+    if not isinstance(pkg, dict):
+        error(where, "qxide.toml `package` is not a table")
         return files
     if pkg.get("name") != entry["name"] or pkg.get("version") != entry["vers"]:
         error(where, "qxide.toml name/version do not match the index entry")
     for key in ("description", "license", "qxide"):
         if not pkg.get(key):
             error(where, f"qxide.toml has no `{key}`")
+    # The client resolves with the index line but checks `qxide.lock` against qxide.toml (M-08).
+    deps = manifest_deps(where, doc.get("dependencies", {}))
+    if deps is not None and deps != Counter((d["name"], parse_req(d["req"])) for d in entry["deps"]):
+        error(where, "qxide.toml [dependencies] do not match `deps` in the index entry")
     if "src/lib.qx" not in shipped:
         error(where, "archive has no src/lib.qx")
     return files
@@ -396,33 +601,50 @@ def _reject_constant(name: str):
     raise ValueError(name)
 
 
-def _depth(value, level: int = 1) -> int:
-    if isinstance(value, dict):
-        return max([level] + [_depth(v, level + 1) for v in value.values()])
-    if isinstance(value, list):
-        return max([level] + [_depth(v, level + 1) for v in value])
-    return level - 1
+def json_depth(text: str) -> int:
+    """Deepest nesting of `[` and `{` in JSON text, found without parsing it (strings removed
+    first). Python's parsers recurse once per level (B-P6).
+    """
+    depth = deepest = 0
+    for m in JSON_TOKEN.finditer(text):
+        token = m.group()
+        if token in ("[", "{"):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif token in ("]", "}"):
+            depth -= 1
+    return deepest
+
+
+def nesting(value) -> int:
+    """Deepest nesting of dicts and lists in a parsed value, the outermost counting as 1; computed
+    without recursion.
+    """
+    deepest, stack = 0, [(value, 1)]
+    while stack:
+        v, level = stack.pop()
+        if isinstance(v, (dict, list)):
+            deepest = max(deepest, level)
+            stack.extend((c, level + 1) for c in (v.values() if isinstance(v, dict) else v))
+    return deepest
 
 
 def strict_json(line: str):
     """Wrapper around `json.loads` restricted to what the client's `serde_json` accepts; raises
     `ValueError` otherwise.
     """
+    # Checked before parsing: deeper text would raise RecursionError instead (B-P6).
+    if json_depth(line) > MAX_JSON_DEPTH:
+        raise ValueError(f"nested deeper than {MAX_JSON_DEPTH} levels")
     value = json.loads(line, parse_constant=_reject_constant)
-    # serde_json rejects lone surrogates (`"\\ud800"`) and nesting deeper than 128 levels.
+    # serde_json rejects lone surrogates (`"\\ud800"`).
     json.dumps(value, ensure_ascii=False).encode("utf-8")
-    if _depth(value) > 100:
-        raise ValueError(f"depth {_depth(value)}")
     return value
 
 
 def base_lines(base: str, rel: str) -> list[str]:
     r = subprocess.run(["git", "-C", str(ROOT), "show", f"{base}:{rel}"], capture_output=True)
     return index_lines(r.stdout) if r.returncode == 0 else []
-
-
-def squash(name: str) -> str:
-    return name.replace("-", "")
 
 
 def main() -> int:
@@ -444,8 +666,16 @@ def main() -> int:
         if rel != f"index/{prefix(name)}/{name}" or not NAME.fullmatch(name):
             error(rel, f"index files live at index/{prefix(name)}/{name} and use valid package names")
             continue
+        if not portable(name):
+            error(rel, f"`{name}` is a Windows device name")
+            continue
+        try:
+            lines = index_lines(path.read_bytes())
+        except UnicodeDecodeError as e:
+            error(rel, f"not UTF-8: {e}")
+            continue
         entries, seen = [], set()
-        for i, line in enumerate(index_lines(path.read_bytes()), 1):
+        for i, line in enumerate(lines, 1):
             if not line.strip():
                 continue
             where = f"{rel}:{i}"
@@ -464,7 +694,8 @@ def main() -> int:
             entries.append(entry)
         names[name] = entries
 
-    # Archives hosted in this repository must exist and match.
+    # Every archive must be in this repository and pass the checks, including one whose `dl` is an
+    # https URL: clients verify `cksum`, so they can only install the bytes checked here (B-P3).
     new_files: dict[str, list[str]] = {}
     for name, entries in names.items():
         for entry in entries:
@@ -474,12 +705,26 @@ def main() -> int:
                 error(where, INVALID_VALUE.format(key="dl", value=repr(target)))
                 continue
             if "://" in target:
+                local = archive_path(dict(entry, dl=None), template if "://" not in template else DEFAULT_DL)
+                if not valid_dl(local):
+                    error(where, INVALID_VALUE.format(key="dl", value=repr(local)))
+                    continue
+            else:
+                local = target
+            archive = ROOT / local
+            try:
+                # Python 3.12's `is_file` raises for some errors, such as a component over 255 bytes.
+                data = archive.read_bytes() if archive.is_file() else None
+            except OSError as e:
+                error(where, f"archive {local} cannot be read: {e}")
                 continue
-            archive = ROOT / target
-            if not archive.is_file():
-                error(where, f"archive {target} is missing")
+            if data is None:
+                if local == target:
+                    error(where, f"archive {local} is missing")
+                else:
+                    error(where, f"archive {local} is missing (required for the external `dl` {target})")
                 continue
-            new_files[where] = check_archive(where, entry, archive.read_bytes())
+            new_files[where] = check_archive(where, entry, data)
 
     # Dependencies must name packages in this registry.
     for name, entries in names.items():
@@ -493,26 +738,45 @@ def main() -> int:
     changed = set(new_files)
     if args.base:
         changed = set()
+        # Index files that are gone at HEAD are never compared below (B-P2); `git` fails closed.
+        base_index = git("ls-tree", "-r", "-z", "--name-only", args.base, "--", "index/").split("\0")
+        for rel in sorted(p for p in base_index if p and not p.endswith("/.gitkeep")):
+            if not (ROOT / rel).is_file():
+                error(rel, "index file was removed; yank its versions instead")
+        new_names = []
         for name, entries in names.items():
             rel = f"index/{prefix(name)}/{name}"
             old = [l for l in base_lines(args.base, rel) if l.strip()]
             new = [json.dumps(e, sort_keys=True) for e in entries]
             old_entries = [json.loads(l) for l in old]
-            # Published lines may only flip `yanked`; nothing is removed or rewritten.
+            # Published lines are immutable. `yanked` too: nothing records who owns a package, so a
+            # pull request could yank or restore anyone's version (B-P5); maintainers yank instead.
             for i, o in enumerate(old_entries):
                 if i >= len(entries):
-                    error(rel, f"version {o.get('vers')} was removed; yank it instead")
+                    error(rel, f"version {o.get('vers')} was removed; ask a maintainer to yank it instead")
                     continue
-                n = dict(entries[i], yanked=o.get("yanked"))
-                if json.dumps(n, sort_keys=True) != json.dumps(o, sort_keys=True):
-                    error(rel, f"line {i + 1} changed; published versions are immutable except `yanked`")
+                if json.dumps(entries[i], sort_keys=True) == json.dumps(o, sort_keys=True):
+                    continue
+                if json.dumps(dict(entries[i], yanked=o.get("yanked")), sort_keys=True) == json.dumps(o, sort_keys=True):
+                    error(rel, f"line {i + 1} changes `yanked`; only maintainers yank versions, not pull requests")
+                else:
+                    error(rel, f"line {i + 1} changed; published versions are immutable")
             for e in entries[len(old_entries):]:
                 changed.add(f"{name} {e['vers']}")
             if not old and new:
-                # A new package name: reject look-alikes of existing names.
-                for other in names:
-                    if other != name and squash(other) == squash(name) and base_lines(args.base, f"index/{prefix(other)}/{other}"):
-                        error(rel, f"`{name}` is too similar to the existing package `{other}`")
+                new_names.append(name)
+        # New names may not look like any other name, existing or added in the same pull request,
+        # or like an official package (B-P7).
+        reserved_prefixes = tuple(skeleton(p) for p in RESERVED_PREFIXES)
+        reserved_names = {skeleton(n) for n in RESERVED_NAMES}
+        for name in new_names:
+            rel = f"index/{prefix(name)}/{name}"
+            key = skeleton(name)
+            if key.startswith(reserved_prefixes) or key in reserved_names:
+                error(rel, f"`{name}` is reserved for official packages")
+            for other in names:
+                if other != name and skeleton(other) == key:
+                    error(rel, f"`{name}` is too similar to the package `{other}`")
         diff = [l.split("\t") for l in git("diff", "--name-status", f"{args.base}...HEAD").splitlines()]
         touched = [p for _, *paths in diff for p in paths]
         # Publishing and yanking pull requests change registry data only, never scripts or workflows.
@@ -522,6 +786,9 @@ def main() -> int:
                     error(p, "a pull request that changes index/ or packages/ may not change other files")
         for status, *paths in diff:
             for p in paths:
+                # Paths such as `index/3/c/con` cannot be checked out on Windows (B-P7).
+                if not all(portable(part) for part in p.split("/")):
+                    error(p, "path cannot be checked out on Windows")
                 if p == "config.json":
                     error(p, CONFIG_LOCKED)
                 if p.startswith("packages/") and status[0] in "MDR":
@@ -531,13 +798,14 @@ def main() -> int:
 
     if args.summary:
         lines = ["## Registry check", ""]
-        lines += [f"- {e}" for e in errors] or ["All checks passed."]
+        # Errors and file names carry text from the pull request: written as literal text (B-P8).
+        lines += [f"- {code(e)}" for e in errors] or ["All checks passed."]
         for where in sorted(changed):
-            lines += ["", f"### {where}", ""] + [f"- `{f}`" for f in new_files.get(where, [])]
+            lines += ["", f"### {code(where)}", ""] + [f"- {code(f)}" for f in new_files.get(where, [])]
         Path(args.summary).open("a", encoding="utf-8").write("\n".join(lines) + "\n")
 
     for e in errors:
-        print(f"error: {e}")
+        print(f"error: {shown(e)}")
     print(f"{len(names)} packages, {sum(len(v) for v in names.values())} versions, {len(errors)} errors")
     return 1 if errors else 0
 

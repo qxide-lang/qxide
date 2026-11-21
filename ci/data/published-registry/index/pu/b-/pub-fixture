@@ -1,0 +1,1 @@
+{"cksum":"136c701c13205d1475fa8f2b098d5dc72754066ce7fe47ab4da8bae8e18e9f0a","deps":[{"name":"dep-a","req":"^1"},{"name":"dep-b","req":">=1.2, <2"},{"name":"dep-c","req":"1.*"}],"description":"Fixture written by qxide publish","name":"pub-fixture","qxide":">=0.6","v":1,"vers":"1.0.0","yanked":false}

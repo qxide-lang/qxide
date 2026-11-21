@@ -331,6 +331,87 @@ fn lock_entries_cannot_escape_the_cache() {
     env.ok(&app, &["run"]);
 }
 
+// B-P13: a cloned project's manifest or lock could name any directory, including a network path
+// such as `//host/share/x`. Path dependencies stay relative (`../shared` still works).
+#[test]
+fn path_dependencies_must_be_relative() {
+    let env = Env::new("abspath");
+    let mid = env.lib("mid", "0.1.0", "");
+    let absolute = mid.to_str().unwrap().replace('\\', "/");
+    for path in [
+        absolute.as_str(),
+        "/mid",
+        "//host/share/mid",
+        "C:/mid",
+        "C:mid",
+    ] {
+        let app = env.app("demo", PLAIN_MAIN);
+        let m = format!(
+            "{}\n[dependencies]\nmid = {{ path = \"{path}\" }}\n",
+            read(&app.join("qxide.toml"))
+        );
+        std::fs::write(app.join("qxide.toml"), m).unwrap();
+        env.fails(&app, &["install"], "Q0602");
+        env.fails(&app, &["run"], "Q0602");
+        let _ = std::fs::remove_dir_all(&app);
+    }
+    // `qxide add --path` with an absolute directory leaves the manifest as it was.
+    let app = env.app("demo", PLAIN_MAIN);
+    let before = read(&app.join("qxide.toml"));
+    env.fails(&app, &["add", "mid", "--path", &absolute], "Q0602");
+    assert_eq!(read(&app.join("qxide.toml")), before);
+    // The relative form works, and its lock entry cannot be pointed elsewhere.
+    env.ok(&app, &["add", "mid", "--path", "../mid-0.1.0"]);
+    env.ok(&app, &["run"]);
+    for source in [format!("path+{absolute}"), "path+//host/share/mid".into()] {
+        env.edit_lock(&app, |l| l.replace("path+../mid-0.1.0", &source));
+        env.fails(&app, &["run"], "Q0603");
+        env.fails(&app, &["install", "--locked"], "Q0603");
+        env.edit_lock(&app, |l| l.replace(&source, "path+../mid-0.1.0"));
+    }
+    env.ok(&app, &["run"]);
+}
+
+// B-P10: an unpacked package was trusted by its `.qxide-checksum` marker alone, so edited files in
+// the cache were used. The files must match the cached archive, whose checksum is the lock's.
+#[test]
+fn modified_package_files_are_not_used() {
+    let env = Env::new("tamper");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils"]);
+    env.ok(&app, &["run"]);
+    let ids: Vec<PathBuf> = std::fs::read_dir(env.home.join("registry/src"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let pkg = ids[0].join("bell-utils-0.1.0");
+    let lib_qx = pkg.join("src/lib.qx");
+    let original = read(&lib_qx);
+    let extra = pkg.join("src/extra.qx");
+    let edits: [&dyn Fn(); 3] = [
+        &|| std::fs::write(&lib_qx, original.clone() + "\npublic void tampered() {}\n").unwrap(),
+        &|| std::fs::write(&extra, "public void extra() {}\n").unwrap(),
+        &|| std::fs::remove_file(&lib_qx).unwrap(),
+    ];
+    for edit in edits {
+        edit();
+        env.fails(&app, &["run"], "Q0611");
+        env.ok(&app, &["install"]);
+        assert_eq!(read(&lib_qx), original);
+        assert!(!extra.exists());
+        env.ok(&app, &["run"]);
+    }
+    // Without the archive nothing vouches for the files; `install` downloads it again.
+    let cache = env.home.join("registry/cache");
+    std::fs::remove_dir_all(&cache).unwrap();
+    env.fails(&app, &["run"], "Q0611");
+    env.ok(&app, &["install"]);
+    env.ok(&app, &["run"]);
+}
+
 #[test]
 fn checksums_are_enforced() {
     let env = Env::new("cksum");
@@ -390,8 +471,8 @@ fn build_metadata_versions_are_never_published_or_selected() {
 }
 
 // Compiles `tests/support/fake_curl.rs` with `rustc` into a `curl` binary next to a copy of `qxide`
-// and returns the copy. Windows checks the executable's own directory before System32 (which
-// includes a real `curl.exe`), and on Unix this directory is also placed first on `PATH`.
+// and returns the copy. Tests that use it place this directory first on `PATH`, where `qxide`
+// looks for `curl` (it no longer runs one just because it is next to the executable, B-P12).
 fn fake_curl_qxide(env: &Env) -> PathBuf {
     let bin = env.root.join("fakebin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -494,6 +575,39 @@ fn failed_downloads_are_never_accepted_or_cached() {
             "{o}"
         );
     }
+}
+
+// B-P12: `Command::new("curl")` on Windows runs a `curl.exe` next to `qxide.exe` before looking at
+// `PATH`, so a writable install directory could supply one. External tools now come from `PATH`
+// only: with no `curl` on `PATH`, the planted one must not run.
+#[cfg(windows)]
+#[test]
+fn tools_next_to_the_executable_are_not_run() {
+    let env = Env::new("plantedcurl");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let qxide = fake_curl_qxide(&env);
+    let app = env.app("demo", BELL_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nbell-utils = \"0.1\"\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    let empty = env.root.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let log = env.root.join("curl.log");
+    let out = Command::new(&qxide)
+        .arg("install")
+        .current_dir(&app)
+        .env("PATH", &empty)
+        .env("QXIDE_HOME", env.root.join("home-planted"))
+        .env("QXIDE_REGISTRY", "https://fake.invalid/")
+        .env_remove("QXIDE_OFFLINE")
+        .env("FAKE_ROOT", &env.registry)
+        .env("FAKE_LOG", &log)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!log.exists(), "the planted curl ran: {err}");
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0608]"), "{err}");
 }
 
 #[test]
@@ -630,4 +744,137 @@ fn path_dependency_example_runs_from_a_checkout() {
     env.ok(&root, &["check"]);
     let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/packages/bell-utils");
     env.ok(&lib, &["check", "src/lib.qx"]);
+}
+
+// Regression tests for docs/security/PKG_CLIENT_FIXES.md.
+
+// `s` as a JSON string literal (backslashes only; the values below hold no quotes).
+fn json_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\"))
+}
+
+// M-03: an index `dl` (or the `config.json` template) may only name an `https://` URL or a plain
+// relative path inside the registry. Anything else fails with Q0609 before a file is opened.
+#[test]
+fn download_locations_stay_inside_the_registry() {
+    let env = Env::new("dl-confined");
+    // A valid archive with a matching checksum in a second registry next to the test registry,
+    // so each redirected download below would otherwise install.
+    let elsewhere = env.root.join("elsewhere");
+    let lib = env.lib("outside", "1.0.0", "");
+    env.ok(
+        &lib,
+        &["publish", "--registry", &elsewhere.display().to_string()],
+    );
+    let rel = "packages/ou/ts/outside/outside-1.0.0.tar.gz";
+    let archive = elsewhere.join(rel);
+    assert!(archive.is_file());
+    let line = read(&elsewhere.join("index/ou/ts/outside"))
+        .trim()
+        .to_string();
+    let index = env.registry.join("index/ou/ts/outside");
+    std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+    let abs = archive.display().to_string().replace('\\', "/");
+    let file_url = if abs.starts_with('/') {
+        format!("file://{abs}")
+    } else {
+        format!("file:///{abs}")
+    };
+    let up = format!("../elsewhere/{rel}");
+    let with_dl = |dl: &str| {
+        line.replacen(
+            "\"yanked\"",
+            &format!("\"dl\":{},\"yanked\"", json_str(dl)),
+            1,
+        )
+    };
+    let add = |i: usize| {
+        let app = env.app(&format!("app-{i}"), PLAIN_MAIN);
+        env.qx_home(
+            &app,
+            &env.root.join(format!("home-{i}")),
+            &["add", "outside"],
+        )
+    };
+    let cases = [
+        // The two `dl` values of the M-03 reproduction.
+        "file:///C:/Windows/win.ini".to_string(),
+        "file:////localhost/C$/Windows/win.ini".to_string(),
+        file_url,
+        abs.clone(),
+        up.clone(),
+        up.replace('/', "\\"),
+        format!("packages/../../elsewhere/{rel}"),
+    ];
+    for (i, dl) in cases.iter().enumerate() {
+        std::fs::write(&index, with_dl(dl) + "\n").unwrap();
+        let out = add(i);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{dl}: {err}");
+        assert!(err.contains("error[Q0609]"), "{dl}: {err}");
+    }
+    // The `config.json` template is held to the same rule.
+    std::fs::write(&index, format!("{line}\n")).unwrap();
+    std::fs::write(
+        env.registry.join("config.json"),
+        "{\"dl\": \"../elsewhere/packages/{prefix}/{name}/{name}-{version}.tar.gz\"}",
+    )
+    .unwrap();
+    let out = add(cases.len());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0609]"), "{err}");
+    // Control: the same archive inside the registry, named by a relative `dl`, installs.
+    std::fs::remove_file(env.registry.join("config.json")).unwrap();
+    std::fs::create_dir_all(env.registry.join(rel).parent().unwrap()).unwrap();
+    std::fs::copy(&archive, env.registry.join(rel)).unwrap();
+    std::fs::write(&index, with_dl(rel) + "\n").unwrap();
+    let out = add(cases.len() + 1);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// M-04 reproduction: `ESC ]0;TITLE-SET-BY-REGISTRY BEL ESC [2K` as JSON escapes.
+const INJECTED: &str = "\\u001b]0;TITLE-SET-BY-REGISTRY\\u0007\\u001b[2K";
+
+fn has_raw_escapes(bytes: &[u8]) -> bool {
+    bytes.iter().any(|&b| b == 0x1b || b == 0x07)
+}
+
+#[test]
+fn registry_text_is_printed_without_terminal_escapes() {
+    let env = Env::new("escapes");
+    std::fs::write(
+        env.registry.join("search.json"),
+        format!(
+            "{{\"version\": 1, \"packages\": [{{\"name\": \"good{INJECTED}\", \
+             \"version\": \"1.0.0{INJECTED}\", \"description\": \"plain {INJECTED}\"}}]}}"
+        ),
+    )
+    .unwrap();
+    let out = env.qx(&env.root, &["search", "good"]);
+    assert!(out.status.success());
+    assert!(!has_raw_escapes(&out.stdout) && !has_raw_escapes(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("good"));
+
+    let index = env.registry.join("index/ba/dl/badline");
+    std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+    std::fs::write(
+        &index,
+        format!(
+            "{{\"name\": \"x{INJECTED}\", \"vers\": \"1.0.0\", \"deps\": [], \"cksum\": \"{}\", \
+             \"yanked\": false, \"v\": 1}}\n",
+            "0".repeat(64)
+        ),
+    )
+    .unwrap();
+    let app = env.app("demo", PLAIN_MAIN);
+    let out = env.qx(&app, &["add", "badline"]);
+    assert!(!has_raw_escapes(&out.stderr));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0609]"), "{err}");
 }

@@ -15,7 +15,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // The tree-walking interpreter recurses per nested call/block; give it more stack than the
 // 1 MiB Windows main thread so the call-depth limit, not a stack overflow, is what stops it.
-const LANG_STACK: usize = 64 << 20;
+const LANG_STACK: usize = lang::STACK_SIZE;
 
 fn usage() -> String {
     format!(

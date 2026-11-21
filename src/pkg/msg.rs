@@ -54,6 +54,12 @@ pub fn reason_bad_dep(name: &str) -> String {
     format!("dependency `{name}` must be a version string or a table with `version` and/or `path`")
 }
 
+pub fn reason_absolute_path(name: &str, path: &str) -> String {
+    format!(
+        "path of dependency `{name}` must be relative to the project, like `../{name}`, not `{path}`"
+    )
+}
+
 pub fn reason_lock_format(version: i64) -> String {
     format!("missing or unsupported lock file version, expected {version}")
 }
@@ -165,6 +171,10 @@ pub fn invalid_index(name: &str, line: usize, reason: &str) -> String {
 
 pub fn invalid_config(err: &str) -> String {
     format!("failed to parse registry JSON: {err}")
+}
+
+pub fn invalid_dl(name: &str, version: &str, url: &str) -> String {
+    format!("invalid download location `{url}` for `{name} {version}` (expected an `https://` URL or a relative path inside the registry)")
 }
 
 pub fn archive_missing(name: &str, version: &str, url: &str) -> String {

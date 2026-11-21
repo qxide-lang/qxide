@@ -1072,3 +1072,98 @@ fn short_circuit_right_operand_cannot_consume() {
         ok(&format!("{EAT}{}", main_body(body)));
     }
 }
+
+// Programs at the nesting limit (n levels; n + 1 is Q0106) whose recursive call sits at the
+// innermost level, so 199 calls each hold the full nesting on the interpreter's stack.
+type Deepest = (&'static str, usize, fn(usize) -> String);
+
+fn deepest_programs() -> Vec<Deepest> {
+    fn wrap(body: String) -> String {
+        format!(
+            "int f(int k) {{\n    if k > 0 {{\n        {body}\n    }}\n    return 0;\n}}\n\nvoid main() {{\n    println(\"{{}}\", f(198));\n}}\n"
+        )
+    }
+    fn bits(body: String) -> String {
+        format!(
+            "void f(int k, Bit m) {{\n    if k > 0 {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(198, m);\n}}\n"
+        )
+    }
+    fn nest(n: usize, open: &str, inner: &str, close: &str) -> String {
+        format!("{}{inner}{}", open.repeat(n), close.repeat(n))
+    }
+    vec![
+        ("chain", 124, |n| {
+            wrap(format!("return f(k - 1){};", " + 0".repeat(n)))
+        }),
+        ("unary", 122, |n| {
+            wrap(format!("return {}f(k - 1);", "- ".repeat(n)))
+        }),
+        ("cast", 122, |n| {
+            wrap(format!("return {}f(k - 1);", "(int) ".repeat(n)))
+        }),
+        ("call_args", 122, |n| {
+            let call = nest(n, "g(", "f(k - 1)", ")");
+            format!(
+                "int g(int x) {{\n    return x;\n}}\n\n{}",
+                wrap(format!("return {call};"))
+            )
+        }),
+        ("builtin_arg", 123, |n| {
+            wrap(format!("println(\"{{}}\", f(k - 1){});", " + 0".repeat(n)))
+        }),
+        // n triples, so 3n nested builtin calls.
+        ("builtins", 40, |n| {
+            wrap(format!(
+                "return {};",
+                nest(n, "len(measure(qreg(", "f(k - 1)", ")))")
+            ))
+        }),
+        ("for", 122, |n| {
+            wrap((0..n).fold("return f(k - 1);".to_string(), |s, i| {
+                format!("for i{i} in 0..1 {{ {s} }}")
+            }))
+        }),
+        ("if", 61, |n| {
+            wrap(nest(n, "if k > 0 { ", "return f(k - 1);", " }"))
+        }),
+        ("else_if", 120, |n| {
+            wrap(format!(
+                "if k < 0 {{ return 0; }}{} else {{ return f(k - 1); }}",
+                " else if k < 0 { return 0; }".repeat(n)
+            ))
+        }),
+        ("bit_if", 61, |n| {
+            bits(nest(n, "if m { ", "f(k - 1, m);", " }"))
+        }),
+        ("bit_else", 61, |n| {
+            bits(nest(n, "if m { } else { ", "f(k - 1, m);", " }"))
+        }),
+    ]
+}
+
+// Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`
+// (measured worst case: ~100 MiB unoptimized, ~45 MiB optimized). The parser and checker also
+// run on that thread, as in the CLI: unoptimized they need more than a test thread's 2 MiB.
+#[test]
+fn deepest_legal_programs_fit_in_half_the_interpreter_stack() {
+    let worker = std::thread::Builder::new().stack_size(STACK_SIZE / 2);
+    let failures = worker
+        .spawn(|| {
+            let mut failures = Vec::new();
+            for (kind, n, program) in deepest_programs() {
+                let over = codes(&program(n + 1));
+                if over != ["Q0106"] {
+                    failures.push(format!("{kind} at depth {}: {over:?}", n + 1));
+                }
+                let src = program(n);
+                if let Err(Failure(d)) = run("t.qx", &src, 1, 0) {
+                    failures.push(format!("{kind} at depth {n}: {d}"));
+                }
+            }
+            failures
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(failures.is_empty(), "{failures:#?}");
+}

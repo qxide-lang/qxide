@@ -44,6 +44,13 @@ use stdlib::{Host, Permissions};
 // The package manager (CLI only) builds `PackageRoot`s; the playground build never does.
 #[allow(unused_imports)]
 pub use link::{PackageRoot, Project, ReadFn};
+// The package manager prints registry and archive text through it too.
+#[allow(unused_imports)]
+pub use diag::printable;
+
+// Stack for threads that run the interpreter: the deepest legal program (200 calls x 128 nesting
+// levels) needs at most ~100 MiB in an unoptimized build and ~45 MiB optimized (measured 2026-11-21).
+pub const STACK_SIZE: usize = 256 << 20;
 
 /// Rendered diagnostics, ready for stderr.
 #[derive(Debug)]

@@ -149,7 +149,9 @@ pub fn parse(text: &str, path: &Path) -> Result<Lock> {
             None => Source::Root,
             Some(s) => match (s.strip_prefix("registry+"), s.strip_prefix("path+")) {
                 (Some(url), _) => Source::Registry(url.to_string()),
-                (_, Some(p)) => Source::Path(p.to_string()),
+                (_, Some(p)) if super::manifest::relative_dep_path(p) => {
+                    Source::Path(p.to_string())
+                }
                 _ => return Err(bad(msg::reason_bad_source(&s))),
             },
         };
