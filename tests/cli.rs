@@ -194,6 +194,58 @@ fn long_operator_and_index_chains_are_diagnostics_not_crashes() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
 }
 
+// The costliest nesting kinds per level, at the limit, under the deepest allowed recursion; these
+// overflowed the old 64 MiB stack in unoptimized builds (`cargo test --profile dev --test cli`).
+#[test]
+fn deepest_nesting_of_the_costliest_kinds_runs_in_any_build() {
+    let int_fn = |body: String| {
+        format!("int g(int x) {{\n    return x;\n}}\n\nint f(int k) {{\n    if k > 0 {{\n        {body}\n    }}\n    return 0;\n}}\n\nvoid main() {{\n    println(\"{{}}\", f(198));\n}}\n")
+    };
+    let bit_fn = |body: String| {
+        format!("void f(int k, Bit m) {{\n    if k > 0 {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(198, m);\n}}\n")
+    };
+    let nest = |n: usize, open: &str, inner: &str, close: &str| {
+        format!("{}{inner}{}", open.repeat(n), close.repeat(n))
+    };
+    let chain = |n: usize| int_fn(format!("return f(k - 1){};", " + 0".repeat(n)));
+    let call_args = |n: usize| int_fn(format!("return {};", nest(n, "g(", "f(k - 1)", ")")));
+    let fors = |n: usize| {
+        int_fn((0..n).fold("return f(k - 1);".to_string(), |s, i| {
+            format!("for i{i} in 0..1 {{ {s} }}")
+        }))
+    };
+    let bit_ifs = |n: usize| bit_fn(nest(n, "if m { ", "f(k - 1, m);", " }"));
+    let builtins = |n: usize| {
+        int_fn(format!(
+            "return {};",
+            nest(n, "len(measure(qreg(", "f(k - 1)", ")))")
+        ))
+    };
+    // (kind, deepest accepted program, the same one level deeper)
+    let kinds = [
+        ("chain", chain(124), chain(125)),
+        ("call_args", call_args(122), call_args(123)),
+        ("for", fors(122), fors(123)),
+        ("bit_if", bit_ifs(61), bit_ifs(62)),
+        ("builtins", builtins(40), builtins(41)),
+    ];
+    for (kind, deepest, over) in kinds {
+        let over = tmp_qx(&format!("deepest_{kind}_over.qx"), &over);
+        let out = qxide(&["check", &over]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("error[Q0106]"), "{kind}: {err}");
+        let path = tmp_qx(&format!("deepest_{kind}.qx"), &deepest);
+        for cmd in ["run", "qasm"] {
+            let out = qxide(&[cmd, &path]);
+            assert!(
+                out.status.success(),
+                "{kind} {cmd}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}
+
 #[test]
 fn lang_command_usage_errors_exit_with_two() {
     assert_eq!(qxide(&["run"]).status.code(), Some(2));
