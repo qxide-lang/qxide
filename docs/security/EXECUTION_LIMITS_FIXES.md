@@ -113,7 +113,7 @@ The slowest run the playground limits admit took 14.4 s, inside the page's 30 s 
 
 ## Results
 
-- `cargo test --workspace`: see the commit; all suites pass (the CLI test for B-01 at default limits is `#[ignore]`).
+- `cargo test --workspace`: all 13 test binaries pass (qxide bin 124, wasm crate 113, cli 23 + 1 ignored, plus the library suites); the CLI test for B-01 at default limits is `#[ignore]` (about 75 s).
 - `cargo clippy --workspace --all-targets -- -D warnings`, `cargo clippy -p qxide-wasm --target wasm32-unknown-unknown -- -D warnings`, `cargo fmt --all -- --check`: clean.
 
 ## Remaining
