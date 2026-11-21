@@ -140,12 +140,13 @@ class Registry:
         with index.open("a", encoding="utf-8", newline="\n") as f:
             f.write(text + "\n")
 
-    def validate(self, *args: str) -> subprocess.CompletedProcess:
+    def validate(self, *args: str, timeout=None) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, "-I", str(VALIDATE), "--root", str(self.root), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=timeout,
         )
 
     def git(self, *args: str) -> str:
@@ -308,6 +309,24 @@ class ValidateArchives(unittest.TestCase):
                 else:
                     self.assertEqual(r.returncode, 1, r.stdout)
                     self.assertIn("evil 1.0.0", r.stdout)
+
+
+class ValidateManifestPaths(unittest.TestCase):
+    def test_paths_the_client_rejects(self):
+        # B-P13: the client now refuses a `path` that is absolute, a network path, or has a drive,
+        # also in a registry package's own qxide.toml, so such a package could not be used.
+        for path in ['"C:/x"', '"/x"', '"//host/share/x"', '"\\\\x"', '"C:x"', "5"]:
+            with self.subTest(path=path):
+                reg = Registry(self)
+                reg.add("other", "1.0.0")
+                files = [
+                    ("evil-1.0.0/qxide.toml", manifest("evil", "1.0.0", f'[dependencies]\nother = {{ version = "1", path = {path} }}\n')),
+                    ("evil-1.0.0/src/lib.qx", LIB),
+                ]
+                reg.add("evil", "1.0.0", files, deps=[{"name": "other", "req": "^1"}])
+                r = reg.validate()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("evil 1.0.0", r.stdout)
 
 
 def load_script(path: Path):
@@ -664,7 +683,7 @@ class ValidateHostileInput(unittest.TestCase):
     def assert_reported(self, reg: Registry, needle: str) -> None:
         summary = reg.root.parent / f"{reg.root.name}-summary.md"
         self.addCleanup(lambda: summary.unlink(missing_ok=True))
-        r = reg.validate("--summary", str(summary))
+        r = reg.validate("--summary", str(summary), timeout=60)
         self.assertNotIn("Traceback", r.stderr)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn(needle, r.stdout)
@@ -682,16 +701,36 @@ class ValidateHostileInput(unittest.TestCase):
                 reg.append_raw("evil", '{"name": "evil", "vers": "1.0.1", "x": ' + nested + "}")
                 self.assert_reported(reg, "index/ev/il/evil:2")
 
+    def test_depth_scan_is_linear(self):
+        # Unterminated strings full of escaped quotes: a scan that retries from every quote takes
+        # quadratic time (hours for this line).
+        for tail in ['\\"' * 200_000, '"' * 200_000, '["' * 100_000]:
+            with self.subTest(tail=tail[:6]):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0")
+                reg.append_raw("evil", '{"name": "evil", "vers": "1.0.1", "x": "' + tail)
+                self.assert_reported(reg, "index/ev/il/evil:2")
+
     def test_huge_numbers(self):
         # Python refuses to convert integers of more than 4300 digits.
         big = "1" * 5000
-        for vers, over in [(f"{big}.0.0", {}), ("1.0.1", {"qxide": f">={big}"}), ("1.0.1", {"deps": [{"name": "other", "req": f"^{big}"}]})]:
+        line = "index/ev/il/evil:2"
+        cases = [
+            (f"{big}.0.0", {}, line),
+            ("1.0.1", {"qxide": f">={big}"}, line),
+            ("1.0.1", {"deps": [{"name": "other", "req": f"^{big}"}]}, line),
+            # Valid for the client (numeric pre-release identifiers have no size limit); compared
+            # with the published version as numbers, then reported for the missing archive.
+            (f"1.0.1-{big}", {}, "evil 1.0.1-111"),
+            ("1.0.1", {"deps": [{"name": "other", "req": f"^1.0.0-{big}"}]}, "evil 1.0.1"),
+        ]
+        for vers, over, needle in cases:
             with self.subTest(vers=vers[:10], over=str(over)[:30]):
                 reg = Registry(self)
                 reg.add("other", "1.0.0")
                 reg.add("evil", "1.0.0")
                 reg.add("evil", vers, archive=False, **over)
-                self.assert_reported(reg, "index/ev/il/evil:2")
+                self.assert_reported(reg, needle)
 
     def test_index_file_that_is_not_utf8(self):
         reg = Registry(self)
@@ -727,6 +766,13 @@ class ValidateHostileInput(unittest.TestCase):
                 reg = Registry(self)
                 reg.add("evil", "1.0.0", [("evil-1.0.0/qxide.toml", text), ("evil-1.0.0/src/lib.qx", LIB)])
                 self.assert_reported(reg, "evil 1.0.0")
+
+    def test_long_archive_names(self):
+        # A valid version long enough for an archive file name over 255 bytes; Python 3.12's
+        # `Path.is_file` raises for it on Linux (Python 3.14 returns False).
+        reg = Registry(self)
+        reg.add("evil", "1.0.0-" + "a" * 300, archive=False)
+        self.assert_reported(reg, "evil 1.0.0-aaa")
 
     def test_large_members_and_long_names(self):
         # The per-member half of B-P6 and the template side of B-P11 (fixed by the first branch:
@@ -768,11 +814,13 @@ class ValidateOutput(unittest.TestCase):
         reg.add("evil", "1.0.0", std_files("evil", "1.0.0") + [(f"evil-1.0.0/src/{name}", LIB)])
         r, summary = self.run_validate(reg)
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("### evil", summary)
-        self.assertIn("click", summary)
-        self.assertNotIn("[click](", summary)
-        self.assertNotIn("__bold__", summary)
-        self.assertNotRegex(summary, r"(?<!\\)`")
+        self.assertIn("### `evil 1.0.0`", summary)
+        # The whole name is one code span: its fence is longer than any backtick run inside.
+        line = next(l for l in summary.splitlines() if "click" in l)
+        m = re.fullmatch(r"- (`+)( ?)(.*)\2\1", line)
+        self.assertIsNotNone(m, line)
+        self.assertNotRegex(m.group(3), rf"(?<!`){m.group(1)}(?!`)")
+        self.assertIn(name, m.group(3))
         self.assert_no_injected_lines(r, summary)
 
     def test_line_breaks_cannot_add_lines(self):
@@ -879,6 +927,13 @@ class BuildSearch(unittest.TestCase):
                     self.assertEqual(key(ordered[i]) < key(ordered[j]), i < j)
         self.assertEqual(self.newest(["1.0.0-rc.10", "1.0.0-rc.2"]), "1.0.0-rc.10")
         self.assertEqual(self.newest(["1.0.0-rc.2", "1.0.0-rc.10"]), "1.0.0-rc.10")
+
+    def test_long_numeric_prerelease(self):
+        # B-P6: the client accepts numeric pre-release identifiers of any length; Python's `int()`
+        # refuses more than 4300 digits.
+        big = "1" * 5000
+        self.assertEqual(self.newest([f"1.0.0-{big}", "1.0.0-2"]), f"1.0.0-{big}")
+        self.assertEqual(self.newest(["1.0.0-2", f"1.0.0-{big}", "1.0.0-10"]), f"1.0.0-{big}")
 
     def test_yanked_versions_are_skipped(self):
         self.assertEqual(self.newest(["1.0.0", "1.1.0-rc.10", "1.1.0-rc.2"], yanked=("1.1.0-rc.10",)), "1.1.0-rc.2")

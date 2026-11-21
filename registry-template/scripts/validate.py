@@ -53,8 +53,8 @@ SELF_DEPENDENCY = "cannot depend on itself"
 MAX_JSON_DEPTH = 100
 # toml_edit's limit in the client; this count includes the document and `[package]` tables.
 MAX_TOML_DEPTH = 80
-JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-JSON_BRACKET = re.compile(r"[\[\]{}]")
+# A string (to the end of the text if unterminated, so the scan stays linear) or a bracket.
+JSON_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"?|[\[\]{}]', re.DOTALL)
 # Folded before new package names are compared (B-P7): hyphens are dropped, then characters and
 # pairs that look alike in common fonts are mapped to one form.
 LOOK_ALIKE_CHARS = str.maketrans("0123456789i", "olzeasbtbgl")
@@ -62,8 +62,6 @@ LOOK_ALIKE_PAIRS = (("rn", "m"), ("vv", "w"), ("cl", "d"))
 # New names may not pass for official packages: none may start like `qxide` or equal `std`.
 RESERVED_PREFIXES = ("qxide",)
 RESERVED_NAMES = ("std",)
-# ASCII punctuation, each of which CommonMark lets a backslash escape.
-MARKDOWN_PUNCTUATION = re.compile(r"([!-/:-@\[-`{-~])")
 
 errors: list[str] = []
 summary: list[str] = []
@@ -78,11 +76,15 @@ def shown(text: str) -> str:
     return "".join(c if c.isprintable() else f"\\u{{{ord(c):04x}}}" for c in text)
 
 
-def markdown(text: str) -> str:
-    """`text` as literal Markdown: `shown`, then every ASCII punctuation character escaped, so no
-    code span, link, emphasis, or HTML can start or end inside it (B-P8).
+def code(text: str) -> str:
+    """`text` as one Markdown code span: `shown`, then fenced by more backticks than its longest
+    run of backticks, so no Markdown, HTML, link, or mention inside it is rendered (B-P8).
     """
-    return MARKDOWN_PUNCTUATION.sub(r"\\\1", shown(text))
+    t = shown(text)
+    fence = "`" * (max(map(len, re.findall("`+", t)), default=0) + 1)
+    # CommonMark strips one space from each end of a span when both are present.
+    pad = " " if t[:1] in ("`", " ") or t[-1:] in ("`", " ") else ""
+    return f"{fence}{pad}{t}{pad}{fence}"
 
 
 def skeleton(name: str) -> str:
@@ -316,7 +318,9 @@ def precedence(vers: str):
     major, minor, patch, pre, _ = parse_version(vers)
     if not pre:
         return (major, minor, patch, 1, ())
-    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+    # Numeric identifiers have no leading zeros, so length then digits is numeric order, without
+    # `int()`, which refuses more than 4300 digits (B-P6).
+    ids = tuple((0, len(p), p) if p.isdigit() else (1, 0, p) for p in pre.split("."))
     return (major, minor, patch, 0, ids)
 
 
@@ -471,6 +475,11 @@ def manifest_deps(where: str, table) -> Counter | None:
         return None
     deps = Counter()
     for name, value in table.items():
+        # The client refuses a manifest whose `path` is not a relative string (B-P13).
+        path = value.get("path", "") if isinstance(value, dict) else ""
+        if not isinstance(path, str) or path.startswith(("/", "\\")) or ":" in path:
+            error(where, f"qxide.toml dependency `{name}` has a `path` the client rejects")
+            return None
         req = value.get("version") if isinstance(value, dict) else value
         parsed = parse_req(req)
         if not NAME.fullmatch(name) or parsed is None:
@@ -592,9 +601,13 @@ def json_depth(text: str) -> int:
     first). Python's parsers recurse once per level (B-P6).
     """
     depth = deepest = 0
-    for m in JSON_BRACKET.finditer(JSON_STRING.sub("", text)):
-        depth += 1 if m.group() in "[{" else -1
-        deepest = max(deepest, depth)
+    for m in JSON_TOKEN.finditer(text):
+        token = m.group()
+        if token in ("[", "{"):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif token in ("]", "}"):
+            depth -= 1
     return deepest
 
 
@@ -694,13 +707,19 @@ def main() -> int:
             else:
                 local = target
             archive = ROOT / local
-            if not archive.is_file():
+            try:
+                # Python 3.12's `is_file` raises for some errors, such as a component over 255 bytes.
+                data = archive.read_bytes() if archive.is_file() else None
+            except OSError as e:
+                error(where, f"archive {local} cannot be read: {e}")
+                continue
+            if data is None:
                 if local == target:
                     error(where, f"archive {local} is missing")
                 else:
                     error(where, f"archive {local} is missing (required for the external `dl` {target})")
                 continue
-            new_files[where] = check_archive(where, entry, archive.read_bytes())
+            new_files[where] = check_archive(where, entry, data)
 
     # Dependencies must name packages in this registry.
     for name, entries in names.items():
@@ -775,9 +794,9 @@ def main() -> int:
     if args.summary:
         lines = ["## Registry check", ""]
         # Errors and file names carry text from the pull request: written as literal text (B-P8).
-        lines += [f"- {markdown(e)}" for e in errors] or ["All checks passed."]
+        lines += [f"- {code(e)}" for e in errors] or ["All checks passed."]
         for where in sorted(changed):
-            lines += ["", f"### {markdown(where)}", ""] + [f"- {markdown(f)}" for f in new_files.get(where, [])]
+            lines += ["", f"### {code(where)}", ""] + [f"- {code(f)}" for f in new_files.get(where, [])]
         Path(args.summary).open("a", encoding="utf-8").write("\n".join(lines) + "\n")
 
     for e in errors:

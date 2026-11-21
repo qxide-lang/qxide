@@ -41,7 +41,7 @@ Package archives are gzip-compressed tar files (`.tar.gz`) containing all files 
 
 ## Yanking a version
 
-Only maintainers yank versions. The registry does not record who owns a package, so CI rejects any pull request that changes `yanked`. To have a version yanked, open an issue from the account that published it (or that owns the source repository) naming the package and version; a maintainer sets `"yanked": true` on that version's index line in a commit to `main`. Yanked versions are not restored.
+Only maintainers yank versions. The registry does not record who owns a package, so CI rejects any pull request that changes `yanked`. To have a version yanked, open an issue from the account that published it (or that owns the source repository) naming the package and version; a maintainer sets `"yanked": true` on that version's index line in a commit to `main` (with branch protection that requires pull requests, this needs a maintainer allowed to bypass it). Yanked versions are not restored.
 
 - Yanked versions are not selected for new dependency resolutions.
 - Projects whose `qxide.lock` already pins a yanked version continue to work.
@@ -121,7 +121,7 @@ Every pull request runs `scripts/validate.py` from the target branch (the workfl
 - New package names do not start like `qxide` or equal `std` after the same mapping (reserved for official packages)
 - Invalid input (malformed or deeply nested JSON or TOML, numbers too long to be versions) is reported as an error rather than stopping the check
 
-The workflow job summary lists the files included in each new version for reviewers. File names and error messages in the summary and the job log are shown as literal text: non-printable characters appear as `\u{XXXX}` escapes and Markdown punctuation is escaped.
+The workflow job summary lists the files included in each new version for reviewers. File names and error messages are shown as literal text: in the summary each is one code span, and in both the summary and the job log non-printable characters appear as `\u{XXXX}` escapes.
 
 ### Review policy
 
