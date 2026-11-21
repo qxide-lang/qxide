@@ -28,6 +28,10 @@ pub fn exists(dir: &str) -> String {
     format!("destination `{dir}` already exists")
 }
 
+pub fn linked_data_dir(path: &str) -> String {
+    format!("`{path}` is a symbolic link or junction; `qxide app dev` keeps app data inside the project, so replace it with a plain folder")
+}
+
 pub fn io(path: &str, err: &str) -> String {
     format!("file operation on `{path}` failed: {err}")
 }

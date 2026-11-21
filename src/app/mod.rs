@@ -298,13 +298,30 @@ fn find_runtime() -> Result<PathBuf> {
     }
 }
 
+/// `std.fs` data folder of `qxide app dev`: `<project>/target/app-data`.
+// Security: a linked `target/` or `app-data` would move the folder outside the project (B-A2).
+fn dev_data_dir(dir: &Path) -> Result<PathBuf> {
+    let target = dir.join("target");
+    let data = target.join("app-data");
+    for p in [&target, &data] {
+        if p.symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(Failure::plain(msg::linked_data_dir(
+                &p.display().to_string(),
+            )));
+        }
+    }
+    Ok(data)
+}
+
 fn dev(args: &[String]) -> Result<ExitCode> {
     let dir = project_dir(args, "app dev")?;
     let app = load(&dir)?;
     validate(&app)?;
     let runtime = find_runtime()?;
     let target = dir.join("target");
-    let data = target.join("app-data");
+    let data = dev_data_dir(&dir)?;
     let packages = app
         .project
         .packages

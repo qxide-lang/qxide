@@ -168,3 +168,40 @@ fn studio_examples_match_the_repository() {
         );
     }
 }
+
+/// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere.
+fn dir_link(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    {
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "mklink /J failed");
+    }
+}
+
+// B-A2: `qxide app dev` must not use a data folder that a linked `target/` or `app-data`
+// moves outside the project.
+#[test]
+fn dev_refuses_symlinked_data_folders() {
+    let base = temp("ba2-dev");
+    let (proj, outside) = (base.join("proj"), base.join("outside"));
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    assert!(dev_data_dir(&proj).is_ok());
+    dir_link(&outside, &proj.join("target"));
+    assert!(dev_data_dir(&proj).is_err(), "linked target/ accepted");
+    // `remove_dir` removes a junction or a directory symlink without touching its target.
+    std::fs::remove_dir(proj.join("target"))
+        .or_else(|_| std::fs::remove_file(proj.join("target")))
+        .unwrap();
+    std::fs::create_dir_all(proj.join("target")).unwrap();
+    dir_link(&outside, &proj.join("target").join("app-data"));
+    assert!(dev_data_dir(&proj).is_err(), "linked app-data accepted");
+    let _ = std::fs::remove_dir_all(&base);
+}

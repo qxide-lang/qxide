@@ -475,19 +475,25 @@ pub fn confine(root: &Path, rel: &str) -> Result<PathBuf, StdError> {
     {
         return Err(bad());
     }
-    // Symlinks: the deepest existing ancestor must still be inside the canonical root.
-    if let Ok(root_c) = root.canonicalize() {
-        let mut probe = out.clone();
-        loop {
-            if let Ok(c) = probe.canonicalize() {
-                if !c.starts_with(&root_c) {
-                    return Err(bad());
-                }
-                break;
-            }
-            if !probe.pop() || !probe.starts_with(root) {
-                break;
-            }
+    // Security: the root itself must not be a symlink or junction (B-A2); an absent root has
+    // nothing below it yet.
+    let root_c = match root.symlink_metadata() {
+        Ok(m) if m.file_type().is_symlink() => return Err(bad()),
+        Ok(_) => root.canonicalize().map_err(|_| bad())?,
+        Err(_) => return Ok(out),
+    };
+    // Symlinks: the deepest existing ancestor must still be inside the canonical root, and an
+    // entry that exists but does not resolve (a dangling symlink) is refused (B-A1).
+    let mut probe = out.clone();
+    loop {
+        match probe.canonicalize() {
+            Ok(c) if c.starts_with(&root_c) => break,
+            Ok(_) => return Err(bad()),
+            Err(_) if probe.symlink_metadata().is_ok() => return Err(bad()),
+            Err(_) => {}
+        }
+        if !probe.pop() || !probe.starts_with(root) {
+            break;
         }
     }
     Ok(out)
@@ -563,6 +569,135 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.kind, StdErrorKind::Argument);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Makes a symlink for the escape tests. Windows needs Developer Mode or admin rights: without
+    /// them the test is skipped locally, but fails on CI so the check never silently disappears.
+    fn symlink(target: &Path, link: &Path, dir: bool) -> bool {
+        #[cfg(unix)]
+        let r = {
+            let _ = dir;
+            std::os::unix::fs::symlink(target, link)
+        };
+        #[cfg(windows)]
+        let r = if dir {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        };
+        match r {
+            Ok(()) => true,
+            Err(e) if std::env::var_os("CI").is_none() => {
+                eprintln!("skipping symlink test: cannot create symlinks here ({e})");
+                false
+            }
+            Err(e) => panic!("cannot create a symlink on CI: {e}"),
+        }
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("qxide-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    // B-A1: a symlink inside the data root whose target does not exist yet must not let
+    // `write_text`/`append_text` create that target outside the root.
+    #[test]
+    fn fs_refuses_dangling_symlink_escape() {
+        let base = scratch("ba1");
+        let (root, outside) = (base.join("data"), base.join("outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("victim.txt");
+        if !symlink(&target, &root.join("notes.txt"), false)
+            || !symlink(&outside.join("newdir"), &root.join("sub"), true)
+        {
+            return;
+        }
+        let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
+        let p = |v: &str| HostValue::Str(v.into());
+        for f in ["write_text", "append_text"] {
+            let e = s.call("fs", f, &[p("notes.txt"), p("x")]).unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Path, "{f}");
+            let e = s.call("fs", f, &[p("sub/x.txt"), p("x")]).unwrap_err();
+            assert_eq!(
+                e.kind,
+                StdErrorKind::Path,
+                "{f} through a dangling folder link"
+            );
+        }
+        assert!(!target.exists(), "write escaped the data root");
+        assert!(
+            !outside.join("newdir").exists(),
+            "folder created outside the data root"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // B-A2: the data root itself may be a symlink (or a Windows junction) to another folder.
+    #[test]
+    fn fs_refuses_symlinked_data_root() {
+        let base = scratch("ba2");
+        let outside = base.join("home");
+        std::fs::create_dir_all(&outside).unwrap();
+        let root = base.join("data");
+        if !symlink(&outside, &root, true) {
+            return;
+        }
+        let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
+        let p = |v: &str| HostValue::Str(v.into());
+        let e = s
+            .call("fs", "write_text", &[p("a.txt"), p("x")])
+            .unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Path);
+        assert!(confine(&root, "a.txt").is_err());
+        assert!(
+            !outside.join("a.txt").exists(),
+            "write went through the root link"
+        );
+        #[cfg(windows)]
+        {
+            // A junction needs no privilege on Windows.
+            let jroot = base.join("jdata");
+            let ok = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&jroot)
+                .arg(&outside)
+                .output()
+                .is_ok_and(|o| o.status.success());
+            assert!(ok, "mklink /J failed");
+            let mut s = NativeStd::new(jroot.clone(), Box::new(|_, _| {}));
+            let e = s
+                .call("fs", "write_text", &[p("b.txt"), p("x")])
+                .unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Path);
+            assert!(
+                !outside.join("b.txt").exists(),
+                "write went through the junction"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fs_allows_symlinks_that_stay_inside() {
+        let base = scratch("fsin");
+        let root = base.join("data");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        if !symlink(&root.join("real"), &root.join("alias"), true) {
+            return;
+        }
+        let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
+        let p = |v: &str| HostValue::Str(v.into());
+        s.call("fs", "write_text", &[p("alias/a.txt"), p("ok")])
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("real").join("a.txt")).unwrap(),
+            "ok"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
