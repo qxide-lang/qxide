@@ -94,11 +94,16 @@ pub fn serve(conn: &Connection) -> Result<(), String> {
                 vec![Message::Response(server.request(req))]
             }
             Message::Notification(n) if n.method == "exit" => return Ok(()),
-            Message::Notification(n) => server
-                .notification(n)
-                .into_iter()
-                .map(Message::Notification)
-                .collect(),
+            // Edits re-analyse every open document; a front-end panic there must not end the server.
+            Message::Notification(n) => {
+                match catch_unwind(AssertUnwindSafe(|| server.notification(n))) {
+                    Ok(out) => out.into_iter().map(Message::Notification).collect(),
+                    Err(_) => {
+                        server.cache.clear();
+                        Vec::new()
+                    }
+                }
+            }
             Message::Response(_) => Vec::new(),
         };
         for m in out {

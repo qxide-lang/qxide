@@ -466,6 +466,16 @@ fn completion_offers_names_in_scope_keywords_and_builtins() {
         assert!(got.iter().any(|g| g == want), "{want} missing from {got:?}");
     }
 
+    // A call whose name merely starts with `import` is not an `import` line.
+    let prefixed = "void import_all(Qubit q) {\n    h(q);\n}\n\nvoid main() {\n    Qubit a = qubit();\n    import_all(a);\n    discard(a);\n}\n";
+    c.change(URI, 3, prefixed);
+    let (l, ch) = pos_of(prefixed, "a);\n    discard", 0, 0);
+    let got = labels(&c.at("textDocument/completion", URI, l, ch));
+    assert!(got.iter().any(|g| g == "a"), "{got:?}");
+    let (l, ch) = pos_of("import x", "x", 0, 0);
+    c.change(URI, 4, "import x");
+    assert!(labels(&c.at("textDocument/completion", URI, l, ch)).is_empty());
+
     // After `.`: the BitReg methods.
     let dotted = "void main() {\n    QReg r = qreg(2);\n    BitReg m = measure(r);\n    println(\"{}\", m.);\n}\n";
     c.change(URI, 3, dotted);

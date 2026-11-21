@@ -718,7 +718,10 @@ impl Analysis {
             .map_or(at, |(i, _)| i);
         let line_start = src[..word_start].rfind('\n').map_or(0, |i| i + 1);
         let line = src[line_start..word_start].trim_start();
-        if line.starts_with("import") || line.starts_with("//") {
+        let import_line = line
+            .strip_prefix("import")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+        if import_line || line.starts_with("//") {
             return Vec::new();
         }
         if src[..word_start].ends_with('.') {

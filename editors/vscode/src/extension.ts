@@ -54,8 +54,13 @@ async function start(): Promise<void> {
 async function stop(): Promise<void> {
   const c = client;
   client = undefined;
-  if (c !== undefined) {
-    await c.stop();
+  // stop() throws unless the client is running (for example after a failed start).
+  if (c !== undefined && c.needsStop()) {
+    try {
+      await c.stop();
+    } catch {
+      // Already stopped or never started: nothing left to release.
+    }
   }
 }
 
