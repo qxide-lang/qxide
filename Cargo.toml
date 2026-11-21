@@ -1,6 +1,6 @@
 [package]
 name = "qxide"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Qxide: a language and Rust library for classical and quantum computers with C-style syntax, compile-time qubit safety like Rust's ownership, and OpenQASM 3 output"
 license = "MIT OR Apache-2.0"

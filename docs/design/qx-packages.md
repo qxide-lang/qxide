@@ -59,7 +59,7 @@ dev-only  = { path = "../dev-only" }                # path-only: cannot be publi
 
 - `[package]` with `name` and `version` is required.
 - `version` must be a valid semver string (for example `1.2.3`).
-- `qxide` is a semver requirement on the `qxide` language and tool version, checked by `run`, `check`, `qasm`, and `install`. This binary is version `0.6.0`; `>=0.6` is recommended because a caret requirement such as `^0.6` would reject `0.7`.
+- `qxide` is a semver requirement on the `qxide` language and tool version, checked by `run`, `check`, `qasm`, and `install`. This binary is version `0.7.0`; `>=0.6` is recommended because a caret requirement such as `^0.6` would reject `0.7`.
 - `description`, `license`, and `qxide` are required when publishing a package.
 - `authors` (array of strings) and `repository` are optional metadata.
 - Unknown keys are ignored for forward compatibility.

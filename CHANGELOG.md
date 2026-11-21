@@ -2,7 +2,9 @@
 
 Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` language) are listed here by version; older releases (0.5.0 and earlier) are documented on [GitHub Releases](https://github.com/qxide-lang/qxide/releases) and in `docs/release-notes/`.
 
-## [Unreleased]
+## [0.7.0] - 2026-11-21
+
+`qxide v0.7.0` builds on `v0.6.0` by adding modules (`import`, `public`), a package manager (`qxide.toml`, `qxide.lock`, and registry commands `add`, `remove`, `install`, `publish`, `search`), and new CLI commands (`qxide fmt`, `qxide repl`, `qxide explain`, and an updated `qxide new` project layout). This release also fixes seeded sampling so each shot uses an independent seed, tightens linearity soundness checks (`Q0315`), and rejects non-finite rotation angles (`Q0411`). For Rust library users, `qxide::shot_seed` and `Circuit::simulate_shots` are new, `rx`/`ry`/`rz` now panic on non-finite angles, and package manager dependencies are gated behind the default `cli` feature so `default-features = false` keeps the library dependency-free.
 
 ### Breaking changes
 
