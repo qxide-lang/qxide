@@ -35,7 +35,9 @@ Memory figures come from running the test binary alone under a wrapper that samp
 
 `Registry::download` read `file://` URLs from any path for every registry kind, and joined a scheme-less `dl` onto a directory registry's path, where an absolute path, `..`, or backslashes left the registry. `dl_url` now validates the expanded location with `valid_dl`, and `download` handles only `https://` (fetched with `curl` as before) and relative paths (read from the directory registry, or fetched under the https registry root).
 
-`dl` with `file://` is rejected outright rather than confined to a directory registry: `validate.py` already rejects it, no test or documented workflow used it, and a relative `dl` covers the directory-registry case. The registry URL itself may still be a `file://` URL or a path.
+`dl` with `file://` is rejected outright rather than confined to a directory registry: `validate.py` already rejects it, no test used it, a search of `docs/`, `README*`, `site/src`, and `registry-template/` found no `file://` `dl`, and a relative `dl` covers the directory-registry case.
+
+Behaviour change from the same port: a path segment must be a portable file name, so a package whose name is a Windows device name (`con`, `nul`, `aux`, `com1`, and so on) now fails with Q0609 under the default template (`packages/3/c/con/con-1.0.0.tar.gz`). `validate.py` already rejects the same paths, so the registry cannot hold such a package. The registry URL itself may still be a `file://` URL or a path.
 
 Regression test `download_locations_stay_inside_the_registry` (`tests/packages.rs`) runs `qxide add` against a directory registry whose only index line carries each `dl` below. The archive outside the registry is a valid package with the checksum in the index line, so a redirected read installs it.
 
@@ -59,7 +61,7 @@ The new error text `msg::invalid_dl` was written by hand instead of through the 
 
 | Test | Report input | Before fix | After fix |
 | --- | --- | --- | --- |
-| `registry_text_is_printed_without_terminal_escapes` (`tests/packages.rs`) | `search.json` row with the injected text in `name`, `version`, and `description`; index line `badline` whose `name` holds it | Fails: raw ESC/BEL on stdout | Passes |
+| `registry_text_is_printed_without_terminal_escapes` (`tests/packages.rs`) | `search.json` row with the injected text in `name`, `version`, and `description`; index line `badline` whose `name` holds it | Fails at the `search` step: raw ESC/BEL on stdout. The `badline` step, run separately with the unfixed binary: exit 1, Q0609, with 2 ESC and 1 BEL bytes on stderr | Passes |
 | `pkg::tests::package_errors_do_not_echo_terminal_escapes` | Archive member `escpath-1.0.0/src/a<inj>.qx` (Q0610), plus a C1 CSI and CR in a message, note, and help | Fails | Passes |
 | `diagnostics_do_not_echo_terminal_escapes` (`tests/cli.rs`) | `esc.qx` with escapes in a comment after `undefined_name;` | Fails: raw ESC/BEL on stderr | Passes; the carets still sit under `undefined_name` |
 | `lang::diag::tests::rendered_diagnostics_hide_terminal_escapes` | Control characters (ESC, BEL, CSI) and a tab before the error column, and in the message | Fails | Passes; the caret is under the same column as in the escaped line |
@@ -91,8 +93,8 @@ Not run: the playground parity scripts (`site/scripts/build-wasm.mjs`, `parity.m
 
 ## Not done here
 
+- **New observation, Reproduced, not fixed (out of scope):** `qxide publish` into a directory registry writes the archive to the expanded `config.json` template without validating it (`cli::write_into_registry`), so a template such as `../escaped/{name}-{version}.tar.gz` writes outside the registry directory. Reproduced in a scratch folder with the branch-tip binary: `publish` exited 0 and wrote `<scratch>/escaped/demo-1.0.0.tar.gz` next to `<scratch>/reg`. The report states that no write outside allowed directories was found, so this is new. Applying `valid_dl` before the write would close it.
 - Registry template, recommendation (3): the same limits in `validate.py` (extension headers, decompressed size), rejecting control characters in `description`, and M-09. The client now refuses PAX and GNU long-link headers that `validate.py` still accepts, so CI can pass an archive the client will not install until the template matches.
 - M-04 items beyond the print helper: rejecting control characters in `Entry::parse`, validating `name` and `version` of `search.json` rows like index lines, and filtering program output when stdout is a terminal.
-- Documentation of the new behaviour: the `dl` rule in `docs/design/qx-packages.md` ("absolute or registry-relative download URL") and a CHANGELOG entry.
-- Related observation, not fixed: `qxide publish` into a directory registry still writes the archive to the unvalidated `config.json` template path (`cli::write_into_registry`). `valid_dl` can be applied there the same way.
-- A directory registry may contain symbolic links. Downloads now read only regular files within the size limit, but a link to a regular file elsewhere is still followed.
+- Documentation of the new behaviour: the `dl` rule in `docs/design/qx-packages.md` ("absolute or registry-relative download URL"), whether the Q0609 text in `docs/error-codes.md` and `qxide explain` should mention download locations, and a CHANGELOG entry.
+- Read only, not reproduced: a directory registry may contain symbolic links. Downloads now read only regular files within the size limit, but a link to a regular file elsewhere is still followed.
