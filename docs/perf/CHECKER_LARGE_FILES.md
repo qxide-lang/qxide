@@ -24,9 +24,10 @@ otherwise.
 - **D. `lookup`** (`:392-399`) scans all visible variables. Its own share is the gap between
   `lookup_far` and `lookup_near`, which is 4.0 s at 80,000 declarations. **Not fixed**.
 - The measured exponents reach 2.9 to 3.6 at the largest sizes even though the operation counts
-  are quadratic. For B this is a step in the Windows heap, where snapshots larger than about
-  512 KiB fall back to fresh virtual memory (see "Above quadratic"). For A the rise is smooth and
-  matches a growing per-lookup cost.
+  are quadratic. For B the time per unit of work moves with the snapshot size: it jumps between
+  21,000 and 22,000 variables, where a snapshot crosses 512 KiB, and the profile shows virtual
+  memory calls in the Windows heap (see "Above quadratic"). For A the rise is smooth and matches a
+  growing per-lookup cost. Neither explanation was checked with hardware counters.
 - Nesting depth is not a factor of its own: with the number of declarations and `if`s held fixed,
   depths 1 to 60 all take 0.16 to 0.23 s. The parser caps nesting at 63 `if` levels
   (`MAX_DEPTH = 128`).
@@ -79,7 +80,8 @@ python -I scripts/perf/sample_profile.py target/prof/release/qxide.exe check tar
 ## Results before the fix
 
 Seconds are wall time of `qxide check` (median of 3; values marked ¹ are single runs above the
-budget).
+budget). Every doubling from the first size was measured, but only some rows are shown; `Slope`
+is always relative to the previous measured size, which is not necessarily the row above.
 
 | Family | N | Bytes | Seconds | Slope |
 | --- | ---: | ---: | ---: | ---: |
@@ -146,24 +148,31 @@ Finer steps of `decls_then_ifs`:
 - 16,000 is reproducibly slower than 18,000 (two runs of three each). Its profile also shows 17 %
   in `NtFreeVirtualMemory`, so the heap decommits and recommits at that size too. This was not
   pursued further, since it is allocator policy rather than checker logic.
+- The same effect shows at small sizes. Time per (`if` × variable) is about 30 ns at 2,500,
+  10 ns at 10,000 and 20,000, 23 ns at 16,000 and 26 ns at 40,000. The low slopes of the small
+  `decls_then_ifs` steps come from this varying cost more than from process start.
 - `chain_callers_first` at 16,000, 20,000, 24,000, 28,000 and 32,000 functions takes 6.07, 11.79,
   20.09, 30.14 and 39.99 s, a smooth rise with no step. The sweep performs about 1.5·N² hash map
   lookups of `String` keys (SipHash), which works out to about 16 ns per lookup at 16,000 and
   26 ns at 32,000. A per-lookup cost that grows with the working set points to cache misses, but
   this was not measured with hardware counters.
+- `lookup_near` at 40,000, 48,000, 56,000, 64,000, 72,000 and 80,000 declarations takes 1.08,
+  1.63, 2.19, 2.89, 4.78 and 8.87 s: quadratic up to 64,000, then a sharp rise. This was not
+  investigated.
 
 ## Profiles (before the fix)
 
-Samples on the checking thread; "inclusive" counts a sample for every `check.rs` line on its
-stack.
+Samples on the checking thread with the final version of the profiler (system-DLL leaves
+included); "inclusive" counts a sample for every `check.rs` line on its stack. The binary was
+built from `b8c385e` sources with full debug info.
 
 | Input | Where the time goes |
 | --- | --- |
 | `chain_callers_first`, 16,000 | `conditional_safety`: `:286` (`contains_key(name)` per sweep) 66 %, `:291` (`find` over calls) 32 %; leaves are SipHash and hashbrown probing |
-| `decls_then_ifs`, 20,000 | `states()` `:402` 55 to 61 %, `restore` 13 to 17 %, `if_stmt` `:646`/`:647` about 22 % each; 8 % in `ntdll` (virtual memory) |
-| `decls_then_fors`, 20,000 | `for` snapshot `:547` 34 %, `restore` `:569` 33 %, comparison loop `:556` 22 % |
-| `decls_then_andand`, 20,000 | `short_circuit_rhs` snapshot `:939` 40 %, comparison loop `:942` 29 %, the rest in the `:473` scan |
-| `qubits_then_ifs`, 20,000 | `states()` `:402` 53 %, then as `decls_then_ifs` |
+| `decls_then_ifs`, 20,000 | `states()` `:402` 64 % (calls at `:644`, `:646`, `:653` about 19 to 23 % each), `restore` `:407` 13 %, merge loop `:660` 8 %; 7.5 % of leaves in `ntdll` (`NtFreeVirtualMemory` 6.5 %) |
+| `decls_then_fors`, 20,000 | `for` snapshot `:547` 35 %, `restore` `:569` 34 %, comparison loop `:556` 18 %, `:473` scan 5 % |
+| `decls_then_andand`, 20,000 | `short_circuit_rhs` snapshot `:939` 34 %, comparison loop `:942` 23 %, `:473` scan 36 % |
+| `qubits_then_ifs`, 20,000 | `states()` `:402` 51 %, `restore` 11 %, merge loop `:660` 15 %, `consume` lookups 6 % |
 | `lookup_near`, 40,000 | `:473` shadowing scan 98.5 % (34 % of the leaves are `memcmp` in `vcruntime140`) |
 | `lookup_far`, 40,000 | `:473` 60 %, `lookup` (`:398`, reached from `expr` `:809`) 39 % |
 
@@ -229,9 +238,11 @@ Before and after (median of 3, release):
 | | 64,000 | 0.128 | 0.151 |
 | `flat_functions` | 64,000 | 0.416 | 0.379 |
 
-The slope of `chain_callers_first` is now 0.95 to 1.04 from 16,000 upward. The 0.01 to 0.02 s
-difference on `chain_callees_first` is near the run-to-run spread of these timings, and the
-heap-based pass does some work the old single sweep did not, so a small cost there is expected.
+The slope of `chain_callers_first` is now 0.95 to 1.04 from 16,000 upward. `chain_callees_first`
+got slightly slower. An A/B run with the same build flags (release with debug info, median of 7)
+gives 0.063 s before and 0.069 s after at 32,000 functions, and 0.120 s against 0.144 s at
+64,000. The old code needed a single sweep for this order, while `propagate` always builds the
+caller map and the heap, so it costs about 20 % more on this best case for the old code.
 
 ## Proposals (not implemented)
 
@@ -265,5 +276,6 @@ heap-based pass does some work the old single sweep did not, so a small cost the
 ## Status of M-05 after this branch
 
 The call-chain half of M-05 is fixed. The declaration-and-branch half (B) and the new
-shadowing-scan path (C) remain. A file under 1 MB of `int` declarations and `if`s still takes about
-40 s, and about 1.9 MB of `Qubit` declarations takes 48 s.
+shadowing-scan path (C) remain. On the fixed binary, `decls_then_ifs` still takes 3.89 s at 20,000
+and 38.2 s at 40,000 (988,905 bytes), and `lookup_near` takes 1.08 s at 40,000 and 8.87 s at
+80,000. `qubits_then_ifs` (1.9 MB, 48 s before) goes through the same unchanged code.
