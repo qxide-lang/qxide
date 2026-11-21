@@ -94,7 +94,119 @@ Not run: the workflow on GitHub Actions (it can only run there; the tests above 
 
 ## Not done here
 
-- B-P5 to B-P8 and B-P10 to B-P13 (yank ownership, look-alike names, Markdown in the job summary, the `RecursionError` on deeply nested index JSON in B-P6, and others) are unchanged.
+- B-P5 to B-P8 and B-P10 to B-P13 (yank ownership, look-alike names, Markdown in the job summary, the `RecursionError` on deeply nested index JSON in B-P6, and others) are unchanged here; they are handled on `fix/registry-template-hardening-2` (see the second part below).
 - The index `qxide` requirement is not compared with `qxide` in `qxide.toml`; a mismatch does not cause the Q0612 loop of M-08 but makes resolution and installed checks use different values.
 - Client side of M-09: `fix/pkg-client-hardening` rejects PAX headers, which settles the entry-size part, but the client still stops after the first gzip member without failing on trailing data. CI now rejects such archives, so the registry cannot hold one.
 - Control characters other than `Cc` (for example bidirectional overrides, category `Cf`) are still allowed in `description`.
+
+---
+
+# Part 2: B-P5 to B-P8 and B-P10 to B-P13
+
+- **Date:** 2026-11-21
+- **Branch:** `fix/registry-template-hardening-2`, created from the tip of `fix/registry-template-hardening` (`deef8dd`), which is not modified. Neither branch is merged or pushed.
+- **Source:** the remaining package-system items of `docs/security/BASELINE_FINDINGS.md` as re-checked in `docs/security/MYTHOS_FINDINGS.md` (both on `security-review-prep` at `7b1f855`, unchanged). B-P5 to B-P8 concern the registry template; B-P10 to B-P13 concern the package client (`src/pkg`), and B-P11 was already reproduced and fixed as M-02 on `fix/pkg-client-hardening`.
+- **Scope:** `registry-template/`, `src/pkg/`, their tests, and documentation in this repository. Nothing was sent to `qxide-lang/registry` or any other remote.
+- **Commits:** `0002693` (template: B-P5 to B-P8), `ba90642` (B-P12), `97aa843` (B-P13), `25b1728` (B-P10), then this record.
+- **Method:** as in part 1. Every reproduction input became a regression test first and was run against the unfixed code; the fix followed. Where a fix needed a policy decision, the most restrictive option was chosen and the alternatives are listed below. This record, the error messages, and the commit messages were written by hand; nothing was sent to an external text service.
+
+## Summary
+
+| ID | Change | Files |
+| --- | --- | --- |
+| B-P5 | Pull requests may no longer change `yanked` on a published line, in either direction. The registry has no record of who owns a package, so yanking becomes a maintainer action (a commit to `main`). The README, pull request template, and design document describe the new process. | `validate.py`, `README.md`, `.github/pull_request_template.md`, `docs/design/qx-packages.md` |
+| B-P6 | Hostile input is reported as an error instead of stopping `validate.py` with a traceback. See the list below. | `validate.py` |
+| B-P7 | New package names are compared after folding look-alike characters, also with other names added in the same pull request; names starting like `qxide` and the name `std` are reserved; Windows device names are rejected as index files and as any path a pull request changes. | `validate.py`, `README.md`, `docs/design/qx-packages.md` |
+| B-P8 | Error messages, file names, and headings written to the job summary are escaped as literal Markdown, and every line printed to the job log has non-printable characters escaped, so pull request text cannot add Markdown, new lines, or `::` workflow commands. | `validate.py` |
+| B-P10 | An unpacked package counts as installed only if the cached archive still matches the locked checksum and the unpacked files equal a fresh unpack of that archive. | `src/pkg/cache.rs`, `docs/design/qx-packages.md` |
+| B-P11 | No new code. The client side is M-02 on `fix/pkg-client-hardening`; the template side was fixed in part 1 (PAX headers rejected, GNU long names capped at 4096 bytes). Part 2 adds a regression test with an 8 MiB GNU long name and an 8 MiB PAX record. | `ci/test_registry_scripts.py` |
+| B-P12 | `curl`, `gh`, and `git` are looked up in the absolute `PATH` entries only (`pkg::command`). On Windows `Command::new` would first look next to `qxide.exe` and in the system directories. | `src/pkg/mod.rs`, `src/pkg/index.rs`, `src/pkg/cli.rs` |
+| B-P13 | Path dependencies in `qxide.toml` and `path+` sources in `qxide.lock` must be relative: no leading `/` or `\` (roots and Windows network paths) and no `:` (drives). `..` stays allowed. | `src/pkg/manifest.rs`, `src/pkg/lock.rs`, `src/pkg/msg.rs`, `docs/design/qx-packages.md` |
+
+### B-P6: input that stopped `validate.py`
+
+Besides the deeply nested JSON named in the report, every parser that reads pull request bytes was checked for exceptions other than the ones already handled:
+
+- **JSON nesting:** `strict_json` measures the nesting depth on the text (strings removed, then brackets counted) before calling `json.loads`, and rejects more than 100 levels. The recursive `_depth` helper that ran after parsing is gone. Python 3.14 parses 2000 levels but raised `RecursionError` at 100,000; the old `_depth` itself raised it at 1000.
+- **Long numbers:** a version or requirement number with more than 20 digits (more than any `u64`) is rejected before `int()` is called; Python refuses to convert more than 4300 digits and raised `ValueError`.
+- **Index files that are not UTF-8** are reported instead of raising `UnicodeDecodeError`.
+- **`config.json`:** invalid JSON, invalid UTF-8, nesting over 100 levels, and a value that is not an object are reported (the file is also locked for pull requests by part 1, but it was parsed before that check ran).
+- **`qxide.toml` in an archive:** `RecursionError` and any `ValueError` from `tomllib` (also integers of more than 4300 digits) are reported, and so is a `package` key that is not a table. Nesting deeper than 80 levels is rejected: `toml_edit`, which the client uses, stops at 80 (`LIMIT` in `toml_edit` 0.25.19). This count includes the document and the `[package]` table, so it is up to two levels stricter than the client.
+- **Per-member size** (the other half of B-P6): fixed in part 1, where sizes are added up as each member is read. Part 2 adds the regression test (one member of 50 MiB + 1 byte).
+
+## Policies chosen and alternatives
+
+| ID | Chosen (most restrictive) | Alternatives not chosen |
+| --- | --- | --- |
+| B-P5 | No pull request may change `yanked`; maintainers yank on request from the publishing account and do not un-yank by pull request. Nothing in the client depends on yank pull requests (`qxide yank` does not exist). | (a) Allow `false` to `true` only, by anyone, with review, as the documentation said before. (b) An owner list per package (kept by maintainers or created by the first publishing pull request) checked against the pull request author's login, which `pull_request_target` provides; this would also cover publishing new versions of someone else's package. (c) Allow yanks only in pull requests that change nothing else. |
+| B-P6 | JSON over 100 levels (unchanged limit), TOML over 80 levels counted from the document, numbers over 20 digits. | Catching `RecursionError` instead of measuring depth; the client's exact limits of 128 (JSON) and 80 (TOML, counting only arrays and inline tables). |
+| B-P7 | Fold `0`→`o`, `1`→`l`, `2`→`z`, `3`→`e`, `4`→`a`, `5`→`s`, `6`→`b`, `7`→`t`, `8`→`b`, `9`→`g`, `i`→`l`, then `rn`→`m`, `vv`→`w`, `cl`→`d`, after removing hyphens; reserve the prefix `qxide` and the name `std` (also after folding); reject Windows device names. Only names new relative to the base branch are checked, so existing look-alike pairs never block later pull requests. | A smaller table (only `0`/`o` and `1`/`l`/`i`), which rejects fewer honest names; more reserved prefixes (`qx`, `core`); an allowlist file so maintainers can approve a rejected name without bypassing the check. |
+| B-P8 | Escape every ASCII punctuation character in the summary and write file names as plain text instead of code spans; write every non-printable character (Unicode categories C and Z other than the space, which includes U+2028 and U+0085) as `\u{XXXX}` in the summary and the log. Printable non-ASCII text is kept so reviewers can read it. | HTML-escaped `<code>` elements; leaving file names out of the summary; escaping all non-ASCII text. |
+| B-P10 | Compare the unpacked files with a fresh unpack of the cached archive on every check. The archive is anchored to the checksum in `qxide.lock`, which a writer of `~/.qxide` cannot change, while a hash list in the marker could be rewritten along with the files. Costs one unpack per package per command (packages are at most 50 MiB unpacked; the example packages take milliseconds). A missing cached archive now also means "not installed", and `qxide install` downloads it again. | Keep the marker only and document the item as outside the threat model; a per-file hash list in the marker (detects mistakes, not a local attacker); verify only during `qxide install`; read-only permissions on the cache. |
+| B-P12 | Search only absolute `PATH` entries for `<name>.exe` (as Rust does, without `PATHEXT`); report the tool as missing otherwise. Other platforms are unchanged (`execvp` already searches `PATH` only). A `curl.exe` that is only in `System32` while `System32` is not on `PATH` is no longer found. | Use `%SystemRoot%\System32\curl.exe` explicitly for `curl`; keep Rust's order but skip the executable's directory; a setting for tool paths. |
+| B-P13 | Reject `path` values and `path+` lock sources that start with `/` or `\` or contain `:`. This is a behaviour change: absolute path dependencies, including `qxide add --path <absolute dir>`, now fail with `Q0602` (the manifest is left unchanged). | Confine path dependencies to the project directory, which would break the documented `../local-pkg` form, `examples/packages/bell-app` (`path = "../bell-utils"`), and existing tests, so it was not applied; a warning instead of an error; rejecting only Windows network paths. |
+
+## Regression tests
+
+Template: "Before" is the new test file run against the unfixed template from `deef8dd` (an export of `ci/`, `registry-template/`, and `tests/data/` next to the new tests): 46 tests, `failures=42, skipped=1`, all in the tests below; every other test passed. "After" is this branch: 46 tests OK, `skipped=1`. The skipped test needs a file system that can create `con`, so it ran on neither side here (Windows); CI runs on Linux.
+
+| Test | Input | Before | After |
+| --- | --- | --- | --- |
+| `ValidatePullRequests.test_yanked_cannot_change_in_a_pull_request` | B-P5 report input: only `"yanked": false` to `true` on a published line | Fails: exit 0 | Passes: exit 1, `index/ev/il/evil` |
+| `ValidatePullRequests.test_unyanking_in_a_pull_request` | `true` to `false` on a yanked line | Fails: exit 0 | Passes |
+| `ValidatePullRequests.test_look_alike_names` | New `be11-utils`, `beil-utils`, `bell-uti1s` next to `bell-utils`; `rnodem`, `m0dem` next to `modem`; control `bellutils` (already rejected) | Fails for the 5 new cases | Passes |
+| `ValidatePullRequests.test_look_alike_names_in_one_pull_request` | `foo-bar` with `foobar`, `foo1` with `fool`, both new in one pull request | Fails: exit 0 | Passes |
+| `ValidatePullRequests.test_reserved_names` | `qxide`, `qxide-std`, `qxidetools`, `qx1de-utils`, `std` | Fails: exit 0 | Passes |
+| `ValidatePullRequests.test_distinct_new_names_pass` | Controls: `bell-tools`, `qx-utils`, `dep-a` to `dep-c`, `pub-fixture`, `standard`, then a new version of `bell-utils` | Passes | Passes |
+| `ValidatePullRequests.test_windows_device_names` | `con`, `nul`, `aux`, `prn`, `com1`, `lpt9` index files committed with `git update-index --cacheinfo` (with `core.protectNTFS=false`, since Git for Windows refuses such paths) | Fails: exit 0 | Passes: rejected as changed paths |
+| `ValidatePullRequests.test_windows_device_names_on_disk` | `con`, `com1` index files in a checkout | Skipped (Windows) | Skipped (Windows) |
+| `ValidateHostileInput.test_deeply_nested_index_json` | B-P6 report input: 1000 and 100,000 nested arrays on an index line; control 101 | Fails for 1000 and 100,000 (traceback) | Passes: error at `index/ev/il/evil:2`, count line printed, summary written |
+| `ValidateHostileInput.test_huge_numbers` | 5000-digit `vers`, `qxide`, and dependency `req` | Fails: traceback (`ValueError`) | Passes |
+| `ValidateHostileInput.test_index_file_that_is_not_utf8` | A `0xff` byte in an index file | Fails: traceback | Passes |
+| `ValidateHostileInput.test_bad_config_json` | `{`, `[]`, an unterminated object, 100,000 nested arrays, `"\ud800"`, a `0xff` byte | Fails: traceback for all 6 | Passes |
+| `ValidateHostileInput.test_hostile_manifests` | `qxide.toml` with 300 and 100,000 nested arrays, a 5000-digit integer, `package = 1`, `package = []`; control with 70 nested arrays | Fails: 300 accepted (the client rejects it), the others with a traceback | Passes; control accepted |
+| `ValidateHostileInput.test_large_members_and_long_names` | One member of 50 MiB + 1 byte; an 8 MiB GNU long name; an 8 MiB PAX record (B-P6, B-P11) | Passes (fixed in part 1) | Passes |
+| `ValidateOutput.test_member_names_cannot_add_markdown` | B-P8 report input, a member name with backticks and brackets: ``x` [click](https%3A%2F%2Fevil.invalid) __bold__ `.qx`` | Fails: the code span, link, and emphasis reach the summary | Passes |
+| `ValidateOutput.test_line_breaks_cannot_add_lines` | A member name and an index `name` containing `\n`, `\r`, U+2028, or U+0085 followed by `::error::`, `::warning::`, `# Injected`, `<img>` | Fails: `::warning::injected` printed as its own log line | Passes |
+
+Client (`tests/packages.rs`). "Before" is the test run against this branch's code before the corresponding fix commit.
+
+| Test | Input | Before | After |
+| --- | --- | --- | --- |
+| `tools_next_to_the_executable_are_not_run` (Windows only) | A stand-in `curl.exe` (the existing `tests/support/fake_curl.rs`) next to a copy of `qxide.exe`, `PATH` set to an empty directory, `qxide install` | Fails: the planted `curl` ran and the install succeeded | Passes: `Q0608`, the stand-in did not run |
+| `path_dependencies_must_be_relative` | `path` = the absolute path of a real package, `/mid`, `//host/share/mid`, `C:/mid`, `C:mid`; `qxide add --path <absolute>`; lock `path+<absolute>` and `path+//host/share/mid` | Fails: the absolute path installed with exit 0 | Passes: `Q0602` for the manifest (`install`, `run`, and `add`, which leaves the manifest unchanged), `Q0603` for the lock; `../mid-0.1.0` still works |
+| `modified_package_files_are_not_used` | In the cache: append a function to `src/lib.qx`; add `src/extra.qx`; delete `src/lib.qx`; delete the cached archives | Fails: `qxide run` used the edited package (exit 0) | Passes: `run` fails with `Q0611`, `install` restores the files, `run` succeeds |
+
+### Changed existing test code
+
+The comment on `fake_curl_qxide` in `tests/packages.rs` said that Windows finds the stand-in next to the executable; it now says that tests place its directory first on `PATH`, which `failed_downloads_are_never_accepted_or_cached` already did. No assertion was removed or weakened.
+
+## Verification
+
+Run on Windows 11 with Python 3.14.10 and rustc 1.99.1 at the tip of this branch:
+
+| Command | Result |
+| --- | --- |
+| `python -I ci/test_registry_scripts.py` | 46 tests OK (1 skipped, see above) |
+| `cargo fmt --all --check` | clean |
+| `cargo clippy -j 8 --workspace --all-targets -- -D warnings` | clean |
+| `cargo test -j 8 --workspace` | all passed (binary unit tests 107, `cli` 21, `packages` 16, `qxide-wasm` 94 + 11, others unchanged) |
+| `git merge-tree --write-tree HEAD fix/pkg-client-hardening` | no conflicts |
+| Tests of that combined tree, checked out in a temporary detached worktree from an unreferenced commit (removed afterwards; no branch was changed) | binary unit tests 114, `cli` 22, `packages` 18, and the registry tests: all passed |
+
+Not run: the workflow on GitHub Actions; Python 3.12 (the CI version), although nothing used is newer than 3.11; `test_windows_device_names_on_disk` (Linux only); the `gh` and `git` calls of `qxide publish` (they now go through the same lookup, but publishing needs GitHub); a merge check against the other unmerged branches (`fix/execution-limits`, `fix/cli-test-stack-overflow`, `integration/check-20261121`).
+
+## Applying this to `qxide-lang/registry`
+
+The steps of part 1 apply. In addition:
+
+1. Before the update, check the live index for names that the new rules reject as Windows device names (the look-alike and reserved-name checks apply only to new names, so existing names are not affected).
+2. Announce that yanking is now done by maintainers, and decide how a yank request is verified (for example, an issue opened by the account that published the version).
+3. B-P10, B-P12, and B-P13 are client changes; they take effect with the next `qxide` release.
+
+## Not done here
+
+- Package ownership as a whole: anyone can still open a pull request that publishes a new version of an existing package, and only review prevents it (alternative (b) for B-P5 would cover both).
+- B-P10 costs one archive unpack per package on every `run`, `check`, and `qasm`; the comparison is not cached.
+- Look-alike folding is ASCII only (package names are ASCII) and does not cover every pair a font can confuse (for example `u` and `v`).
+- The baseline's `index/3/c/con` remark for the client: the client still reads such paths; the registry can no longer contain them.
