@@ -91,8 +91,8 @@ Example line:
 | `deps` | Yes | List of dependency objects `{name, req}`. |
 | `cksum` | Yes | Hex-encoded sha256 checksum of the archive. |
 | `qxide` | No | Qxide language version requirement. |
-| `description` | No | Short package description. |
-| `dl` | No | Download URL override. |
+| `description` | No | Short package description, without control characters. |
+| `dl` | No | Download URL override. The archive must still be added to this repository at its default path, where CI checks it. |
 | `yanked` | Yes | Boolean indicating whether the version is yanked. |
 | `v` | Yes | Schema version (`1`). |
 
@@ -100,18 +100,19 @@ Example line:
 
 ### Automated checks
 
-Every pull request runs `scripts/validate.py`, which checks:
+Every pull request runs `scripts/validate.py` from the target branch (the workflow uses `pull_request_target`, so a pull request cannot change its own check; its files are read as data and never executed). The script checks:
 
 - JSON syntax, required fields, and qxide client compatibility for every index line (`v` is the integer `1`; no build metadata in `vers`; versions, dependency requirements, and `qxide` checked with the same rules as the client's semver parser)
 - Correct `index/<prefix>/<name>` path
 - No duplicate versions, compared by semver precedence
 - Expanded download locations (`dl` and the `config.json` template) are `https://` URLs or plain paths inside the repository
-- Archive exists, its sha256 matches `cksum`, it contains only regular files under `<name>-<version>/` with safe, portable paths (no trailing dots or spaces, no Windows device names such as `CON` or `NUL`, no characters Windows rejects) and no two entries differing only in letter case, and it respects size and file-count limits
-- `qxide.toml` inside the archive matches `name` and `vers` and defines `description`, `license`, and `qxide`
+- Archive exists in this repository (also when `dl` is an external URL), its sha256 matches `cksum`, it is a single gzip member in the plain tar form that `qxide publish` writes (no PAX or other extension headers, at most 66 MiB decompressed), it contains only regular files under `<name>-<version>/` with safe, portable paths (no trailing dots or spaces, no Windows device names such as `CON` or `NUL`, no characters Windows rejects) and no two entries differing only in letter case, and it respects size and file-count limits
+- `qxide.toml` inside the archive matches `name`, `vers`, and `deps` and defines `description`, `license`, and `qxide`
 - `src/lib.qx` is present in the archive
 - All declared dependencies exist in the registry and a package does not depend on itself
 - Existing published index lines are unchanged except for `yanked`
-- No published version is removed
+- No published version or index file is removed
+- `description` contains no control characters
 - No existing archive is modified or deleted
 - `search.json` is untouched
 - `config.json` is untouched
