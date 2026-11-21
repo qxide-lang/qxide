@@ -549,6 +549,247 @@ class ValidatePullRequests(unittest.TestCase):
         self.assertIn("config.json", r.stdout)
 
 
+    def flip_yanked(self, old: str, new: str) -> None:
+        index = self.reg.root / "index" / "ev" / "il" / "evil"
+        text = index.read_text(encoding="utf-8")
+        self.assertIn(f'"yanked": {old}', text)
+        index.write_text(text.replace(f'"yanked": {old}', f'"yanked": {new}'), encoding="utf-8", newline="\n")
+
+    def test_yanked_cannot_change_in_a_pull_request(self):
+        # B-P5, the report's input: a pull request that only sets `yanked` to true on a published
+        # line. There is no record of who owns a package, so yanking is left to maintainers.
+        self.flip_yanked("false", "true")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("index/ev/il/evil", r.stdout)
+
+    def test_unyanking_in_a_pull_request(self):
+        # B-P5, the other direction: a yanked version made selectable again.
+        self.reg.git("checkout", "-q", "main")
+        self.flip_yanked("false", "true")
+        self.reg.git("commit", "-qam", "yank")
+        self.reg.git("checkout", "-qb", "pr2")
+        self.flip_yanked("true", "false")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("index/ev/il/evil", r.stdout)
+
+    def add_on_main(self, *names: str) -> None:
+        self.reg.git("checkout", "-q", "main")
+        for name in names:
+            self.reg.add(name, "1.0.0")
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", "existing")
+        self.reg.git("checkout", "-q", "pr")
+        self.reg.git("merge", "-q", "--no-edit", "main")
+
+    def test_look_alike_names(self):
+        # B-P7: names that differ from an existing one only by look-alike characters.
+        self.add_on_main("bell-utils", "modem")
+        for name in ["bellutils", "be11-utils", "beil-utils", "bell-uti1s", "rnodem", "m0dem"]:
+            with self.subTest(name=name):
+                self.reg.git("checkout", "-q", "-B", f"pr-{name}", "pr")
+                self.reg.add(name, "1.0.0")
+                r = self.commit_and_validate()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(f"index/{prefix(name)}/{name}", r.stdout)
+
+    def test_look_alike_names_in_one_pull_request(self):
+        # B-P7: two new names that look alike, added together.
+        for pair in [("foo-bar", "foobar"), ("foo1", "fool")]:
+            with self.subTest(pair=pair):
+                self.reg.git("checkout", "-q", "-B", f"pr-{pair[1]}", "pr")
+                for name in pair:
+                    self.reg.add(name, "1.0.0")
+                r = self.commit_and_validate()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(f"index/{prefix(pair[1])}/{pair[1]}", r.stdout)
+
+    def test_reserved_names(self):
+        # B-P7: names that pass for official packages.
+        for name in ["qxide", "qxide-std", "qxidetools", "qx1de-utils", "std"]:
+            with self.subTest(name=name):
+                self.reg.git("checkout", "-q", "-B", f"pr-{name}", "pr")
+                self.reg.add(name, "1.0.0")
+                r = self.commit_and_validate()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(f"index/{prefix(name)}/{name}", r.stdout)
+
+    def test_distinct_new_names_pass(self):
+        # Controls for B-P7: different names, an existing look-alike pair is not re-checked, and the
+        # names of the published fixture registry.
+        self.add_on_main("bell-utils")
+        for name in ["bell-tools", "qx-utils", "dep-a", "dep-b", "dep-c", "pub-fixture", "standard"]:
+            self.reg.add(name, "1.0.0")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.reg.add("bell-utils", "1.0.1")
+        r = self.commit_and_validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_windows_device_names(self):
+        # B-P7: `con`, `nul`, `com1` and the like pass the name pattern, but their index files and
+        # archive directories cannot be checked out on Windows. Committed with plumbing commands,
+        # since the files cannot be created on Windows either.
+        for name in ["con", "nul", "aux", "prn", "com1", "lpt9"]:
+            with self.subTest(name=name):
+                self.reg.git("checkout", "-q", "-B", f"pr-{name}", "pr")
+                line = json.dumps({"name": name, "vers": "1.0.0", "deps": [], "cksum": "0" * 64, "yanked": False, "v": 1})
+                blob = subprocess.run(
+                    ["git", "-C", str(self.reg.root), "hash-object", "-w", "--stdin"],
+                    input=line + "\n", capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                # Git for Windows refuses such paths unless core.protectNTFS is off.
+                self.reg.git("-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", f"100644,{blob},index/{prefix(name)}/{name}")
+                self.reg.git("commit", "-qm", "pr")
+                r = self.reg.validate("--base", "main")
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(f"index/{prefix(name)}/{name}", r.stdout)
+
+    @unittest.skipIf(sys.platform == "win32", "device names cannot be created on Windows")
+    def test_windows_device_names_on_disk(self):
+        # B-P7: the same names in a checkout, with or without a base branch.
+        for name in ["con", "com1"]:
+            with self.subTest(name=name):
+                reg = Registry(self)
+                reg.add(name, "1.0.0")
+                r = reg.validate()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(f"index/{prefix(name)}/{name}", r.stdout)
+
+
+class ValidateHostileInput(unittest.TestCase):
+    """B-P6: input that crashed `validate.py` with an exception instead of an error report."""
+
+    def assert_reported(self, reg: Registry, needle: str) -> None:
+        summary = reg.root.parent / f"{reg.root.name}-summary.md"
+        self.addCleanup(lambda: summary.unlink(missing_ok=True))
+        r = reg.validate("--summary", str(summary))
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(needle, r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^\d+ packages, \d+ versions, [1-9]\d* errors$")
+        self.assertIn("## Registry check", summary.read_text(encoding="utf-8"))
+
+    def test_deeply_nested_index_json(self):
+        # The report's input: deeply nested JSON on an index line.
+        for depth in [101, 1000, 100_000]:
+            with self.subTest(depth=depth):
+                reg = Registry(self)
+                reg.add("other", "1.0.0")
+                reg.add("evil", "1.0.0")
+                nested = "[" * depth + "]" * depth
+                reg.append_raw("evil", '{"name": "evil", "vers": "1.0.1", "x": ' + nested + "}")
+                self.assert_reported(reg, "index/ev/il/evil:2")
+
+    def test_huge_numbers(self):
+        # Python refuses to convert integers of more than 4300 digits.
+        big = "1" * 5000
+        for vers, over in [(f"{big}.0.0", {}), ("1.0.1", {"qxide": f">={big}"}), ("1.0.1", {"deps": [{"name": "other", "req": f"^{big}"}]})]:
+            with self.subTest(vers=vers[:10], over=str(over)[:30]):
+                reg = Registry(self)
+                reg.add("other", "1.0.0")
+                reg.add("evil", "1.0.0")
+                reg.add("evil", vers, archive=False, **over)
+                self.assert_reported(reg, "index/ev/il/evil:2")
+
+    def test_index_file_that_is_not_utf8(self):
+        reg = Registry(self)
+        reg.add("evil", "1.0.0")
+        with (reg.root / "index" / "ev" / "il" / "evil").open("ab") as f:
+            f.write(b'{"name": "\xff"}\n')
+        self.assert_reported(reg, "index/ev/il/evil")
+
+    def test_bad_config_json(self):
+        for data in [b"{", b"[]", b'{"dl": "x"', b"[" * 100_000 + b"]" * 100_000, b'"\\ud800"', b'{"dl": "\xff"}']:
+            with self.subTest(data=data[:20]):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0")
+                (reg.root / "config.json").write_bytes(data)
+                self.assert_reported(reg, "config.json")
+
+    def test_hostile_manifests(self):
+        # The client reports 100,000 nested arrays as Q0602 (toml_edit stops at 80 levels); Python's
+        # TOML parser recurses and accepts 300.
+        reg = Registry(self)
+        root = "evil-1.0.0"
+        reg.add("evil", "1.0.0", [(f"{root}/qxide.toml", manifest("evil", "1.0.0", "x = " + "[" * 70 + "]" * 70 + "\n")), (f"{root}/src/lib.qx", LIB)])
+        r = reg.validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        for extra in ["x = " + "[" * depth + "]" * depth + "\n" for depth in [300, 100_000]] + ["x = " + "1" * 5000 + "\n"]:
+            with self.subTest(extra=extra[:20]):
+                reg = Registry(self)
+                root = "evil-1.0.0"
+                reg.add("evil", "1.0.0", [(f"{root}/qxide.toml", manifest("evil", "1.0.0", extra)), (f"{root}/src/lib.qx", LIB)])
+                self.assert_reported(reg, "evil 1.0.0")
+        for text in ["package = 1\n", "package = []\n"]:
+            with self.subTest(text=text):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0", [("evil-1.0.0/qxide.toml", text), ("evil-1.0.0/src/lib.qx", LIB)])
+                self.assert_reported(reg, "evil 1.0.0")
+
+    def test_large_members_and_long_names(self):
+        # The per-member half of B-P6 and the template side of B-P11 (fixed by the first branch:
+        # sizes are checked while reading, PAX headers are rejected, GNU long names are capped).
+        root = b"evil-1.0.0"
+        big = tar_member(root + b"/src/big.qx", b"\0" * ((50 << 20) + 1))
+        long_name = tar_member(b"././@LongLink", b"a" * (8 << 20), b"L") + tar_member(root + b"/src/x.qx", b"")
+        pax = tar_member(b"pax", pax_record("path", "a" * (8 << 20)), b"x") + tar_member(root + b"/src/x.qx", b"")
+        for label, members in [("member", big), ("long name", long_name), ("pax", pax)]:
+            with self.subTest(label=label):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0", raw=gz(std_members("evil", "1.0.0") + members + END))
+                self.assert_reported(reg, "evil 1.0.0")
+
+
+class ValidateOutput(unittest.TestCase):
+    """B-P8: archive member names, index values and other text from a pull request reach the job
+    summary (Markdown) and the job log, where a line starting with `::` is a workflow command.
+    """
+
+    def run_validate(self, reg: Registry):
+        summary = reg.root.parent / f"{reg.root.name}-summary.md"
+        self.addCleanup(lambda: summary.unlink(missing_ok=True))
+        r = reg.validate("--summary", str(summary))
+        self.assertNotIn("Traceback", r.stderr)
+        return r, summary.read_text(encoding="utf-8")
+
+    def assert_no_injected_lines(self, r, summary: str) -> None:
+        for line in r.stdout.splitlines():
+            self.assertFalse(line.startswith("::"), line)
+        for line in summary.splitlines():
+            self.assertFalse(line.startswith(("::", "# ", "<")), line)
+
+    def test_member_names_cannot_add_markdown(self):
+        # The report's input: backticks and brackets in an archive member name.
+        # Portable, so it is listed: no `/`, `*`, `<`, `>` or `:` (see `portable` in validate.py).
+        name = "x` [click](https%3A%2F%2Fevil.invalid) __bold__ `.qx"
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", std_files("evil", "1.0.0") + [(f"evil-1.0.0/src/{name}", LIB)])
+        r, summary = self.run_validate(reg)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("### evil", summary)
+        self.assertIn("click", summary)
+        self.assertNotIn("[click](", summary)
+        self.assertNotIn("__bold__", summary)
+        self.assertNotRegex(summary, r"(?<!\\)`")
+        self.assert_no_injected_lines(r, summary)
+
+    def test_line_breaks_cannot_add_lines(self):
+        for sep in ["\n", "\r", " ", "\x85"]:
+            with self.subTest(sep=repr(sep)):
+                reg = Registry(self)
+                bad = f"evil-1.0.0/src/a{sep}::error::injected{sep}# Injected heading{sep}<img src=x>.qx"
+                reg.add("evil", "1.0.0", std_files("evil", "1.0.0") + [(bad, LIB)])
+                line = {"name": f"other{sep}::warning::injected{sep}# Injected", "vers": "1.0.0", "deps": [], "cksum": "0" * 64, "yanked": False, "v": 1}
+                reg.append_raw("other", json.dumps(line))
+                r, summary = self.run_validate(reg)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("index/ot/he/other:1", r.stdout)
+                self.assertIn("evil 1.0.0", r.stdout)
+                self.assert_no_injected_lines(r, summary)
+
+
 class ValidateWorkflow(unittest.TestCase):
     """B-P1: a `pull_request` run uses the workflow file from the pull request itself, so a pull
     request could edit or skip its own check. The standard library has no YAML parser, so these

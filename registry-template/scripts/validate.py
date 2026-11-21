@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validates the Qxide registry: index format, archive checksums and contents, and (with
---base) that a pull request only appends versions or toggles `yanked`.
+--base) that a pull request only appends versions.
 
 Usage: python scripts/validate.py [--base <git ref>] [--summary <file>] [--root <dir>]
 Standard library only (Python 3.11+ for tomllib).
@@ -49,9 +49,48 @@ ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTU
 INVALID_VALUE = "`{key}` has invalid value {value}"
 CONFIG_LOCKED = "cannot be modified in a pull request"
 SELF_DEPENDENCY = "cannot depend on itself"
+# Deepest JSON nesting accepted (serde_json in the client allows 128).
+MAX_JSON_DEPTH = 100
+# toml_edit's limit in the client; this count includes the document and `[package]` tables.
+MAX_TOML_DEPTH = 80
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+JSON_BRACKET = re.compile(r"[\[\]{}]")
+# Folded before new package names are compared (B-P7): hyphens are dropped, then characters and
+# pairs that look alike in common fonts are mapped to one form.
+LOOK_ALIKE_CHARS = str.maketrans("0123456789i", "olzeasbtbgl")
+LOOK_ALIKE_PAIRS = (("rn", "m"), ("vv", "w"), ("cl", "d"))
+# New names may not pass for official packages: none may start like `qxide` or equal `std`.
+RESERVED_PREFIXES = ("qxide",)
+RESERVED_NAMES = ("std",)
+# ASCII punctuation, each of which CommonMark lets a backslash escape.
+MARKDOWN_PUNCTUATION = re.compile(r"([!-/:-@\[-`{-~])")
 
 errors: list[str] = []
 summary: list[str] = []
+
+
+def shown(text: str) -> str:
+    """`text` with every character that is not printable (controls, line and paragraph separators,
+    format characters such as bidirectional overrides) written as `\\u{XXXX}`. Text from a pull
+    request then stays on its own line in the job log, where a line starting with `::` is a
+    workflow command, and in the job summary (B-P8).
+    """
+    return "".join(c if c.isprintable() else f"\\u{{{ord(c):04x}}}" for c in text)
+
+
+def markdown(text: str) -> str:
+    """`text` as literal Markdown: `shown`, then every ASCII punctuation character escaped, so no
+    code span, link, emphasis, or HTML can start or end inside it (B-P8).
+    """
+    return MARKDOWN_PUNCTUATION.sub(r"\\\1", shown(text))
+
+
+def skeleton(name: str) -> str:
+    """Form of a package name in which look-alike names are equal (B-P7)."""
+    s = name.replace("-", "").translate(LOOK_ALIKE_CHARS)
+    for pair, single in LOOK_ALIKE_PAIRS:
+        s = s.replace(pair, single)
+    return s
 
 
 def portable(part: str) -> bool:
@@ -87,7 +126,15 @@ def dl_template() -> str:
     config = ROOT / "config.json"
     if not config.is_file():
         return DEFAULT_DL
-    dl = json.loads(config.read_text(encoding="utf-8")).get("dl", DEFAULT_DL)
+    try:
+        doc = strict_json(config.read_bytes().decode("utf-8"))
+    except ValueError as e:
+        error("config.json", f"invalid JSON: {e}")
+        return DEFAULT_DL
+    if not isinstance(doc, dict):
+        error("config.json", "not a JSON object")
+        return DEFAULT_DL
+    dl = doc.get("dl", DEFAULT_DL)
     if not isinstance(dl, str):
         error("config.json", INVALID_VALUE.format(key="dl", value=repr(dl)))
         return DEFAULT_DL
@@ -124,7 +171,8 @@ def _number(s: str, i: int) -> tuple[int, int]:
     j = i
     while j < len(s) and "0" <= s[j] <= "9":
         j += 1
-    if j == i or (j - i > 1 and s[i] == "0"):
+    # 20 digits hold any u64; Python refuses to convert more than 4300 (B-P6).
+    if j == i or (j - i > 1 and s[i] == "0") or j - i > 20:
         raise _Bad
     value = int(s[i:j])
     if value > U64_MAX:
@@ -495,10 +543,18 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
         return files
     try:
         doc = tomllib.loads(manifest.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
-        error(where, f"qxide.toml is not valid UTF-8 TOML: {e}")
+    # ValueError: also integers too long to convert; RecursionError: deeply nested values (B-P6).
+    except (ValueError, RecursionError) as e:
+        error(where, f"qxide.toml is not valid UTF-8 TOML: {type(e).__name__}: {e}")
+        return files
+    # The client's TOML parser (toml_edit) refuses nesting deeper than 80 levels.
+    if nesting(doc) > MAX_TOML_DEPTH:
+        error(where, f"qxide.toml is nested deeper than {MAX_TOML_DEPTH} levels")
         return files
     pkg = doc.get("package", {})
+    if not isinstance(pkg, dict):
+        error(where, "qxide.toml `package` is not a table")
+        return files
     if pkg.get("name") != entry["name"] or pkg.get("version") != entry["vers"]:
         error(where, "qxide.toml name/version do not match the index entry")
     for key in ("description", "license", "qxide"):
@@ -531,33 +587,46 @@ def _reject_constant(name: str):
     raise ValueError(name)
 
 
-def _depth(value, level: int = 1) -> int:
-    if isinstance(value, dict):
-        return max([level] + [_depth(v, level + 1) for v in value.values()])
-    if isinstance(value, list):
-        return max([level] + [_depth(v, level + 1) for v in value])
-    return level - 1
+def json_depth(text: str) -> int:
+    """Deepest nesting of `[` and `{` in JSON text, found without parsing it (strings removed
+    first). Python's parsers recurse once per level (B-P6).
+    """
+    depth = deepest = 0
+    for m in JSON_BRACKET.finditer(JSON_STRING.sub("", text)):
+        depth += 1 if m.group() in "[{" else -1
+        deepest = max(deepest, depth)
+    return deepest
+
+
+def nesting(value) -> int:
+    """Deepest nesting of dicts and lists in a parsed value, the outermost counting as 1; computed
+    without recursion.
+    """
+    deepest, stack = 0, [(value, 1)]
+    while stack:
+        v, level = stack.pop()
+        if isinstance(v, (dict, list)):
+            deepest = max(deepest, level)
+            stack.extend((c, level + 1) for c in (v.values() if isinstance(v, dict) else v))
+    return deepest
 
 
 def strict_json(line: str):
     """Wrapper around `json.loads` restricted to what the client's `serde_json` accepts; raises
     `ValueError` otherwise.
     """
+    # Checked before parsing: deeper text would raise RecursionError instead (B-P6).
+    if json_depth(line) > MAX_JSON_DEPTH:
+        raise ValueError(f"nested deeper than {MAX_JSON_DEPTH} levels")
     value = json.loads(line, parse_constant=_reject_constant)
-    # serde_json rejects lone surrogates (`"\\ud800"`) and nesting deeper than 128 levels.
+    # serde_json rejects lone surrogates (`"\\ud800"`).
     json.dumps(value, ensure_ascii=False).encode("utf-8")
-    if _depth(value) > 100:
-        raise ValueError(f"depth {_depth(value)}")
     return value
 
 
 def base_lines(base: str, rel: str) -> list[str]:
     r = subprocess.run(["git", "-C", str(ROOT), "show", f"{base}:{rel}"], capture_output=True)
     return index_lines(r.stdout) if r.returncode == 0 else []
-
-
-def squash(name: str) -> str:
-    return name.replace("-", "")
 
 
 def main() -> int:
@@ -579,8 +648,16 @@ def main() -> int:
         if rel != f"index/{prefix(name)}/{name}" or not NAME.fullmatch(name):
             error(rel, f"index files live at index/{prefix(name)}/{name} and use valid package names")
             continue
+        if not portable(name):
+            error(rel, f"`{name}` is a Windows device name")
+            continue
+        try:
+            lines = index_lines(path.read_bytes())
+        except UnicodeDecodeError as e:
+            error(rel, f"not UTF-8: {e}")
+            continue
         entries, seen = [], set()
-        for i, line in enumerate(index_lines(path.read_bytes()), 1):
+        for i, line in enumerate(lines, 1):
             if not line.strip():
                 continue
             where = f"{rel}:{i}"
@@ -642,26 +719,40 @@ def main() -> int:
         for rel in sorted(p for p in base_index if p and not p.endswith("/.gitkeep")):
             if not (ROOT / rel).is_file():
                 error(rel, "index file was removed; yank its versions instead")
+        new_names = []
         for name, entries in names.items():
             rel = f"index/{prefix(name)}/{name}"
             old = [l for l in base_lines(args.base, rel) if l.strip()]
             new = [json.dumps(e, sort_keys=True) for e in entries]
             old_entries = [json.loads(l) for l in old]
-            # Published lines may only flip `yanked`; nothing is removed or rewritten.
+            # Published lines are immutable. `yanked` too: nothing records who owns a package, so a
+            # pull request could yank or restore anyone's version (B-P5); maintainers yank instead.
             for i, o in enumerate(old_entries):
                 if i >= len(entries):
-                    error(rel, f"version {o.get('vers')} was removed; yank it instead")
+                    error(rel, f"version {o.get('vers')} was removed; ask a maintainer to yank it instead")
                     continue
-                n = dict(entries[i], yanked=o.get("yanked"))
-                if json.dumps(n, sort_keys=True) != json.dumps(o, sort_keys=True):
-                    error(rel, f"line {i + 1} changed; published versions are immutable except `yanked`")
+                if json.dumps(entries[i], sort_keys=True) == json.dumps(o, sort_keys=True):
+                    continue
+                if json.dumps(dict(entries[i], yanked=o.get("yanked")), sort_keys=True) == json.dumps(o, sort_keys=True):
+                    error(rel, f"line {i + 1} changes `yanked`; only maintainers yank versions, not pull requests")
+                else:
+                    error(rel, f"line {i + 1} changed; published versions are immutable")
             for e in entries[len(old_entries):]:
                 changed.add(f"{name} {e['vers']}")
             if not old and new:
-                # A new package name: reject look-alikes of existing names.
-                for other in names:
-                    if other != name and squash(other) == squash(name) and base_lines(args.base, f"index/{prefix(other)}/{other}"):
-                        error(rel, f"`{name}` is too similar to the existing package `{other}`")
+                new_names.append(name)
+        # New names may not look like any other name, existing or added in the same pull request,
+        # or like an official package (B-P7).
+        reserved_prefixes = tuple(skeleton(p) for p in RESERVED_PREFIXES)
+        reserved_names = {skeleton(n) for n in RESERVED_NAMES}
+        for name in new_names:
+            rel = f"index/{prefix(name)}/{name}"
+            key = skeleton(name)
+            if key.startswith(reserved_prefixes) or key in reserved_names:
+                error(rel, f"`{name}` is reserved for official packages")
+            for other in names:
+                if other != name and skeleton(other) == key:
+                    error(rel, f"`{name}` is too similar to the package `{other}`")
         diff = [l.split("\t") for l in git("diff", "--name-status", f"{args.base}...HEAD").splitlines()]
         touched = [p for _, *paths in diff for p in paths]
         # Publishing and yanking pull requests change registry data only, never scripts or workflows.
@@ -671,6 +762,9 @@ def main() -> int:
                     error(p, "a pull request that changes index/ or packages/ may not change other files")
         for status, *paths in diff:
             for p in paths:
+                # Paths such as `index/3/c/con` cannot be checked out on Windows (B-P7).
+                if not all(portable(part) for part in p.split("/")):
+                    error(p, "path cannot be checked out on Windows")
                 if p == "config.json":
                     error(p, CONFIG_LOCKED)
                 if p.startswith("packages/") and status[0] in "MDR":
@@ -680,13 +774,14 @@ def main() -> int:
 
     if args.summary:
         lines = ["## Registry check", ""]
-        lines += [f"- {e}" for e in errors] or ["All checks passed."]
+        # Errors and file names carry text from the pull request: written as literal text (B-P8).
+        lines += [f"- {markdown(e)}" for e in errors] or ["All checks passed."]
         for where in sorted(changed):
-            lines += ["", f"### {where}", ""] + [f"- `{f}`" for f in new_files.get(where, [])]
+            lines += ["", f"### {markdown(where)}", ""] + [f"- {markdown(f)}" for f in new_files.get(where, [])]
         Path(args.summary).open("a", encoding="utf-8").write("\n".join(lines) + "\n")
 
     for e in errors:
-        print(f"error: {e}")
+        print(f"error: {shown(e)}")
     print(f"{len(names)} packages, {sum(len(v) for v in names.values())} versions, {len(errors)} errors")
     return 1 if errors else 0
 

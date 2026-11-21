@@ -41,7 +41,7 @@ Package archives are gzip-compressed tar files (`.tar.gz`) containing all files 
 
 ## Yanking a version
 
-To yank a published version, open a pull request that only changes `"yanked": false` to `"yanked": true` on that version's index line.
+Only maintainers yank versions. The registry does not record who owns a package, so CI rejects any pull request that changes `yanked`. To have a version yanked, open an issue from the account that published it (or that owns the source repository) naming the package and version; a maintainer sets `"yanked": true` on that version's index line in a commit to `main`. Yanked versions are not restored.
 
 - Yanked versions are not selected for new dependency resolutions.
 - Projects whose `qxide.lock` already pins a yanked version continue to work.
@@ -49,7 +49,7 @@ To yank a published version, open a pull request that only changes `"yanked": fa
 
 ## Immutability and integrity
 
-- Published archives and index lines are immutable, except for the `yanked` field.
+- Published archives and index lines are immutable; only maintainers change the `yanked` field.
 - `qxide` verifies the sha256 digest of every archive against `qxide.lock` before unpacking and refuses to download if the index checksum differs from the lockfile.
 - The same index and archive files can be served by a dedicated registry server at different URLs in the future; updating `dl` in `config.json` moves archive downloads without rewriting index lines.
 
@@ -103,22 +103,25 @@ Example line:
 Every pull request runs `scripts/validate.py` from the target branch (the workflow uses `pull_request_target`, so a pull request cannot change its own check; its files are read as data and never executed). The script checks:
 
 - JSON syntax, required fields, and qxide client compatibility for every index line (`v` is the integer `1`; no build metadata in `vers`; versions, dependency requirements, and `qxide` checked with the same rules as the client's semver parser)
-- Correct `index/<prefix>/<name>` path
+- Correct `index/<prefix>/<name>` path; the name is not a Windows device name such as `con`, `nul`, or `com1`
 - No duplicate versions, compared by semver precedence
 - Expanded download locations (`dl` and the `config.json` template) are `https://` URLs or plain paths inside the repository
 - Archive exists in this repository (also when `dl` is an external URL), its sha256 matches `cksum`, it is a single gzip member in the plain tar form that `qxide publish` writes (no PAX or other extension headers, at most 66 MiB decompressed), it contains only regular files under `<name>-<version>/` with safe, portable paths (no trailing dots or spaces, no Windows device names such as `CON` or `NUL`, no characters Windows rejects) and no two entries differing only in letter case, and it respects size and file-count limits
 - `qxide.toml` inside the archive matches `name`, `vers`, and `deps` and defines `description`, `license`, and `qxide`
 - `src/lib.qx` is present in the archive
 - All declared dependencies exist in the registry and a package does not depend on itself
-- Existing published index lines are unchanged except for `yanked`
+- Existing published index lines are unchanged, including `yanked`
 - No published version or index file is removed
+- Every changed path can be checked out on Windows
 - `description` contains no control characters
 - No existing archive is modified or deleted
 - `search.json` is untouched
 - `config.json` is untouched
-- New package names do not match any existing package name when hyphens are removed (look-alike prevention)
+- New package names do not look like another package name, existing or added in the same pull request: names are compared after removing hyphens, mapping `0`→`o`, `1`→`l`, `2`→`z`, `3`→`e`, `4`→`a`, `5`→`s`, `6`→`b`, `7`→`t`, `8`→`b`, `9`→`g`, `i`→`l`, and then `rn`→`m`, `vv`→`w`, `cl`→`d` (look-alike prevention)
+- New package names do not start like `qxide` or equal `std` after the same mapping (reserved for official packages)
+- Invalid input (malformed or deeply nested JSON or TOML, numbers too long to be versions) is reported as an error rather than stopping the check
 
-The workflow job summary lists the files included in each new version for reviewers.
+The workflow job summary lists the files included in each new version for reviewers. File names and error messages in the summary and the job log are shown as literal text: non-printable characters appear as `\u{XXXX}` escapes and Markdown punctuation is escaped.
 
 ### Review policy
 
@@ -131,7 +134,7 @@ Maintainers review pull requests according to the following rules:
 5. Reject code that is malicious, deceptive, or misrepresents what it does.
 6. Require an OSI-approved or otherwise clearly redistributable license.
 7. Otherwise, package names are granted first-come, first-served.
-8. Maintainers may yank versions or transfer package names in cases of abuse or legal requests.
+8. Maintainers yank versions at the request of the account that published them, and may yank versions or transfer package names in cases of abuse or legal requests.
 
 ## License
 
