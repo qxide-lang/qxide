@@ -155,6 +155,10 @@ fn check_locations(src: &str) -> Vec<(String, u64, u64, Option<u64>)> {
         let Some(code) = l.strip_prefix("error[").and_then(|r| r.get(..5)) else {
             continue;
         };
+        // The closing Q0418 summary of a capped report has no location.
+        if code == "Q0418" {
+            continue;
+        }
         let at = lines[i + 1]
             .trim_start()
             .strip_prefix("--> t.qx:")
@@ -235,7 +239,12 @@ fn diagnostics_match_check_for_every_catalog_example() {
             version += 1;
             let lsp = c.change(URI, version, &src);
             let want = check_locations(&src);
-            assert_eq!(lsp.len(), want.len(), "{src}\n{lsp:?}");
+            // `check` prints at most `max_diagnostics` errors; the editor gets all of them.
+            if want.len() == lang::Limits::CLI.max_diagnostics {
+                assert!(lsp.len() >= want.len(), "{src}\n{lsp:?}");
+            } else {
+                assert_eq!(lsp.len(), want.len(), "{src}\n{lsp:?}");
+            }
             for (d, (code, line, col, carets)) in lsp.iter().zip(&want) {
                 assert_eq!(d["code"], code.as_str(), "{src}");
                 assert_eq!(d["source"], "qxide");
