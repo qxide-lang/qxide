@@ -154,7 +154,7 @@ Limits apply per call: a command call, or `std.qxide.run`/`check`/`qasm` inside 
 | Field | CLI | `Limits::APP` | Basis |
 | --- | --- | --- | --- |
 | `max_steps` | 2^30 | 2^31 | Cancellable, so twice the CLI. Worst case measured: an empty loop stops after 160.3 s (release build), against 75 s for the CLI at 2^30. String memory is bounded by `max_steps / 8` = 256 MiB per call (see below). |
-| `max_ops` | 2^24 | 2^22 | Memory: the recorded circuit takes about 40 bytes per operation (`gates in a loop` stops at 2^22 with a 166 MiB peak working set, 0.52 s). 2^22 keeps one call near 160 MiB and four calls within the 1 GiB the simulation budget already uses. This is lower than the CLI. |
+| `max_ops` | 2^24 | 2^22 | Memory: the recorded circuit takes about 40 bytes per operation (`gates in a loop` stops at 2^22 with a 166 MiB peak working set, 0.52 s). 2^22 keeps one call's circuit near 160 MiB (about 640 MiB for four calls). This is lower than the CLI. |
 | `max_sim_work` | 2^36 | 2^36 | A shot cannot be cancelled, so this stays at the CLI value. Worst case at the app's 24-qubit cap: one shot of 24 qubits x 4,094 operations (mostly `t`) took 179.0 s with a 261 MiB peak working set; one operation more is refused at once with `Q0417`. |
 | `max_output_bytes` | 256 MiB | 32 MiB | A call result above 32 MiB never reaches the page (`MAX_SCRIPT_BYTES`, `Q0716`), so a larger budget would only build text that is then thrown away. Worst case: `println` in a loop stops at 32 MiB with a 46 MiB peak working set in 0.13 s. This is lower than the CLI. |
 | `max_diagnostics` | 50 | 100 | Studio lists diagnostics in a panel rather than a terminal; each one is a short JSON object. |
@@ -192,9 +192,11 @@ Studio runs whatever program the user types, so the CLI high-water marks of part
 `app-framework-next` added `String` values and std calls without any budget: concatenation, literals, `==`/`!=`, `len`, and text passed to or returned from std calls all did work and allocated memory in proportion to their length, and every read of a `String` variable copied the text.
 
 - `Value::Str` holds `Rc<str>`, so reading a variable or passing a `String` shares the text, as registers do since B-09.
-- `STR_BYTE_STEPS = 8` steps per byte, charged before the work: building a literal (each time it is evaluated), the result of `+`, the shorter operand of `==`/`!=`, `len` (which counts characters), each `String` argument passed to a std call, and each `String` a std call returns. Every live byte was charged when it was built, so string memory per call is at most `max_steps / 8`: 128 MiB for the CLI, 8 MiB for the playground and 256 MiB per app call (1 GiB for four calls). The weight 8 is a memory weight, not a time weight: copying a byte costs far less than a step.
+- `STR_BYTE_STEPS = 8` steps per byte, charged before the work: building a literal (each time it is evaluated), the result of `+`, the shorter operand of `==`/`!=`, `len` (which counts characters), each `String` argument passed to a std call, and each `String` a std call returns. Every live byte was charged when it was built, so string memory per call is at most `max_steps / 8`: 128 MiB for the CLI, 8 MiB for the playground and 256 MiB per app call. The weight 8 is a memory weight, not a time weight: copying a byte costs far less than a step.
 - Hosts already cap what they read (16 MiB for `std.fs.read_text` and `std.http.get`), so charging returned text after the call bounds repetition, not one read. `String` arguments of a command call come from the page and are converted before the interpreter starts, so they are not charged (see Remaining). `println` of a `String` copies the text into the output, which `max_output_bytes` already counts.
 - Command calls with several shots add each new record's JSON row to `max_output_bytes`, as `qxide run` does for its table (B-03 on the command path).
+
+**Memory per call, all budgets together.** The budgets add up within one call rather than sharing one cap. While a call elaborates it can hold up to 256 MiB of strings, about 166 MiB of circuit and about 46 MiB of output; while it simulates, a 256 MiB state vector or tableau plus its circuit and output. That is roughly 0.5 GiB per call and roughly 2 GiB across four workers, and more for a Studio call, whose `std.qxide.run` builds the user's program under a second `Limits::APP`. This sum is an estimate from the single-budget measurements above; no combined case was measured. Only the simulation part (four calls within 1 GiB) is enforced by a test (`concurrent_calls_share_one_memory_budget`). Lowering `max_steps` or raising the string weight would lower the string share.
 
 ## Interpreter stack in apps
 
@@ -239,6 +241,8 @@ Both are marked `MERGE-PROVISIONAL` in the code and wait for a decision by the m
 
 - `max_sim_work` and `max_output_bytes` (and `max_ops`) are not larger than the CLI's: one shot cannot be cancelled, a result over 32 MiB cannot reach the page, and four calls share memory. If longer uncancellable shots are acceptable, raising `max_sim_work` is a one-line change.
 - A shot is still not cancellable, and there is still no wall-clock limit.
+- The string weight applies to the CLI and the playground too: strings there are now bounded by 128 MiB and 8 MiB, and one 16 MiB `std.fs.read_text` in the CLI uses about 12% of its step budget.
+- The combined memory of one app call (about 0.5 GiB, about 2 GiB for four) is an estimate, not a measurement.
 - Text arriving from the page as a command argument is not charged, and the runtime does not cap the size of incoming IPC messages itself (only whatever the webview imposes, which was not measured).
 - Studio's `std.qxide.run` builds the inner program under its own `Limits::APP`, so a Studio call can use the budgets twice: once for the Studio command and once for the user's program.
 - The two provisional merge decisions above.
