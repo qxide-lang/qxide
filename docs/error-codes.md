@@ -1,6 +1,6 @@
 # Qxide Error Codes
 
-This catalog lists every .qx compiler error code; every diagnostic prints a code such as `Q0302`, and running `qxide explain Q0302` prints that code's entry from this file. Codes are never reused and are grouped by category: `Q01xx` for lexing and parsing, `Q02xx` for names and types, `Q03xx` for qubit ownership (linearity), `Q04xx` for errors found while running the program, and `Q05xx` for modules and imports. Each entry includes an explanation, an example that triggers the error, and a corrected version.
+This catalog lists every .qx compiler error code; every diagnostic prints a code such as `Q0302`, and running `qxide explain Q0302` prints that code's entry from this file. Codes are never reused and are grouped by category: `Q01xx` for lexing and parsing, `Q02xx` for names and types, `Q03xx` for qubit ownership (linearity), `Q04xx` for errors found while running the program and for resource limits, and `Q05xx` for modules and imports. Each entry includes an explanation, an example that triggers the error, and a corrected version.
 
 ## Q0101: unexpected character in source code
 
@@ -1439,6 +1439,186 @@ void main() {
 The interpreter raises Q0412 as an internal safety net when a program that passed static checks cannot be executed because the checker and the interpreter disagree—for example, when an operand that the checker considered alive turns out to already be consumed at run time. It exists so the interpreter fails explicitly on such mismatches rather than continuing in an invalid state, and replaces the misleading Q0311 error that older versions printed in this situation.
 
 Because static checking should catch invalid programs before execution, seeing Q0412 always indicates a bug in qxide. Report the issue along with the program that triggered it.
+
+## Q0413: execution step limit exceeded
+
+The interpreter counts its work in steps: one for every evaluated expression, loop iteration, and function call, one for every variable it compares while looking up a name, and one per qubit or bit for whole-register work such as `qreg`, `measure` or `discard` on a register, passing a register to a function, or printing one. It reports `Q0413` when a program needs more steps than the limit, which is 1073741824 (2^30) for the `qxide` command and 67108864 (2^26) in the browser playground. The limit stops programs that would otherwise run for hours or forever, such as a loop with a huge bound or a recursion that doubles at every level, while ordinary programs use far fewer steps.
+
+Erroneous code example:
+
+```qx
+void main() {
+    for i in 0..9223372036854775807 {  // error[Q0413]
+    }
+}
+```
+
+To fix it, make sure every loop bound and every recursion is as large as intended. In the corrected program, the loop runs 1000 times.
+
+```qx
+void main() {
+    int total = 0;
+    for i in 0..1000 {
+        total = total + i;
+    }
+    println("{}", total);
+}
+```
+
+## Q0414: circuit operation limit exceeded
+
+Every gate, measurement, `reset`, and `if` block on a measured bit is recorded as an operation of the circuit the program builds, and the interpreter reports `Q0414` once the circuit would hold more operations than the limit: 16777216 (2^24) for the `qxide` command and 1048576 (2^20) in the browser playground. The recorded circuit is kept in memory, so the limit bounds the memory a program can use before it is simulated or exported.
+
+Erroneous code example:
+
+```qx
+void main() {
+    Qubit q = qubit();
+    for i in 0..100000000 {
+        h(q);  // error[Q0414]
+    }
+    discard(q);
+}
+```
+
+To fix it, check loops that apply gates for bounds that are much larger than intended. The corrected program applies `h` 100 times.
+
+```qx
+void main() {
+    Qubit q = qubit();
+    for i in 0..100 {
+        h(q);
+    }
+    discard(q);
+}
+```
+
+## Q0415: output size limit exceeded
+
+`Q0415` reports output that would grow past the limit of 268435456 bytes (256 MiB) for the `qxide` command or 1048576 bytes (1 MiB) in the browser playground. The limit applies to the text printed with `println`, to the table that `qxide run --shots N` prints (each distinct measurement record prints its own copy of the program output), and to the OpenQASM text of `qxide qasm`, which is checked before it is built. Output is held in memory until the program ends, so the limit bounds that memory.
+
+Erroneous code example:
+
+```qx
+void main() {
+    for i in 0..100000000 {
+        println("step {}", i);  // error[Q0415]
+    }
+}
+```
+
+To fix it, print less, or print outside of loops. The corrected program prints 10 lines.
+
+```qx
+void main() {
+    for i in 0..10 {
+        println("step {}", i);
+    }
+}
+```
+
+## Q0416: `if` blocks on measured bits nested too deeply
+
+An `if` on a `Bit` becomes a conditional block of the circuit, and a function called inside such a block can open further blocks, so nesting is counted across function calls. The interpreter reports `Q0416` when blocks would be nested more than 64 levels deep. Every level adds indentation to each line of the OpenQASM output and recursion to the simulators, so deep nesting reached through recursive calls could otherwise produce very large output from a short program. A single function can still nest as deeply as the parser allows.
+
+Erroneous code example:
+
+```qx
+void flip(Qubit q, Bit b, int n) {
+    if (b) {  // error[Q0416]
+        if (n > 0) {
+            flip(q, b, n - 1);
+        }
+        x(q);
+    }
+}
+
+void main() {
+    Qubit a = qubit();
+    h(a);
+    Bit b = measure(a);
+    Qubit q = qubit();
+    flip(q, b, 100);
+    Bit r = measure(q);
+    println("{}", r);
+}
+```
+
+To fix it, test the bit once and do the repeated work inside that one block. The corrected program applies the same 101 `x` gates under a single condition.
+
+```qx
+void flip(Qubit q, int n) {
+    for i in 0..n {
+        x(q);
+    }
+}
+
+void main() {
+    Qubit a = qubit();
+    h(a);
+    Bit b = measure(a);
+    Qubit q = qubit();
+    if (b) {
+        flip(q, 101);
+    }
+    Bit r = measure(q);
+    println("{}", r);
+}
+```
+
+## Q0417: simulation work limit exceeded
+
+Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to roughly one to two minutes of simulation for the `qxide` command and a few seconds in the browser playground. Branch bodies are counted as if they always run.
+
+Erroneous code example:
+
+```qx
+void main() {  // error[Q0417]
+    QReg r = qreg(32768);
+    h(r[0]);
+    for i in 1..32768 {
+        cx(r[0], r[i]);
+    }
+    BitReg m = measure(r);
+    println("{}", m[0]);
+}
+```
+
+To fix it, use fewer qubits, operations, or shots, or export the circuit with `qxide qasm` without simulating it. The corrected program prepares the same state on 1024 qubits.
+
+```qx
+void main() {
+    QReg r = qreg(1024);
+    h(r[0]);
+    for i in 1..1024 {
+        cx(r[0], r[i]);
+    }
+    BitReg m = measure(r);
+    println("{}", m[0]);
+}
+```
+
+## Q0418: too many errors to show
+
+`qxide check`, `qxide run`, and `qxide qasm` print at most 50 errors and stop the error report before it passes the output limit of `Q0415`; each echoed source line is also shortened to a window of 120 characters around the error column. When errors are left out, the report ends with `Q0418`, which says how many were not shown. Without these limits, a short file with thousands of errors on one long line produced gigabytes of output, because every error repeated the whole line.
+
+Erroneous code example:
+
+```qx
+void main() {
+    int total = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 + a18 + a19 + a20 + a21 + a22 + a23 + a24 + a25 + a26 + a27 + a28 + a29 + a30 + a31 + a32 + a33 + a34 + a35 + a36 + a37 + a38 + a39 + a40 + a41 + a42 + a43 + a44 + a45 + a46 + a47 + a48 + a49 + a50 + a51 + a52 + a53 + a54;  // error[Q0418]
+    println("{}", total);
+}
+```
+
+To fix it, correct the errors that are shown and run the command again to see the rest. Here every name was undeclared; the corrected program declares the value it prints.
+
+```qx
+void main() {
+    int total = 0;
+    println("{}", total);
+}
+```
 
 ## Q0501: unknown package in an import
 

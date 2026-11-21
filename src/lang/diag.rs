@@ -100,6 +100,12 @@ codes! {
     AsIntTooWide => "Q0410",
     NonFiniteAngle => "Q0411",
     Internal => "Q0412",
+    StepLimit => "Q0413",
+    OpLimit => "Q0414",
+    OutputLimit => "Q0415",
+    CondDepth => "Q0416",
+    SimWorkLimit => "Q0417",
+    TooManyDiagnostics => "Q0418",
     UnknownPackage => "Q0501",
     ModuleNotFound => "Q0502",
     UnknownImport => "Q0503",
@@ -218,41 +224,60 @@ impl SourceMap {
         f.text[start..end].trim_end_matches('\r')
     }
 
-    fn snippet(&self, out: &mut String, span: Span) {
+    // `max_chars` caps the echoed line: a longer line is shown as a window around `col` with `...`
+    // on the cut sides, so one diagnostic never repeats a whole huge line (M-01).
+    fn snippet(&self, out: &mut String, span: Span, max_chars: usize) {
         let f = self.file(span.start);
         let (line, col) = self.line_col(span.start);
         let text = Self::line_text(f, line);
+        let len = text.chars().count();
         // Carets stop at the end of the first line for multi-line spans.
         let (end_line, end_col) = self.line_col(span.end.max(span.start));
-        let width = if end_line == line && span.end <= f.base + f.text.len() {
+        let mut width = if end_line == line && span.end <= f.base + f.text.len() {
             end_col.saturating_sub(col).max(1)
         } else {
-            (text.chars().count() + 1).saturating_sub(col).max(1)
+            (len + 1).saturating_sub(col).max(1)
         };
+        // Characters `skip..skip + take` of the line are shown.
+        let (skip, take) = if len <= max_chars.max(1) {
+            (0, len)
+        } else {
+            let take = max_chars.max(1);
+            let skip = (col - 1).saturating_sub(take / 2).min(len - take);
+            (skip, take)
+        };
+        let before = if skip > 0 { "..." } else { "" };
+        let after = if skip + take < len { "..." } else { "" };
+        let shown: String = text.chars().skip(skip).take(take).collect();
+        // The caret column is at most one past the window (a span at the end of the line).
+        let at = (col - 1).saturating_sub(skip).min(take);
+        width = width.min((take + 1).saturating_sub(at)).max(1);
         let line = f.labels.as_ref().map_or(line, |l| l[line - 1]);
         let gutter = line.to_string().len();
         let pad = " ".repeat(gutter);
         let _ = writeln!(out, "{pad}--> {}:{line}:{col}", f.name);
         let _ = writeln!(out, "{pad} |");
-        let _ = writeln!(out, "{line} | {text}");
-        let lead: String = text
-            .chars()
-            .take(col - 1)
-            .map(|c| if c == '\t' { '\t' } else { ' ' })
-            .collect();
+        let _ = writeln!(out, "{line} | {before}{shown}{after}");
+        let lead: String = " ".repeat(before.len())
+            + &shown
+                .chars()
+                .take(at)
+                .map(|c| if c == '\t' { '\t' } else { ' ' })
+                .collect::<String>();
         let _ = writeln!(out, "{pad} | {lead}{}", "^".repeat(width));
     }
 
-    pub fn render(&self, d: &Diagnostic) -> String {
+    pub fn render(&self, d: &Diagnostic, limits: &super::Limits) -> String {
+        let max_chars = limits.max_line_chars;
         let mut out = String::new();
         let _ = writeln!(out, "error[{}]: {}", d.code.as_str(), d.message);
         if !d.no_snippet {
-            self.snippet(&mut out, d.span);
+            self.snippet(&mut out, d.span, max_chars);
         }
         for n in &d.notes {
             let _ = writeln!(out, "note: {}", n.message);
             if let Some(s) = n.span {
-                self.snippet(&mut out, s);
+                self.snippet(&mut out, s, max_chars);
             }
         }
         if let Some(h) = &d.help {
@@ -260,6 +285,55 @@ impl SourceMap {
         }
         out
     }
+}
+
+/// Renders `errors` one after another, separated by blank lines. At most `max_diagnostics` are
+/// rendered and the report stops before it would pass `max_output_bytes`; a closing `Q0418`
+/// diagnostic then says how many were left out (M-01).
+pub fn render_all(
+    errors: &[Diagnostic],
+    limits: &super::Limits,
+    render: impl Fn(&Diagnostic) -> String,
+) -> String {
+    let max_bytes = usize::try_from(limits.max_output_bytes).unwrap_or(usize::MAX);
+    let mut out = String::new();
+    let (mut shown, mut cut) = (0, false);
+    for d in errors.iter().take(limits.max_diagnostics) {
+        let text = render(d);
+        let sep = usize::from(shown > 0);
+        if out.len() + sep + text.len() > max_bytes {
+            // Keep the start of a first diagnostic that alone is too long, so the report says something.
+            if shown == 0 {
+                let mut end = max_bytes.min(text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push_str(&text[..end]);
+                out.push('\n');
+                shown = 1;
+            }
+            cut = true;
+            break;
+        }
+        if sep == 1 {
+            out.push('\n');
+        }
+        out.push_str(&text);
+        shown += 1;
+    }
+    let omitted = errors.len() - shown;
+    if cut || omitted > 0 {
+        let message = if cut {
+            super::msg::diagnostics_too_long(omitted, limits.max_output_bytes)
+        } else {
+            super::msg::too_many_diagnostics(omitted, limits.max_diagnostics)
+        };
+        let mut summary = Diagnostic::new(Code::TooManyDiagnostics, Span::default(), message);
+        summary.no_snippet = true;
+        out.push('\n');
+        out.push_str(&render(&summary));
+    }
+    out
 }
 
 #[cfg(test)]

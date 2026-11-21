@@ -13,6 +13,30 @@ fn root() -> PathBuf {
         .unwrap()
 }
 
+// M-07: a 169-byte program printed 202 MB, which the page then laid out on its main thread.
+#[test]
+fn playground_output_is_capped_before_it_leaves_the_module() {
+    let src = format!(
+        "void main() {{\n    for i in 0..2000000 {{\n        println(\"{}\");\n    }}\n}}\n",
+        "x".repeat(100)
+    );
+    let out = execute(Command::Run, "bigout.qx", &src, 1, 0);
+    assert_eq!(out.exit, 1, "{} bytes of stdout", out.stdout.len());
+    assert!(out.stdout.is_empty());
+    assert!(out.stderr.contains("error[Q0415]"), "{}", out.stderr);
+    assert!(out.stderr.len() < 4096, "{}", out.stderr.len());
+}
+
+// M-01 and M-07: a 16 kB source produced a 193 MB `check` result in the playground.
+#[test]
+fn playground_check_output_is_capped() {
+    let src = format!("void main(){{{}}}\n", "a;".repeat(8000));
+    let out = execute(Command::Check, "oneline_8000.qx", &src, 1, 0);
+    assert_eq!(out.exit, 1);
+    assert!(out.stderr.len() < 64 << 10, "{} bytes", out.stderr.len());
+    assert!(out.stderr.contains("error[Q0418]"));
+}
+
 fn cli() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
