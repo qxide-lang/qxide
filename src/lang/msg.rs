@@ -274,6 +274,60 @@ pub fn too_many_qubits(limit: usize) -> String {
     format!("program allocates more than {limit} qubits in total")
 }
 
+pub fn step_limit(limit: u64) -> String {
+    format!("program exceeded the limit of {limit} execution steps")
+}
+
+pub fn op_limit(limit: u64) -> String {
+    format!("circuit exceeded the limit of {limit} operations")
+}
+
+pub fn output_limit(limit: u64) -> String {
+    format!("program output exceeded the limit of {limit} bytes")
+}
+
+pub fn qasm_limit(estimate: u64, limit: u64) -> String {
+    format!("OpenQASM output of about {estimate} bytes exceeds the limit of {limit} bytes")
+}
+
+pub fn shots_output_limit(shots: u64, limit: u64) -> String {
+    format!("output of {shots} shots exceeded the limit of {limit} bytes")
+}
+
+pub fn cond_depth_limit(limit: usize) -> String {
+    format!("`if` blocks on measured bits are nested more than {limit} levels deep")
+}
+
+pub fn sim_work_limit(shots: u64, qubits: usize, ops: u64, limit: u64) -> String {
+    let shots = if shots == 1 {
+        "1 shot".to_string()
+    } else {
+        format!("{shots} shots")
+    };
+    format!("simulating {shots} of a circuit with {qubits} qubits and {ops} operations exceeds the simulation work limit of {limit}")
+}
+
+pub fn too_many_diagnostics(omitted: usize, limit: usize) -> String {
+    let more = if omitted == 1 {
+        "1 more error was".to_string()
+    } else {
+        format!("{omitted} more errors were")
+    };
+    format!("{more} not shown; at most {limit} errors are printed")
+}
+
+pub fn diagnostics_too_long(omitted: usize, limit: u64) -> String {
+    match omitted {
+        0 => format!("error report was cut at the limit of {limit} bytes"),
+        1 => format!(
+            "error report was cut at the limit of {limit} bytes; 1 more error was not shown"
+        ),
+        n => format!(
+            "error report was cut at the limit of {limit} bytes; {n} more errors were not shown"
+        ),
+    }
+}
+
 pub fn fmt_changed_tokens(name: &str) -> String {
     format!("qxide: internal error: formatting `{name}` would change tokens or comments; nothing was written; please report this bug in qxide\n")
 }
@@ -322,6 +376,12 @@ pub fn help(code: Code) -> Option<String> {
         Code::ShadowLive => "consume the qubit first or choose another name".into(),
         Code::TempDropped => "store it in a variable such as `Qubit q = qubit();`, then call `measure` or `discard`".into(),
         Code::RecursionLimit => "check for recursion without a base case".into(),
+        Code::StepLimit => "check for a loop bound or recursion that is much larger than intended; every evaluated expression, loop iteration and call counts as a step".into(),
+        Code::OpLimit => "check for a loop that applies gates far more often than intended; gates, measurements, resets and `if` blocks on measured bits each count as one operation".into(),
+        Code::OutputLimit => "print less, or print outside loops; with several shots, each distinct measurement record prints its own copy of the output".into(),
+        Code::CondDepth => "nesting is counted across function calls, so call the function before or after the outer `if`, or combine the conditions".into(),
+        Code::SimWorkLimit => "use fewer shots, qubits or operations, or run `qxide qasm` to export the circuit without simulating it".into(),
+        Code::TooManyDiagnostics => "fix the errors shown first, then run the command again to see the rest".into(),
         Code::RemovedSyntax => "declare variables like `int x = 1;` or `Qubit q = qubit();`, functions like `void main()` or `int add(int a, int b)`, and use `final` for constants".into(),
         Code::UnknownMethod => "use `to_binary()` or `as_int()`, the available methods on `BitReg` values".into(),
         Code::VarNotAllowed => "write the type explicitly, such as `int n` or `double theta`".into(),

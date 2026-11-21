@@ -1083,9 +1083,12 @@ fn deepest_programs() -> Vec<Deepest> {
             "int f(int k) {{\n    if k > 0 {{\n        {body}\n    }}\n    return 0;\n}}\n\nvoid main() {{\n    println(\"{{}}\", f(198));\n}}\n"
         )
     }
+    // MERGE-PROVISIONAL: `max_cond_depth` (64, counted across calls) makes 61 nested `if m`
+    // under each of 199 calls illegal (Q0416), so the bit kinds now recurse to the call limit and
+    // nest at the bottom call only: the deepest program that is still legal. Pending a decision.
     fn bits(body: String) -> String {
         format!(
-            "void f(int k, Bit m) {{\n    if k > 0 {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(198, m);\n}}\n"
+            "void g(int k, Bit m) {{\n}}\n\nvoid f(int k, Bit m) {{\n    if k > 0 {{\n        f(k - 1, m);\n    }} else {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(197, m);\n}}\n"
         )
     }
     fn nest(n: usize, open: &str, inner: &str, close: &str) -> String {
@@ -1133,10 +1136,10 @@ fn deepest_programs() -> Vec<Deepest> {
             ))
         }),
         ("bit_if", 61, |n| {
-            bits(nest(n, "if m { ", "f(k - 1, m);", " }"))
+            bits(nest(n, "if m { ", "g(k - 1, m);", " }"))
         }),
         ("bit_else", 61, |n| {
-            bits(nest(n, "if m { } else { ", "f(k - 1, m);", " }"))
+            bits(nest(n, "if m { } else { ", "g(k - 1, m);", " }"))
         }),
     ]
 }

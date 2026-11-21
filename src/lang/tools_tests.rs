@@ -275,6 +275,21 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
             continue;
         }
         assert_eq!(blocks.len(), 2, "{code} needs an example and a fix");
+        // Resource-limit examples would spend the whole CLI budget (about a minute for Q0413), so
+        // they run under small limits; the codes and the program shapes are the same.
+        let limits = if ["Q0413", "Q0414", "Q0415", "Q0417"].contains(&code.as_str()) {
+            Limits {
+                max_steps: 1_000_000,
+                max_ops: 100_000,
+                max_sim_work: 100_000_000,
+                max_output_bytes: 64 << 10,
+                ..Limits::CLI
+            }
+        } else {
+            Limits::CLI
+        };
+        let run =
+            |name: &str, src: &str, shots: u64, seed: u64| run_with(name, src, shots, seed, limits);
         match run("example.qx", &blocks[0], 1, 0) {
             Ok(_) => panic!("{code}: the example runs without errors"),
             Err(Failure(d)) => {

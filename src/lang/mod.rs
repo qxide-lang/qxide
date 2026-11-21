@@ -33,13 +33,16 @@ mod module_tests;
 #[cfg(test)]
 mod app_tests;
 
+#[cfg(test)]
+mod limits_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
 use qxide::{Backend, Shot, SimError, DEFAULT_MEMORY_LIMIT};
 
 use diag::{Code, Diagnostic, SourceMap};
-use interp::{BitsFmt, Elaborated, OutPiece};
+use interp::{BitsFmt, Elaborated, OpCounts, OutPiece};
 use stdlib::{Host, Permissions};
 // The package manager (CLI only) builds `PackageRoot`s; the playground build never does.
 #[allow(unused_imports)]
@@ -110,13 +113,14 @@ fn front_input(
 fn build_input(
     input: &Input,
     host: &mut dyn Host,
+    limits: &Limits,
 ) -> (
     SourceMap,
     Result<(ast::Program, Elaborated), Vec<Diagnostic>>,
 ) {
     let (map, program) = front_input(input, true);
     let built = program.and_then(|program| {
-        let elaborated = interp::elaborate(&program, host).map_err(|d| vec![d])?;
+        let elaborated = interp::elaborate(&program, host, limits).map_err(|d| vec![d])?;
         Ok((program, elaborated))
     });
     (map, built)
@@ -131,7 +135,12 @@ fn front(src: &str) -> Result<ast::Program, Vec<Diagnostic>> {
 
 #[cfg(test)]
 fn build(src: &str) -> Result<(ast::Program, Elaborated), Vec<Diagnostic>> {
-    build_input(&Input::file("t.qx", src), &mut stdlib::LogOnly::default()).1
+    build_input(
+        &Input::file("t.qx", src),
+        &mut stdlib::LogOnly::default(),
+        &Limits::CLI,
+    )
+    .1
 }
 
 /// The `qxide run` host: `std.log` to stderr, `std.fs` under `data_root`.
@@ -175,14 +184,8 @@ fn sim_error(err: SimError, at: diag::Span) -> Diagnostic {
     }
 }
 
-fn render(map: &SourceMap, errors: &[Diagnostic]) -> Failure {
-    Failure(
-        errors
-            .iter()
-            .map(|d| map.render(d))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+fn render(map: &SourceMap, errors: &[Diagnostic], limits: &Limits) -> Failure {
+    Failure(diag::render_all(errors, limits, |d| map.render(d, limits)))
 }
 
 // Notepad and PowerShell redirection may prepend a UTF-8 byte order mark.
@@ -199,8 +202,20 @@ pub fn check(name: &str, src: &str) -> Result<(), Failure> {
 
 /// `qxide check`: lexing, linking and static checks only, for the entry file and its imports.
 pub fn check_input(input: &Input) -> Result<(), Failure> {
+    check_input_with(input, &Limits::CLI)
+}
+
+/// `check` of a lone file with explicit limits on the rendered diagnostics.
+#[allow(dead_code)]
+pub fn check_with(name: &str, src: &str, limits: &Limits) -> Result<(), Failure> {
+    check_input_with(&Input::file(name, src), limits)
+}
+
+/// `check_input` with explicit limits on the rendered diagnostics (the playground passes its own).
+#[allow(dead_code)]
+pub fn check_input_with(input: &Input, limits: &Limits) -> Result<(), Failure> {
     let (map, program) = front_input(input, !input.is_library());
-    program.map(|_| ()).map_err(|e| render(&map, &e))
+    program.map(|_| ()).map_err(|e| render(&map, &e, limits))
 }
 
 /// `qxide qasm` of a lone file.
@@ -212,7 +227,8 @@ pub fn qasm(name: &str, src: &str) -> Result<String, Failure> {
 /// `qxide fmt`: the formatted source. Refuses sources that do not parse, and double-checks that
 /// formatting kept every token and comment before anything is written.
 pub fn format(name: &str, src: &str) -> Result<String, Failure> {
-    let out = fmt::format(src).map_err(|e| render(&SourceMap::new(name, strip_bom(src)), &e))?;
+    let out = fmt::format(src)
+        .map_err(|e| render(&SourceMap::new(name, strip_bom(src)), &e, &Limits::CLI))?;
     if fmt::fingerprint(&out) != fmt::fingerprint(src) {
         return Err(Failure(msg::fmt_changed_tokens(name)));
     }
@@ -244,12 +260,103 @@ pub fn explain(arg: &str) -> Option<String> {
 /// `qxide qasm`: elaborate once and print the OpenQASM 3 of the resulting circuit. Effects are
 /// refused (`std.log` is dropped), so exporting a circuit never writes files.
 pub fn qasm_input(input: &Input) -> Result<String, Failure> {
+    qasm_input_with(input, &Limits::CLI)
+}
+
+/// `qasm` of a lone file with explicit resource limits.
+#[allow(dead_code)]
+pub fn qasm_with(name: &str, src: &str, limits: &Limits) -> Result<String, Failure> {
+    qasm_input_with(&Input::file(name, src), limits)
+}
+
+/// `qasm_input` with explicit resource limits (the playground passes its own).
+#[allow(dead_code)]
+pub fn qasm_input_with(input: &Input, limits: &Limits) -> Result<String, Failure> {
     let mut host = stdlib::NoEffects {
         what: "`qxide qasm`",
     };
-    let (map, built) = build_input(input, &mut host);
-    let (_, e) = built.map_err(|e| render(&map, &e))?;
+    let (map, built) = build_input(input, &mut host, limits);
+    let (program, e) = built.map_err(|e| render(&map, &e, limits))?;
+    check_qasm_size(&e, main_span(&program), limits).map_err(|d| render(&map, &[d], limits))?;
     Ok(e.circuit.to_qasm())
+}
+
+// The interpreter adds up an upper bound of every QASM line, so the text is never built when it
+// would pass the output limit (M-10).
+fn check_qasm_size(e: &Elaborated, at: diag::Span, limits: &Limits) -> Result<(), Diagnostic> {
+    if e.qasm_bytes > limits.max_output_bytes {
+        return Err(Diagnostic::new(
+            Code::OutputLimit,
+            at,
+            msg::qasm_limit(e.qasm_bytes, limits.max_output_bytes),
+        ));
+    }
+    Ok(())
+}
+
+fn main_span(program: &ast::Program) -> diag::Span {
+    program
+        .fns
+        .iter()
+        .find(|f| f.name.name == "main")
+        .map_or(diag::Span::default(), |f| f.name.span)
+}
+
+// Estimated work of one shot in units of about one state-vector amplitude update (about 1.4 ns on
+// the machine the defaults were measured on; see docs/security/EXECUTION_LIMITS_FIXES.md). On the
+// tableau, a column pass visits 2n rows with poor cache locality (about 12 ns per row for large n,
+// so 8 units), and a measurement may add one row of ceil(n/64) words into each of 2n rows (about
+// 0.1 ns per word, so 1/8 unit). Branch bodies are counted as if they always run.
+fn shot_work(backend: Backend, slots: usize, c: &OpCounts) -> u128 {
+    const SHOT_OVERHEAD: u128 = 128;
+    let n = slots as u128;
+    match backend {
+        Backend::Stabilizer => {
+            let words = n.div_ceil(64).max(1);
+            let rows = 2 * n + 1;
+            let alloc = 2 * rows * words / 8;
+            let pass = 16 * n;
+            let measure = 16 * n + n * words / 4;
+            alloc
+                + u128::from(c.row_passes) * pass
+                + u128::from(c.measures) * measure
+                + SHOT_OVERHEAD
+        }
+        _ => {
+            let dim = if slots < 120 {
+                1u128 << slots
+            } else {
+                u128::MAX
+            };
+            dim.saturating_mul(u128::from(c.sim_ops) + 1)
+                .saturating_add(SHOT_OVERHEAD)
+        }
+    }
+}
+
+// Refuses a run whose shots would together pass the simulation work limit (B-03, B-08).
+fn check_sim_work(
+    e: &Elaborated,
+    backend: Backend,
+    shots: u64,
+    at: diag::Span,
+    limits: &Limits,
+) -> Result<(), Diagnostic> {
+    // A state vector over the memory limit fails with `Q0406` before any work is done; keep that error.
+    if backend == Backend::StateVector
+        && qxide::state_vector_bytes(e.slots) > u128::from(DEFAULT_MEMORY_LIMIT)
+    {
+        return Ok(());
+    }
+    let work = shot_work(backend, e.slots, &e.counts).saturating_mul(u128::from(shots));
+    if work > u128::from(limits.max_sim_work) {
+        return Err(Diagnostic::new(
+            Code::SimWorkLimit,
+            at,
+            msg::sim_work_limit(shots, e.slots, e.counts.sim_ops, limits.max_sim_work),
+        ));
+    }
+    Ok(())
 }
 
 /// `[0, 1, 1]`: register order, `r[0]` first.
@@ -307,8 +414,9 @@ fn table_row(bits: &[bool], count: u64) -> String {
     format!("{}  {}{value}  ×{count}", fmt_array(bits), fmt_binary(bits))
 }
 
-/// Resource limits for `run`. The CLI uses `Limits::CLI`, desktop apps `Limits::APP`; the browser
-/// playground passes its own.
+/// Resource limits for `check`, `qasm` and `run`. The CLI uses `Limits::CLI`, desktop apps
+/// `Limits::APP`, the browser playground `Limits::PLAYGROUND`.
+/// docs/security/EXECUTION_LIMITS_FIXES.md records how the defaults were chosen.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     /// Most qubit slots the state-vector backend may simulate; `None` leaves it to the memory limit.
@@ -317,6 +425,22 @@ pub struct Limits {
     pub stabilizer_bytes: u64,
     /// Where the limits apply, for the wording of the diagnostic.
     pub scope: LimitScope,
+    /// Interpreter steps: one per evaluated expression, statement, loop iteration and call, plus
+    /// one per qubit or bit of whole-register work (`qreg`, `measure`, `discard`, calls, `println`).
+    pub max_steps: u64,
+    /// Operations recorded in the circuit: gates, measurements, resets and conditional blocks.
+    pub max_ops: u64,
+    /// Estimated simulator work for all shots of a run, in units of about one state-vector
+    /// amplitude update (see `shot_work`).
+    pub max_sim_work: u64,
+    /// Bytes of program output, of OpenQASM text, or of rendered diagnostics.
+    pub max_output_bytes: u64,
+    /// Diagnostics rendered in full; the rest are counted in one closing diagnostic.
+    pub max_diagnostics: usize,
+    /// Characters of a source line echoed under a diagnostic; longer lines are cut around the column.
+    pub max_line_chars: usize,
+    /// `if` blocks on measured bits nested inside each other, counted across function calls.
+    pub max_cond_depth: usize,
 }
 
 // `Playground` is constructed only by crates/qxide-wasm.
@@ -338,6 +462,30 @@ impl Limits {
         max_state_vector_qubits: None,
         stabilizer_bytes: DEFAULT_MEMORY_LIMIT,
         scope: LimitScope::Cli,
+        max_steps: 1 << 30,
+        max_ops: 1 << 24,
+        max_sim_work: 1 << 36,
+        max_output_bytes: 256 << 20,
+        max_diagnostics: 50,
+        max_line_chars: 120,
+        max_cond_depth: 64,
+    };
+
+    /// The qxide.dev playground: 20 state-vector qubits (16 MiB), a 512 MiB tableau, and budgets
+    /// that keep a run well inside the page's 30 s worker limit.
+    // Read by the wasm binding only.
+    #[allow(dead_code)]
+    pub const PLAYGROUND: Limits = Limits {
+        max_state_vector_qubits: Some(20),
+        stabilizer_bytes: 512 << 20,
+        scope: LimitScope::Playground,
+        max_steps: 1 << 26,
+        max_ops: 1 << 20,
+        max_sim_work: 1 << 32,
+        max_output_bytes: 1 << 20,
+        max_diagnostics: 50,
+        max_line_chars: 120,
+        max_cond_depth: 64,
     };
 
     /// Each call of a desktop app (commands and `std.qxide.run`); the runtime bounds how many
@@ -347,6 +495,13 @@ impl Limits {
         max_state_vector_qubits: Some(APP_STATE_VECTOR_QUBITS),
         stabilizer_bytes: APP_STABILIZER_BYTES,
         scope: LimitScope::App,
+        max_steps: Limits::CLI.max_steps,
+        max_ops: Limits::CLI.max_ops,
+        max_sim_work: Limits::CLI.max_sim_work,
+        max_output_bytes: Limits::CLI.max_output_bytes,
+        max_diagnostics: Limits::CLI.max_diagnostics,
+        max_line_chars: Limits::CLI.max_line_chars,
+        max_cond_depth: Limits::CLI.max_cond_depth,
     };
 }
 
@@ -393,7 +548,7 @@ pub fn run_input_with(
     host: &mut dyn Host,
 ) -> Result<String, Failure> {
     let (map, run) = run_diag(input, shots, seed, limits, host);
-    run.map(|r| r.text).map_err(|e| render(&map, &e))
+    run.map(|r| r.text).map_err(|e| render(&map, &e, &limits))
 }
 
 /// A finished `run`: the CLI's stdout, plus the table rows (measurement record, count) when
@@ -411,7 +566,7 @@ fn run_diag(
     limits: Limits,
     host: &mut dyn Host,
 ) -> (SourceMap, Result<RunOut, Vec<Diagnostic>>) {
-    let (map, built) = build_input(input, host);
+    let (map, built) = build_input(input, host, &limits);
     let run = built.and_then(|(program, e)| run_built(&program, &e, shots, seed, limits, host));
     (map, run)
 }
@@ -441,11 +596,7 @@ fn run_built(
         // Nothing observable depends on the shot.
         return Ok(done(render_output(&e.output, None)));
     }
-    let main_span = program
-        .fns
-        .iter()
-        .find(|f| f.name.name == "main")
-        .map_or(diag::Span::default(), |f| f.name.span);
+    let main_span = main_span(program);
     let sims = sample(e, main_span, shots, seed, limits).map_err(|d| vec![d])?;
     let mut sims = sims.map(|r| {
         if host.cancelled() {
@@ -458,14 +609,32 @@ fn run_built(
         return Ok(done(render_output(&e.output, Some(&shot))));
     }
     // The printed output depends only on the measured bits, so it is rendered once per record.
+    // Each new record adds its table row, its indented output and its key to the output budget,
+    // so many distinct records cannot multiply the output without bound (B-03).
     let mut groups: HashMap<Vec<bool>, (u64, String)> = HashMap::new();
+    let mut bytes: u64 = 0;
     for shot in sims {
         let shot = shot?;
         let key: Vec<bool> = e.measured.iter().map(|&b| shot.get(b)).collect();
-        groups
-            .entry(key)
-            .or_insert_with(|| (0, render_output(&e.output, Some(&shot))))
-            .0 += 1;
+        if let Some(group) = groups.get_mut(&key) {
+            group.0 += 1;
+            continue;
+        }
+        let text = render_output(&e.output, Some(&shot));
+        let bits = key.len() as u64;
+        // `[0, 1]  0b10 = 2  ×N` is at most 4 bytes per bit plus 52; each output line gets
+        // two spaces and a newline.
+        let row = 4 * bits + 52;
+        let lines = text.lines().count() as u64;
+        bytes = bytes.saturating_add(row + bits + text.len() as u64 + 3 * lines);
+        if bytes > limits.max_output_bytes {
+            return Err(vec![Diagnostic::new(
+                Code::OutputLimit,
+                main_span,
+                msg::shots_output_limit(shots, limits.max_output_bytes),
+            )]);
+        }
+        groups.insert(key, (1, text));
     }
     let mut s = String::new();
     let mut rows = Vec::new();
@@ -533,6 +702,7 @@ fn sample(
                 .with_help(msg::help_too_large()),
         );
     }
+    check_sim_work(e, backend, shots, at, &limits)?;
     Ok(e.circuit
         .simulate_shots(Backend::Auto, seed, shots)
         .map(move |r| r.map_err(|err| sim_error(err, at))))

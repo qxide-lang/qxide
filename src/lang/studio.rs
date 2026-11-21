@@ -6,7 +6,7 @@ use super::diag::{Code, Diagnostic, SourceMap};
 use super::stdlib::{
     Host, HostValue, LogOnly, NoEffects, Permissions, StdError, StdErrorKind, StdResult,
 };
-use super::{build_input, front_input, msg, run_diag, Input, Limits};
+use super::{build_input, check_qasm_size, front_input, main_span, msg, run_diag, Input, Limits};
 
 struct StudioHost<'a> {
     logs: LogOnly,
@@ -75,9 +75,13 @@ pub fn call(function: &str, args: &[HostValue], cancelled: &dyn Fn() -> bool) ->
             let mut host = NoEffects {
                 what: "`qxide qasm`",
             };
-            let (map, r) = build_input(&input(src), &mut host);
+            let (map, r) = build_input(&input(src), &mut host, &Limits::APP);
+            let r = r.and_then(|(program, e)| {
+                check_qasm_size(&e, main_span(&program), &Limits::APP).map_err(|d| vec![d])?;
+                Ok(e)
+            });
             match r {
-                Ok((_, e)) => ok_json(&[("qasm", quoted(&e.circuit.to_qasm()))]),
+                Ok(e) => ok_json(&[("qasm", quoted(&e.circuit.to_qasm()))]),
                 Err(d) => err_json(&map, &d),
             }
         }

@@ -95,11 +95,8 @@ impl CallError {
             code: first.map_or("Q0412", |d| d.code.as_str()),
             message: first.map_or_else(String::new, |d| d.message.clone()),
             diagnostics: diags.iter().map(|d| diag_info(map, d)).collect(),
-            rendered: diags
-                .iter()
-                .map(|d| map.render(d))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            // Every caller serves a desktop app, so the app's report limits apply.
+            rendered: super::diag::render_all(diags, &Limits::APP, |d| map.render(d, &Limits::APP)),
         }
     }
 
@@ -440,10 +437,11 @@ pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, 
     }
     let at = f.name.span;
     let fail = |d: Diagnostic| CallError::from_diags(&map, &[d]);
-    let (e, ret) = interp::elaborate_call(&program, c.name, values, host).map_err(fail)?;
+    let (e, ret) =
+        interp::elaborate_call(&program, c.name, values, host, &c.limits).map_err(fail)?;
     let returned: Option<Vec<qxide::Bit>> = match &ret {
         Value::Bit(b) => Some(vec![*b]),
-        Value::Bits(v) => Some(v.clone()),
+        Value::Bits(v) => Some(v.to_vec()),
         _ => None,
     };
     let single_bit = matches!(ret, Value::Bit(_));

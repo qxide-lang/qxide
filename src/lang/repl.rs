@@ -7,8 +7,11 @@ use std::io::{BufRead, Write};
 
 use qxide::Backend;
 
-use super::diag::{Code, Diagnostic, SourceMap, Span};
-use super::{ast, front, interp, lexer, msg, parser, render_output, sim_error, Failure};
+use super::diag::{render_all, Code, Diagnostic, SourceMap, Span};
+use super::{
+    ast, check_qasm_size, check_sim_work, front, interp, lexer, msg, parser, render_output,
+    sim_error, Failure, Limits,
+};
 
 const NAME: &str = "<repl>";
 
@@ -163,18 +166,15 @@ impl Program {
         let (shown, at) = self.display();
         let span = |s: Span| Span::new(at(s.start), at(s.end));
         let map = SourceMap::new(NAME, &shown).with_labels(self.labels.clone());
-        let text: Vec<String> = errors
-            .iter()
-            .map(|d| {
-                let mut d = d.clone();
-                d.span = span(d.span);
-                for n in &mut d.notes {
-                    n.span = n.span.map(span);
-                }
-                map.render(&d)
-            })
-            .collect();
-        Failure(text.join("\n"))
+        let limits = &Limits::CLI;
+        Failure(render_all(errors, limits, |d| {
+            let mut d = d.clone();
+            d.span = span(d.span);
+            for n in &mut d.notes {
+                n.span = n.span.map(span);
+            }
+            map.render(&d, limits)
+        }))
     }
 
     // Qubits still live when `main` ends are fine between inputs; this is the leak `Q0302` reports there.
@@ -349,7 +349,13 @@ impl Session {
                 Reply::Out(msg::repl_reset())
             }
             "qasm" => match self.build(New::Nothing) {
-                Ok((_, e)) => Reply::Out(e.circuit.to_qasm()),
+                Ok((p, e)) => {
+                    let at = Span::new(p.input_at, p.input_at);
+                    match check_qasm_size(&e, at, &Limits::CLI) {
+                        Ok(()) => Reply::Out(e.circuit.to_qasm()),
+                        Err(d) => Reply::Err(p.render(&[d]).0),
+                    }
+                }
                 Err(f) => Reply::Err(f.0),
             },
             other => Reply::Err(msg::repl_unknown_command(other)),
@@ -393,7 +399,7 @@ impl Session {
         }
         // The session is replayed on every input, so effects other than logging are refused.
         let mut host = super::stdlib::LogOnly::default();
-        let e = interp::elaborate(&program, &mut host).map_err(|d| p.render(&[d]))?;
+        let e = interp::elaborate(&program, &mut host, &Limits::CLI).map_err(|d| p.render(&[d]))?;
         Ok((p, e))
     }
 
@@ -408,6 +414,8 @@ impl Session {
         // appears, and another backend may draw different outcomes for bits already shown.
         let out = if prints_bits {
             let at = Span::new(p.input_at, p.input_at);
+            check_sim_work(&e, Backend::StateVector, 1, at, &Limits::CLI)
+                .map_err(|d| p.render(&[d]))?;
             // Shot 0 of `--seed S`, the same seed derivation as `qxide run`.
             let shot = e
                 .circuit

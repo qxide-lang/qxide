@@ -18,11 +18,16 @@ pub const STABILIZER_BYTES: u64 = 512 << 20;
 /// Most shots per run in the playground.
 pub const MAX_SHOTS: u64 = 100_000;
 
-/// The limits `qx_exec` passes to the interpreter.
-pub const LIMITS: lang::Limits = lang::Limits {
-    max_state_vector_qubits: Some(MAX_STATE_VECTOR_QUBITS),
-    stabilizer_bytes: STABILIZER_BYTES,
-    scope: lang::LimitScope::Playground,
+/// The limits `qx_exec` passes to the front end and the interpreter.
+pub const LIMITS: lang::Limits = lang::Limits::PLAYGROUND;
+
+// The constants above document the playground; the shared definition lives in `lang::Limits`.
+const _: () = {
+    assert!(matches!(
+        LIMITS.max_state_vector_qubits,
+        Some(MAX_STATE_VECTOR_QUBITS)
+    ));
+    assert!(LIMITS.stabilizer_bytes == STABILIZER_BYTES);
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,8 +105,8 @@ pub fn execute(cmd: Command, name: &str, src: &str, shots: u64, seed: u64) -> Ou
     input.perms = lang::stdlib::Permissions::playground();
     let mut host = lang::stdlib::LogOnly::default();
     let result = match cmd {
-        Command::Check => lang::check_input(&input).map(|()| format!("{name}: ok\n")),
-        Command::Qasm => lang::qasm_input(&input),
+        Command::Check => lang::check_input_with(&input, &LIMITS).map(|()| format!("{name}: ok\n")),
+        Command::Qasm => lang::qasm_input_with(&input, &LIMITS),
         Command::Run => {
             // Same wording as the CLI's own `--shots` validation.
             if shots == 0 {
