@@ -91,7 +91,25 @@ The largest legitimate program at the qubit cap, `qxide qasm` of GHZ on 1,048,57
 | `nest_198_61.qx` `qasm` (M-10) | Q0416 | 0.12 s | 4 MB |
 | `oneline_50000.qx` `check` (M-01, over 3.4 GB before) | 15,711 bytes, Q0418 | 0.11 s | 4 MB |
 
-Calibration of `shot_work` on the same machine: a 22-qubit state vector ran 463 operations in 2.7 s (about 1.4 ns per amplitude update); stabilizer column passes cost about 12 ns per row at n = 20,000 (400,000 gates: 193 s), and GHZ runs measured 0.03-0.13 ns per estimated row-reduction word. Measured just under the CLI work limit 2^36: 22 qubits x 16,303 operations (mostly `t`) took 188.5 s (about 2.7 ns per unit, since rotations cost more than the calibration gates), 200,001 stabilizer gates on 20,001 qubits took 90.0 s, and GHZ 16384 took 16.7 s; the worst case is therefore about 3 minutes; programs just over it (22 qubits x 16,522 operations; 220,002 stabilizer gates on 20,001 qubits, 193 s before) are refused at once. The playground limits are 16x (steps, work) and 256x (output) smaller, which keeps a run to a few seconds natively; they were not timed in a browser or under Node.
+Calibration of `shot_work` on the same machine: a 22-qubit state vector ran 463 operations in 2.7 s (about 1.4 ns per amplitude update); stabilizer column passes cost about 12 ns per row at n = 20,000 (400,000 gates: 193 s), and GHZ runs measured 0.03-0.13 ns per estimated row-reduction word. Measured just under the CLI work limit 2^36: 22 qubits x 16,303 operations (mostly `t`) took 188.5 s (about 2.7 ns per unit, since rotations cost more than the calibration gates), 200,001 stabilizer gates on 20,001 qubits took 90.0 s, and GHZ 16384 took 16.7 s; the worst case is therefore about 3 minutes; programs just over it (22 qubits x 16,522 operations; 220,002 stabilizer gates on 20,001 qubits, 193 s before) are refused at once. The playground limits are 16x (steps, work) and 256x (output) smaller.
+
+**Playground** (`qxide_wasm.wasm` built with `--profile wasm`, run in Node 24.21 through the same raw ABI calls as `site/src/playground/engine.ts`; no browser was used):
+
+| Input | Result | Time | wasm memory |
+| --- | --- | --- | --- |
+| `nest_31_2.qx` (64 levels across 32 calls), `qasm` and `run` | ok | 4 ms | 16 MiB |
+| `nest_64_1.qx` (65 levels) | Q0416 | 4 ms | 16 MiB |
+| `nest_100_60.qx` `qasm` (stack overflow `RangeError` before), `nest_198_61.qx` `run` | Q0416 | 4 ms | 16 MiB |
+| `oneline_50000.qx` `check` (trap at 4 GiB after 291 s before) | 13,511 bytes, Q0418 | 27 ms | 36 MiB |
+| `bigout.qx` (M-07, 202 MB before) | Q0415 | 7 ms | 19 MiB |
+| `loop.qx`, `rec.qx`, endless 4-argument calls | Q0413 | 1.2 s, 1.3 s, 2.0 s | 16 MiB |
+| `print.qx` / `gates.qx` (B-02, trap at about 3 GiB before) | Q0415 / Q0414 | 7 ms / 83 ms | 19 / 65 MiB |
+| `amplify.qx` with 100,000 shots (B-03) | Q0415 | 5 ms | 19 MiB |
+| 20 qubits x 4,081 `t` operations, just under the work limit | ok | 14.4 s | 32 MiB |
+| GHZ 7000 (under the limit) / GHZ 8192 (over) | ok / Q0417 | 1.0 s / 8 ms | 41 / 17 MiB |
+| GHZ 131072 `qasm` | Q0415 (7.2 MB estimate) | 32 ms | 32 MiB |
+
+The slowest run the playground limits admit took 14.4 s, inside the page's 30 s worker limit.
 
 ## Results
 
@@ -101,7 +119,8 @@ Calibration of `shot_work` on the same machine: a 22-qubit state vector ran 463 
 ## Remaining
 
 - M-05 (quadratic checker time) is unchanged; `check` of about 1 MB can still take 40 s.
-- The playground nesting cap was not validated on the wasm build under Node, and playground budgets were not timed in a browser.
+- Playground limits were checked in Node, not in a browser; page-side rendering of the (now at most 1 MiB) output was not measured.
+- Rotation gates cost about twice the calibration unit on the state vector (188.5 s at the CLI limit, 14.4 s in the playground). Weighting non-Clifford operations by 2 would halve those worst cases but refuse rotation-heavy simulations earlier; left for a decision.
 - No CLI flag to raise the limits; a legitimate simulation above the estimate (up to about 3 minutes of real time) is now refused with Q0417; the state-vector unit weight could be raised for non-Clifford gates.
 - No wall-clock limit and no wasm maximum memory; the page still renders up to 1 MiB of output and up to 50 diagnostic buttons on its main thread.
 - `app-framework-next` also changes `Limits` (`Limits::APP`, `scope`); merging needs the new fields added to `Limits::APP`.
