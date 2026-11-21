@@ -47,11 +47,30 @@ const DICT: &[&str] = &[
     "/*", "*/", "\u{feff}", "\u{202e}", "\0", "é", "\u{1F600}", "\r", "\t", "\n",
 ];
 
+const NUMBERS: &[&str] = &[
+    "0",
+    "1",
+    "2",
+    "3",
+    "7",
+    "19",
+    "20",
+    "21",
+    "63",
+    "64",
+    "65",
+    "1000",
+    "1048576",
+    "2147483648",
+    "9223372036854775807",
+];
+
 /// Splits source into identifier/number runs, whitespace runs and single other characters.
 fn tokens(src: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let class = |c: char| {
-        if c.is_alphanumeric() || c == '_' || c == '.' {
+        // `.` stays a token of its own so loop bounds such as `0..17` can be mutated.
+        if c.is_alphanumeric() || c == '_' {
             0
         } else if c.is_whitespace() {
             1
@@ -74,6 +93,15 @@ fn mutate(rng: &mut Rng, base: &[String], other: &[String]) -> String {
     for _ in 0..1 + rng.below(4) {
         if toks.is_empty() {
             toks.push(rng.pick(DICT).to_string());
+            continue;
+        }
+        // Half of the edits only swap a number, so most mutants still pass `check` and run.
+        let numbers: Vec<usize> = (0..toks.len())
+            .filter(|&k| toks[k].starts_with(|c: char| c.is_ascii_digit()))
+            .collect();
+        if !numbers.is_empty() && rng.below(2) == 0 {
+            let k = numbers[rng.below(numbers.len())];
+            toks[k] = rng.pick(NUMBERS).to_string();
             continue;
         }
         let i = rng.below(toks.len());
@@ -102,7 +130,8 @@ fn mutate(rng: &mut Rng, base: &[String], other: &[String]) -> String {
 }
 
 enum Outcome {
-    Ok,
+    // `true` when the command exited with status 0.
+    Ok(bool),
     Panic(String),
     Timeout,
 }
@@ -129,7 +158,7 @@ fn run(args: &[&str], timeout: Duration) -> Outcome {
             // 0 success, 1 diagnostics, 2 usage errors; anything else is a panic or crash.
             let normal = matches!(status.code(), Some(0..=2));
             return if normal && !err.contains("panicked at") {
-                Outcome::Ok
+                Outcome::Ok(status.success())
             } else {
                 Outcome::Panic(format!("{status}: {}", err.lines().last().unwrap_or("")))
             };
@@ -173,7 +202,9 @@ fn random_mutants_never_panic_or_hang() {
     let work =
         PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("smoke-{}", std::process::id()));
     std::fs::create_dir_all(&work).unwrap();
-    let mut rng = Rng(seed | 1);
+    // xorshift needs a non-zero state; every other seed gives its own sequence.
+    let mut rng = Rng(if seed == 0 { 0x5eed } else { seed });
+    let mut checked_ok = 0u64;
     let mut failures = Vec::new();
     // QXIDE_SMOKE_REPLAY=<file.qx> runs that file unchanged first, e.g. a saved failure.
     let replay = std::env::var("QXIDE_SMOKE_REPLAY")
@@ -201,7 +232,10 @@ fn random_mutants_never_panic_or_hang() {
         ];
         for args in commands {
             let what = match run(&args, timeout) {
-                Outcome::Ok => continue,
+                Outcome::Ok(success) => {
+                    checked_ok += u64::from(success && args[0] == "check");
+                    continue;
+                }
                 Outcome::Panic(m) => format!("panic: {m}"),
                 Outcome::Timeout => format!("time-out after {timeout:?}"),
             };
@@ -217,7 +251,7 @@ fn random_mutants_never_panic_or_hang() {
     }
     let _ = std::fs::remove_dir_all(&work);
     println!(
-        "{cases} mutants x 4 commands, seed {seed}: {} failure(s)",
+        "{cases} mutants x 4 commands, seed {seed}: {checked_ok} passed `check`, {} failure(s)",
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));

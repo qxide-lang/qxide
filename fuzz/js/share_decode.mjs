@@ -6,7 +6,8 @@
 import {decodeShare, encodeShare} from '../../site/src/playground/share.ts';
 
 const iterations = Number(process.argv[2] ?? 20000);
-let state = BigInt(process.argv[3] ?? 1) | 1n;
+// xorshift needs a non-zero state; every other seed gives its own sequence.
+let state = BigInt(process.argv[3] ?? 1) || 0x5eedn;
 const next = () => {
   // xorshift64*
   state ^= state >> 12n;
