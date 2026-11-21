@@ -48,104 +48,11 @@ def flat_functions(n):
     return fns + "void main(){\n" + calls + "}\n"
 
 
-def decls_then_ifs(n):
-    # M-05 states() case: n declarations, then n empty `if`s in the same function.
-    return (
-        "void main(){\n"
-        + "".join(f"int a{i}=0;\n" for i in range(n))
-        + "if(true){}\n" * n
-        + "}\n"
-    )
-
-
-def ifs_only(n):
-    # Control for decls_then_ifs: the same number of `if`s with one variable in scope.
-    return "void main(){\nint a=0;\n" + "if(true){a=1;}\n" * n + "}\n"
-
-
-def decls_then_fors(n):
-    # `for` takes the same states() snapshot as `if`.
-    return (
-        "void main(){\n"
-        + "".join(f"int a{i}=0;\n" for i in range(n))
-        + "for i in 0..1 {}\n" * n
-        + "}\n"
-    )
-
-
-def decls_then_andand(n):
-    # `&&`/`||` right operands take a states() snapshot too.
-    return (
-        "void main(){\n"
-        + "".join(f"int a{i}=0;\n" for i in range(n))
-        + "".join(f"boolean c{i} = true && true;\n" for i in range(n))
-        + "}\n"
-    )
-
-
-def lookup_far(n):
-    # Each declaration reads the first variable, so the scope scan in lookup() walks all of them.
-    return (
-        "void main(){\nint a0=0;\n"
-        + "".join(f"int a{i}=a0+1;\n" for i in range(1, n))
-        + "}\n"
-    )
-
-
-def lookup_near(n):
-    # Control for lookup_far: each declaration reads the previous variable (found at once).
-    return (
-        "void main(){\nint a0=0;\n"
-        + "".join(f"int a{i}=a{i - 1}+1;\n" for i in range(1, n))
-        + "}\n"
-    )
-
-
-def qubits_then_ifs(n):
-    # decls_then_ifs with qubits: only quantum variables carry a linearity state.
-    return (
-        "void main(){\n"
-        + "".join(f"Qubit q{i}=qubit();\n" for i in range(n))
-        + "if(true){}\n" * n
-        + "".join(f"discard(q{i});\n" for i in range(n))
-        + "}\n"
-    )
-
-
-def nested_ifs(d):
-    # Nesting depth d (each `if` level costs two of the parser's MAX_DEPTH = 128, so d <= 63),
-    # one declaration per level, and enough repetitions that the file is not trivially small.
-    one = ""
-    for i in range(d):
-        one += f"int v{i}=0;\nif(true){{\n"
-    one += "}\n" * d
-    return "void main(){\n" + one * 200 + "}\n"
-
-
-def depth_only(d):
-    # Fixed 6000 declarations and 6000 `if`s, arranged as 6000 / d nests of depth d: only the
-    # nesting depth changes between sizes.
-    one = ""
-    for i in range(d):
-        one += f"int v{i}=0;\nif(true){{\n"
-    one += "}\n" * d
-    return "void main(){\n" + one * (6000 // d) + "}\n"
-
-
 FAMILIES = {
     # name: (generator, sizes, parameter meaning)
     "chain_callers_first": (chain_callers_first, [1000, 2000, 4000, 8000, 16000, 32000, 64000], "functions"),
     "chain_callees_first": (chain_callees_first, [1000, 2000, 4000, 8000, 16000, 32000, 64000], "functions"),
     "flat_functions": (flat_functions, [1000, 2000, 4000, 8000, 16000, 32000, 64000], "functions"),
-    "decls_then_ifs": (decls_then_ifs, [2500, 5000, 10000, 20000, 40000, 80000], "decls = ifs"),
-    "ifs_only": (ifs_only, [2500, 5000, 10000, 20000, 40000, 80000], "ifs"),
-    "decls_then_fors": (decls_then_fors, [2500, 5000, 10000, 20000, 40000, 80000], "decls = fors"),
-    "decls_then_andand": (decls_then_andand, [2500, 5000, 10000, 20000, 40000, 80000], "decls = &&"),
-    "qubits_then_ifs": (qubits_then_ifs, [2500, 5000, 10000, 20000, 40000, 80000], "qubits = ifs"),
-    "lookup_far": (lookup_far, [2500, 5000, 10000, 20000, 40000, 80000], "decls"),
-    "lookup_near": (lookup_near, [2500, 5000, 10000, 20000, 40000, 80000], "decls"),
-    "nested_ifs": (nested_ifs, [4, 8, 16, 32, 60], "depth (x200 blocks)"),
-    "depth_only": (depth_only, [1, 2, 4, 8, 15, 30, 60], "depth (6000 decls + ifs)"),
 }
 
 
