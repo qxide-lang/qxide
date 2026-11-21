@@ -350,6 +350,7 @@ Yanked versions are skipped during fresh version resolution and by `qxide add`, 
     1. If a cached archive exists and its SHA-256 still matches the lock, it is reused.
     2. Otherwise the client verifies that the registry index entry lists the same checksum as `qxide.lock` (`Q0607` before downloading if they differ), downloads the archive, and checks the downloaded bytes' SHA-256 against the lock (`Q0607` on mismatch, unpacking nothing).
     3. Unpacks the archive defensively into a temporary directory alongside the destination, renames it into place, and writes a `.qxide-checksum` marker file last.
+  - A package counts as unpacked only if its marker holds the locked checksum, the cached archive still matches that checksum, and the unpacked files are exactly the archive's files (compared with a fresh unpack of the archive on every `run`, `check`, `qasm`, and `install`). Edited, added, or removed files in the cache, or a missing cached archive, make the package not unpacked (`Q0611` for `run`, `check`, and `qasm`); `qxide install` then unpacks it again, downloading the archive if needed.
 - `qxide add <pkg>[@<req>] [--path <dir>]`:
   - Selects the newest non-yanked version compatible with the current `qxide` version (writing, for example, `bell-utils = "0.1.0"`), or adds a path dependency when `--path` is supplied, and then runs installation.
   - If installation fails, the edit to `qxide.toml` is rolled back.

@@ -372,6 +372,46 @@ fn path_dependencies_must_be_relative() {
     env.ok(&app, &["run"]);
 }
 
+// B-P10: an unpacked package was trusted by its `.qxide-checksum` marker alone, so edited files in
+// the cache were used. The files must match the cached archive, whose checksum is the lock's.
+#[test]
+fn modified_package_files_are_not_used() {
+    let env = Env::new("tamper");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils"]);
+    env.ok(&app, &["run"]);
+    let ids: Vec<PathBuf> = std::fs::read_dir(env.home.join("registry/src"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let pkg = ids[0].join("bell-utils-0.1.0");
+    let lib_qx = pkg.join("src/lib.qx");
+    let original = read(&lib_qx);
+    let extra = pkg.join("src/extra.qx");
+    let edits: [&dyn Fn(); 3] = [
+        &|| std::fs::write(&lib_qx, original.clone() + "\npublic void tampered() {}\n").unwrap(),
+        &|| std::fs::write(&extra, "public void extra() {}\n").unwrap(),
+        &|| std::fs::remove_file(&lib_qx).unwrap(),
+    ];
+    for edit in edits {
+        edit();
+        env.fails(&app, &["run"], "Q0611");
+        env.ok(&app, &["install"]);
+        assert_eq!(read(&lib_qx), original);
+        assert!(!extra.exists());
+        env.ok(&app, &["run"]);
+    }
+    // Without the archive nothing vouches for the files; `install` downloads it again.
+    let cache = env.home.join("registry/cache");
+    std::fs::remove_dir_all(&cache).unwrap();
+    env.fails(&app, &["run"], "Q0611");
+    env.ok(&app, &["install"]);
+    env.ok(&app, &["run"]);
+}
+
 #[test]
 fn checksums_are_enforced() {
     let env = Env::new("cksum");
