@@ -122,6 +122,16 @@ def nested_ifs(d):
     return "void main(){\n" + one * 200 + "}\n"
 
 
+def depth_only(d):
+    # Fixed 6000 declarations and 6000 `if`s, arranged as 6000 / d nests of depth d: only the
+    # nesting depth changes between sizes.
+    one = ""
+    for i in range(d):
+        one += f"int v{i}=0;\nif(true){{\n"
+    one += "}\n" * d
+    return "void main(){\n" + one * (6000 // d) + "}\n"
+
+
 FAMILIES = {
     # name: (generator, sizes, parameter meaning)
     "chain_callers_first": (chain_callers_first, [1000, 2000, 4000, 8000, 16000, 32000, 64000], "functions"),
@@ -135,6 +145,7 @@ FAMILIES = {
     "lookup_far": (lookup_far, [2500, 5000, 10000, 20000, 40000, 80000], "decls"),
     "lookup_near": (lookup_near, [2500, 5000, 10000, 20000, 40000, 80000], "decls"),
     "nested_ifs": (nested_ifs, [4, 8, 16, 32, 60], "depth (x200 blocks)"),
+    "depth_only": (depth_only, [1, 2, 4, 8, 15, 30, 60], "depth (6000 decls + ifs)"),
 }
 
 
@@ -153,8 +164,9 @@ def run_once(binary, path, timeout):
     return elapsed, status
 
 
-def measure(binary, out_dir, name, repeat, budget, timeout):
-    gen, sizes, unit = FAMILIES[name]
+def measure(binary, out_dir, name, repeat, budget, timeout, sizes=None):
+    gen, default_sizes, unit = FAMILIES[name]
+    sizes = sizes or default_sizes
     rows = []
     for n in sizes:
         path = os.path.join(out_dir, f"{name}_{n}.qx")
@@ -198,12 +210,13 @@ def main():
     ap.add_argument("--budget", type=float, default=20.0)
     ap.add_argument("--timeout", type=float, default=180.0)
     ap.add_argument("--family", nargs="*", default=list(FAMILIES))
+    ap.add_argument("--sizes", type=int, nargs="*", help="override the size steps")
     ap.add_argument("--json")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     rows = []
     for name in args.family:
-        rows += measure(args.bin, args.out, name, args.repeat, args.budget, args.timeout)
+        rows += measure(args.bin, args.out, name, args.repeat, args.budget, args.timeout, args.sizes)
     if args.json:
         with open(args.json, "w") as f:
             json.dump(rows, f, indent=1)

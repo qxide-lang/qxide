@@ -9,7 +9,7 @@ Usage (from the repository root):
     python -I scripts/perf/sample_profile.py [--interval-ms 1] [--top 20] [--focus src/lang/] \
         target/prof/release/qxide.exe check FILE.qx
 
-Reports, over the samples whose innermost frame is in the binary's own code:
+Reports, over the samples of the thread doing the work (a frame under --focus on the stack):
   * self:      the innermost frame (inlined code counts as its own frame);
   * inclusive: every distinct source line under --focus on the sample's stack, so a hot loop
                shows up at the line that calls into the hash map or the allocator.
@@ -33,6 +33,7 @@ k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
 k32.SuspendThread.argtypes = k32.ResumeThread.argtypes = k32.CloseHandle.argtypes = [wt.HANDLE]
 k32.SuspendThread.restype = wt.DWORD
 k32.GetThreadContext.argtypes = [wt.HANDLE, ctypes.c_void_p]
+dbg.SymEnumerateModules64.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p]
 k32.Thread32First.argtypes = k32.Thread32Next.argtypes = [wt.HANDLE, ctypes.c_void_p]
 
 TH32CS_SNAPTHREAD = 0x4
@@ -211,21 +212,24 @@ def main():
             cache[key] = symbolize(hproc, pc - 1 if is_return else pc)
         return cache[key]
 
-    exe_base = None
-    for st in stacks:
-        for pc in st:
-            if frames_of(pc, False)[-1][0].startswith("qxide::"):
-                exe_base = mod(hproc, pc)
-                break
-        if exe_base:
-            break
-    own = [st for st in stacks if st and mod(hproc, st[0]) == exe_base]
+    # Worker samples: stacks with a frame under --focus. This drops idle threads (the main thread
+    # waits in join) but keeps time spent in system DLLs (allocator, page faults) on behalf of
+    # the checker; such leaves are named with dbghelp's export symbols.
+    modules = {}
+    enum_cb = ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_char_p, ctypes.c_uint64, ctypes.c_void_p)(
+        lambda name, base, _ctx: modules.__setitem__(base, name.decode(errors="replace").lower()) or True
+    )
+    dbg.SymEnumerateModules64(hproc, enum_cb, None)
+    own, leaf_mod = [], collections.Counter()
     self_fn, self_line, incl = collections.Counter(), collections.Counter(), collections.Counter()
-    for st in own:
+    for st in stacks:
         expanded = []
         for i, pc in enumerate(st):
-            if mod(hproc, pc) == exe_base:
-                expanded += frames_of(pc, i > 0)
+            expanded += frames_of(pc, i > 0)
+        if not any(args.focus in where for _, where in expanded):
+            continue
+        own.append(st)
+        leaf_mod[modules.get(mod(hproc, st[0]), "?")] += 1
         name, where = expanded[0]
         self_fn[name] += 1
         self_line[(where, name)] += 1
@@ -235,7 +239,9 @@ def main():
                 seen.add(where)
                 incl[(where, name)] += 1
     n = max(len(own), 1)
-    print(f"wall {wall:.2f}s, {len(stacks)} thread samples, {len(own)} with the innermost frame in {exe}")
+    print(f"wall {wall:.2f}s, {len(stacks)} thread samples, {len(own)} on the checking thread "
+          f"(a frame under {args.focus})")
+    print("leaf module: " + ", ".join(f"{m} {100 * c / n:.1f}%" for m, c in leaf_mod.most_common()))
     print("\nself, by function:")
     for name, c in self_fn.most_common(args.top):
         print(f"{c:7d} {100 * c / n:5.1f}%  {name[:110]}")
