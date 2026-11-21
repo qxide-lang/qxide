@@ -84,6 +84,22 @@ for (const [name, src] of Object.entries(errorCases)) {
 }
 same('run', 'examples/qx/bell.qx', 0, 0);
 
+// Without --seed the CLI draws a random seed and names it on stderr; the playground run with that
+// seed must print the same counts (this is what a share link with the used seed relies on).
+for (const shots of ['1', '1000']) {
+  const r = spawnSync(cli, ['run', 'examples/qx/bell.qx', '--shots', shots], {cwd: root, encoding: 'utf8'});
+  const m = /^seed: (\d+) \(pass --seed \1 to reproduce\)\n$/.exec(r.stderr);
+  checked++;
+  if (r.status !== 0 || !m) {
+    failures.push({cmd: 'run', path: 'examples/qx/bell.qx', shots, note: 'random seed note', want: 'seed: S (pass --seed S to reproduce)', got: r});
+    continue;
+  }
+  const got = runWasm('run', 'examples/qx/bell.qx', shots, m[1]);
+  if (got.exit !== 0 || got.stdout !== r.stdout || got.stderr !== '') {
+    failures.push({cmd: 'run', path: 'examples/qx/bell.qx', shots, seed: m[1], note: 'random seed replay', want: r, got});
+  }
+}
+
 // Playground-only limit: 21 non-Clifford qubits are refused in the browser but run in the CLI.
 const rotated = (n) =>
   `void main() {\n    QReg r = qreg(${n});\n    for i in 0..${n} {\n        h(r[i]);\n        t(r[i]);\n    }\n    BitReg m = measure(r);\n    println("{}", m);\n}\n`;

@@ -318,7 +318,7 @@ fn repl(input: &str) -> (String, String, u8) {
 
 fn repl_seed(input: &str, seed: u64) -> (String, String, u8) {
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = repl::run(input.as_bytes(), &mut out, &mut err, seed, false);
+    let code = repl::run(input.as_bytes(), &mut out, &mut err, seed, false, false);
     (
         String::from_utf8(out).unwrap(),
         String::from_utf8(err).unwrap(),
@@ -483,11 +483,35 @@ fn repl_waits_for_closing_brackets() {
 }
 
 #[test]
+fn repl_notes_a_random_seed_once_when_it_first_simulates() {
+    let input = "int a = 1;\na\nQubit q = qubit();\nh(q);\nBit m = measure(q);\nm\n:reset\nQubit r = qubit();\nh(r);\nBit n = measure(r);\nn\n";
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = repl::run(input.as_bytes(), &mut out, &mut err, 123, true, false);
+    assert_eq!(code, 0);
+    // Once, even across `:reset` (the seed stays the same).
+    let err = String::from_utf8(err).unwrap();
+    assert_eq!(err, msg::seed_note(123));
+    assert_eq!(err, "seed: 123 (pass --seed 123 to reproduce)\n");
+    // The note changes nothing else: the output matches an explicit `--seed 123`.
+    let (explicit, explicit_err, _) = repl_seed(input, 123);
+    assert_eq!(String::from_utf8(out).unwrap(), explicit);
+    assert_eq!(explicit_err, "");
+    // Nothing drawn from the seed, nothing to note.
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let quiet = "int a = 1;\na\nQubit q = qubit();\nBit m = measure(q);\n";
+    assert_eq!(
+        repl::run(quiet.as_bytes(), &mut out, &mut err, 5, true, false),
+        0
+    );
+    assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
+}
+
+#[test]
 fn repl_interactive_mode_shows_banner_and_prompts() {
     // The README transcript: a prompt goes to stdout before each line is read, diagnostics to stderr.
     let input = "Qubit q = qubit();\nh(q);\nBit m = measure(q);\nm\nh(q);\nvoid f() {\n}\n:quit\n";
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = repl::run(input.as_bytes(), &mut out, &mut err, 0, true);
+    let code = repl::run(input.as_bytes(), &mut out, &mut err, 0, false, true);
     let out = String::from_utf8(out).unwrap();
     let banner = msg::repl_banner(env!("CARGO_PKG_VERSION"));
     assert_eq!(out, format!("{banner}qx> qx> qx> qx> 1\nqx> qx> ... qx> "));

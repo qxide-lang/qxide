@@ -47,6 +47,10 @@ pub use diag::printable;
 // optimized (measured 2026-11-21 before the `Bit` limit, so an upper bound).
 pub const STACK_SIZE: usize = 256 << 20;
 
+// The CLI notes a random seed; the playground shows it itself.
+#[allow(unused_imports)]
+pub use msg::seed_note;
+
 /// Rendered diagnostics, ready for stderr.
 pub struct Failure(pub String);
 
@@ -440,21 +444,29 @@ pub fn run_with(
     seed: u64,
     limits: Limits,
 ) -> Result<String, Failure> {
-    run_input_with(&Input::file(name, src), shots, seed, &limits)
+    run_input_with(&Input::file(name, src), shots, seed, &limits).map(|r| r.out)
 }
 
 /// `qxide run` of an entry file and its imports; see `run`.
 #[allow(dead_code)]
 pub fn run_input(input: &Input, shots: u64, seed: u64) -> Result<String, Failure> {
+    run_input_report(input, shots, seed).map(|r| r.out)
+}
+
+/// What `run` printed, and whether it simulated (and so drew outcomes from the seed).
+#[allow(dead_code)]
+pub struct Ran {
+    pub out: String,
+    pub simulated: bool,
+}
+
+/// `run_input`, also reporting whether the seed was used.
+#[allow(dead_code)]
+pub fn run_input_report(input: &Input, shots: u64, seed: u64) -> Result<Ran, Failure> {
     run_input_with(input, shots, seed, &Limits::CLI)
 }
 
-fn run_input_with(
-    input: &Input,
-    shots: u64,
-    seed: u64,
-    limits: &Limits,
-) -> Result<String, Failure> {
+fn run_input_with(input: &Input, shots: u64, seed: u64, limits: &Limits) -> Result<Ran, Failure> {
     let (map, built) = build_input(input, limits);
     let (program, e) = built.map_err(|e| render(&map, &e, limits))?;
     let prints_bits = e
@@ -468,7 +480,10 @@ fn run_input_with(
     };
     if !needs_sim {
         // Nothing observable depends on the shot.
-        return Ok(render_output(&e.output, None));
+        return Ok(Ran {
+            out: render_output(&e.output, None),
+            simulated: false,
+        });
     }
     let main_span = main_span(&program);
     let backend = e.circuit.select_backend();
@@ -509,7 +524,10 @@ fn run_input_with(
         .map(|r| r.map_err(|err| render(&map, &[sim_error(err, main_span)], limits)));
     if shots == 1 {
         let shot = sims.next().expect("one shot")?;
-        return Ok(render_output(&e.output, Some(&shot)));
+        return Ok(Ran {
+            out: render_output(&e.output, Some(&shot)),
+            simulated: true,
+        });
     }
     // The printed output depends only on the measured bits, so it is rendered once per record.
     // Each new record adds its table row, its indented output and its key to the output budget,
@@ -552,5 +570,8 @@ fn run_input_with(
             s.push('\n');
         }
     }
-    Ok(s)
+    Ok(Ran {
+        out: s,
+        simulated: true,
+    })
 }

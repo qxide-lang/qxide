@@ -64,16 +64,18 @@ void main() {
 }
 ```
 
-Run the program with `qxide run`: a single shot prints the program's output, while `--shots N` executes N shots.
+Run the program with `qxide run`: a single shot prints the program's output, while `--shots N` executes N shots. Without `--seed`, each `qxide run` picks a fresh random seed so counts differ from run to run and prints the seed used to `stderr` as a single `seed: S (pass --seed S to reproduce)` line; passing `--seed S` reproduces the exact same output and prints no seed line. When nothing printed depends on measurement outcomes (for example, a single shot that prints no measured bit or a program with no measurements), no simulation runs and no seed is printed.
 
 ```text
 $ qxide run examples/qx/bell.qx
-a=1 b=1
+seed: 12059043656824605579 (pass --seed 12059043656824605579 to reproduce)
+a=0 b=0
 $ qxide run examples/qx/bell.qx --shots 1000
-[1, 1]  0b11 = 3  ×521
-  a=1 b=1
-[0, 0]  0b00 = 0  ×479
+seed: 15940593722917789681 (pass --seed 15940593722917789681 to reproduce)
+[0, 0]  0b00 = 0  ×521
   a=0 b=0
+[1, 1]  0b11 = 3  ×479
+  a=1 b=1
 ```
 
 In the multi-shot table, each row represents one measurement record followed by its count: shown as an array with `c[0]` first (`[0, 1, 1]`), in binary with the highest bit first (`0b110`), and as an integer with `c[0]` as the least significant bit (`= 6`). The program's own output for that outcome is indented below the row. Use `qxide check` to validate a program without running it, or `qxide qasm` to emit OpenQASM 3.
@@ -153,7 +155,7 @@ void main() {
 }
 ```
 
-`qxide repl` starts an interactive session where you can enter statements, function definitions, or bare expressions whose values are printed, with variables, functions, and qubits persisting across inputs. Each entry is checked under the same rules as `qxide run`, so errors such as reusing a measured qubit (`Q0301`) are reported and the rejected input is not kept; qubits may stay live while you work, and any left unmeasured or undiscarded when the session ends are reported as `Q0302` with exit code 1. Built-in commands include `:help` for a summary, `:qasm` to print the OpenQASM 3 circuit built so far, `:reset` to clear the session, and `:quit` to exit.
+`qxide repl` starts an interactive session where you can enter statements, function definitions, or bare expressions whose values are printed, with variables, functions, and qubits persisting across inputs. Each entry is checked under the same rules as `qxide run`, so errors such as reusing a measured qubit (`Q0301`) are reported and the rejected input is not kept; qubits may stay live while you work, and any left unmeasured or undiscarded when the session ends are reported as `Q0302` with exit code 1. Built-in commands include `:help` for a summary, `:qasm` to print the OpenQASM 3 circuit built so far, `:reset` to clear the session, and `:quit` to exit. Like `qxide run`, `qxide repl` uses a random seed unless `--seed S` is given, printing the seed once to `stderr` as `seed: S (pass --seed S to reproduce)` when an input first prints a measured bit; `qxide repl --seed S` replays the same outcomes.
 
 ```text
 $ qxide repl
@@ -162,6 +164,7 @@ qx> Qubit q = qubit();
 qx> h(q);
 qx> Bit m = measure(q);
 qx> m
+seed: 10159202627767585087 (pass --seed 10159202627767585087 to reproduce)
 1
 qx> h(q);
 error[Q0301]: use of consumed qubit `q`

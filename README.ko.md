@@ -88,12 +88,14 @@ void main() {
 
 ```text
 $ qxide run examples/qx/bell.qx
-a=1 b=1
+seed: 12059043656824605579 (pass --seed 12059043656824605579 to reproduce)
+a=0 b=0
 $ qxide run examples/qx/bell.qx --shots 1000
-[1, 1]  0b11 = 3  ×521
-  a=1 b=1
-[0, 0]  0b00 = 0  ×479
+seed: 15940593722917789681 (pass --seed 15940593722917789681 to reproduce)
+[0, 0]  0b00 = 0  ×521
   a=0 b=0
+[1, 1]  0b11 = 3  ×479
+  a=1 b=1
 $ qxide check examples/qx/ghz.qx
 examples/qx/ghz.qx: ok
 $ qxide qasm examples/qx/bell.qx
@@ -107,11 +109,11 @@ c[0] = measure q[0];
 c[1] = measure q[1];
 ```
 
-- `qxide run <FILE> [--shots N] [--seed S]`: 1회 실행 시 프로그램 출력을 그대로 보여 주며, `N > 1`이면 측정 기록별로 한 줄씩 배열(`c[0]`이 먼저), 이진수(상위 비트가 먼저), 정수(`c[0]`이 최하위 비트)와 횟수를 출력하고 그 아래에 해당 결과의 프로그램 출력을 이어서 표시합니다.
+- `qxide run <FILE> [--shots N] [--seed S]`: 1회 실행 시 프로그램 출력을 그대로 보여 주며, `N > 1`이면 측정 기록별로 한 줄씩 배열(`c[0]`이 먼저), 이진수(상위 비트가 먼저), 정수(`c[0]`이 최하위 비트)와 횟수를 출력하고 그 아래에 해당 결과의 프로그램 출력을 이어서 표시합니다. `--seed`를 주지 않으면 실행할 때마다 무작위 시드를 쓰고 실제로 쓴 시드를 `stderr`에 `seed: S (pass --seed S to reproduce)` 한 줄로 알리며(측정이 없는 프로그램 등 측정 결과에 따라 출력이 달라지지 않으면 시드를 알리지 않음), `--seed S`를 주면 시드 줄은 출력하지 않고 같은 결과를 재현합니다.
 - `qxide check <FILE>`: 실행하지 않고 이미 측정한 큐비트를 다시 쓰거나 측정하지 않은 큐비트 같은 오류를 줄·열 번호와 함께 보고합니다.
 - `qxide qasm <FILE>`: OpenQASM 3 회로를 출력합니다.
 - `qxide fmt <FILE> [--check]`: 소스 파일을 서식에 맞춰 제자리에서 다시 씁니다. `--check`를 지정하면 파일을 수정하지 않고 변경 필요 여부만 확인합니다.
-- `qxide repl [--seed S]`: 변수, 함수, 큐비트 상태를 유지하는 대화형 세션을 시작합니다. 측정에는 시드 `S`(기본값 `0`)를 사용합니다.
+- `qxide repl [--seed S]`: 변수, 함수, 큐비트 상태를 유지하는 대화형 세션을 시작합니다. 측정에는 시드 `S`를 사용하며, `--seed`가 없으면 무작위 시드를 쓰고 측정한 비트를 처음 출력할 때 그 시드를 `stderr`에 한 번 알립니다.
 - `qxide explain <CODE>`: 영문 카탈로그 [docs/error-codes.md](docs/error-codes.md)에서 해당 오류 코드의 발생 원인, 잘못된 예시, 수정 방법을 찾아 출력합니다.
 - `qxide new <NAME>`: `NAME` 패키지 프로젝트를 만들고 `qxide.toml`(폴더 이름에서 생성한 패키지 이름, 버전 `0.1.0`, 필요한 `qxide` 버전), 벨 쌍 예제 `src/main.qx`, 짧은 `README.md`, `target/`을 무시하는 `.gitignore`를 생성합니다. 프로젝트 폴더 안에서는 파일 없이 `qxide run`을 실행하면 `src/main.qx`를 실행합니다.
 
