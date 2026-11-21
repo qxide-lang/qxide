@@ -10,7 +10,7 @@ type Example = {
   note?: string;
 };
 
-// .qx programs in examples/qx/ at v0.6.0. Results were captured by running the commands.
+// .qx programs in examples/qx/ at v0.7.0. Results were captured by running the commands.
 const QX_EXAMPLES: Example[] = [
   {
     name: 'bell',
@@ -84,7 +84,7 @@ const QX_EXAMPLES: Example[] = [
   },
 ];
 
-// Rust examples in examples/ at v0.6.0 (output text in English since v0.6.0). Results were captured by running the commands unless noted.
+// Rust examples in examples/ at v0.7.0 (output text in English since v0.6.0). Results were captured by running the commands unless noted.
 const EXAMPLES: Example[] = [
   {
     name: 'bell',

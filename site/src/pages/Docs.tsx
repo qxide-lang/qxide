@@ -5,10 +5,19 @@ import {GITHUB, GITHUB_BLOB, usePageMeta} from '../lib/meta';
 const HELP = `Usage: qxide <COMMAND>
 
 Commands:
-  run <FILE> [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, seed 0)
-  check <FILE>                       Check a .qx program for errors without running it
-  qasm <FILE>                        Print the OpenQASM 3 circuit built by a .qx program
+  run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, seed 0)
+  check [FILE]                       Check a .qx program for errors without running it
+  qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
+  fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
+  repl [--seed S]                    Start an interactive .qx session (default: seed 0)
+  explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
+  new <NAME>                         Create a new project folder with main.qx and README.md
   bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
+  add <PKG>[@VER] [--path DIR]       Add a dependency to qxide.toml and install it
+  remove <PKG>                       Remove a dependency
+  install [--locked] [--offline]     Download and verify packages in qxide.lock
+  publish [--dry-run]                Package the project and submit it to the registry
+  search <WORD>                      Search the package registry
 
 Options:
   -V, --version                      Print version
@@ -22,6 +31,18 @@ const REPO_DOCS = [
     lang: 'Korean',
   },
   {
+    path: 'docs/design/qx-packages.md',
+    title: 'Modules and packages',
+    desc: 'Design document covering .qx modules, import statements, qxide.toml, qxide.lock, the qxide-lang/registry repository, and the package commands.',
+    lang: 'English',
+  },
+  {
+    path: 'docs/error-codes.md',
+    title: 'Error code reference',
+    desc: 'Catalog of every .qx error code with explanations, examples, and fixes, also printed by qxide explain.',
+    lang: 'English',
+  },
+  {
     path: 'docs/design/qx-ir.md',
     title: 'Typed IR design draft',
     desc: 'Design draft of the typed IR planned to replace the tree-walking interpreter and prepare for native code generation; not implemented yet.',
@@ -31,6 +52,12 @@ const REPO_DOCS = [
     path: 'CHANGELOG.md',
     title: 'Change log',
     desc: 'Per-version list of notable changes across releases, starting with 0.6.0.',
+    lang: 'English',
+  },
+  {
+    path: 'docs/release-notes/v0.7.0.md',
+    title: 'v0.7.0 release notes',
+    desc: 'What changed in 0.7.0: .qx modules and public imports, the package manager and qxide-lang/registry, new CLI commands (qxide new, qxide fmt, qxide repl, qxide explain), independent per-shot seeding, and breaking keyword, linearity, nesting, and non-finite angle checks.',
     lang: 'English',
   },
   {
@@ -100,8 +127,7 @@ export function Docs() {
       <header className="page-head">
         <h1>Docs</h1>
         <p className="lede">
-          Qxide is an early experiment, so the docs are split between the Rust API reference and a handful of documents
-          in the repository. New here? Start with the <Link to="/learn">tutorial</Link>.
+          Qxide is an early experiment, so the docs are split between the Rust API reference and a handful of documents in the repository, including the package manager design and every error code. New here? Start with the <Link to="/learn">tutorial</Link>.
         </p>
       </header>
 
@@ -147,26 +173,27 @@ export function Docs() {
       <section aria-labelledby="cli">
         <h2 id="cli">Command line</h2>
         <p>
-          The <code>qxide</code> binary runs, checks and exports <code>.qx</code> programs. This is the output of{' '}
-          <code>qxide --help</code>:
+          The <code>qxide</code> binary runs, checks, exports, and formats <code>.qx</code> programs, starts an interactive session, explains errors, and manages packages. This is the output of <code>qxide --help</code>:
         </p>
         <CodeBlock label="qxide --help" code={HELP} />
         <ul className="plain-list">
           <li>
-            <code>qxide run FILE</code> checks and simulates a program. <code>--shots N</code> repeats it and prints a
-            table grouped by outcome, such as <code>[0, 1, 1]  0b110 = 6  ×503</code>; <code>--seed S</code> makes a
-            run repeatable.
+            <code>qxide run [FILE]</code> checks and simulates a program, defaulting to <code>src/main.qx</code> inside a project when no file is given. Pass <code>--shots N</code> to print a table grouped by outcome (such as <code>[0, 1, 1]  0b110 = 6  ×503</code>) and <code>--seed S</code> to make a run repeatable, with each shot receiving its own seed derived from <code>S</code>.
           </li>
           <li>
-            <code>qxide check FILE</code> parses and type-checks a program and verifies qubit usage without running
-            it.
+            <code>qxide check [FILE]</code> parses, type-checks, and verifies qubit usage without running the circuit, while <code>qxide qasm [FILE]</code> prints the circuit as OpenQASM 3. Inside a project, both default to <code>src/main.qx</code> when no file is given.
           </li>
           <li>
-            <code>qxide qasm FILE</code> prints the circuit as OpenQASM 3.
+            <code>qxide fmt FILE</code> formats a file in place while keeping comments (add <code>--check</code> to verify formatting without editing), and <code>qxide repl</code> starts an interactive session under the same rules as <code>qxide run</code>. <code>qxide explain CODE</code> prints the explanation, an example, and the fix for an error code from <code>docs/error-codes.md</code>.
           </li>
           <li>
-            <code>qxide bell</code> prints the OpenQASM 3 for a built-in Bell-state circuit, then the counts from 1000
-            simulated shots. <code>qxide --version</code> prints the installed version.
+            <code>qxide new NAME</code> creates a project folder containing <code>qxide.toml</code>, a starter Bell-pair program in <code>src/main.qx</code>, <code>README.md</code>, and <code>.gitignore</code>.
+          </li>
+          <li>
+            <code>qxide add</code>, <code>qxide remove</code>, and <code>qxide install</code> (with <code>--locked</code> and <code>--offline</code> options) manage dependencies in <code>qxide.toml</code> and record their SHA-256 checksums in <code>qxide.lock</code>. <code>qxide search</code> queries the GitHub registry <code>qxide-lang/registry</code>, and <code>qxide publish</code> packages a project and opens a pull request there using the GitHub CLI <code>gh</code>.
+          </li>
+          <li>
+            <code>qxide bell</code> prints the OpenQASM 3 for a built-in Bell-state circuit, followed by outcome counts from 1000 simulated shots. Run <code>qxide --version</code> to print the installed version.
           </li>
         </ul>
         <p>

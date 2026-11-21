@@ -72,6 +72,41 @@ const TELEPORT_OUT = `$ qxide run examples/qx/teleport.qx --shots 1000
 [0, 1, 1]  0b110 = 6  ×228
   bob=1`;
 
+const PKG_SETUP = `$ qxide new demo
+Created project \`demo\` in \`demo\` with \`qxide.toml\`, \`src/main.qx\`, \`README.md\`, and \`.gitignore\`
+Next:
+  qxide run demo/src/main.qx
+  qxide fmt demo/src/main.qx
+$ cd demo
+$ qxide add bell-utils
+       Added bell-utils v0.1.0
+      Locked 1 packages
+  Downloaded bell-utils v0.1.0`;
+
+const PKG_MAIN = `import bell_utils.bell_pair;
+import bell_utils.plus;
+
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    bell_pair(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    Qubit p = plus();
+    Bit mp = measure(p);
+    println("a={} b={} plus={}", ma, mb, mp);
+}`;
+
+const PKG_RUN = `$ qxide run --shots 1000
+[1, 1, 0]  0b011 = 3  ×273
+  a=1 b=1 plus=0
+[0, 0, 0]  0b000 = 0  ×251
+  a=0 b=0 plus=0
+[1, 1, 1]  0b111 = 7  ×248
+  a=1 b=1 plus=1
+[0, 0, 1]  0b100 = 4  ×228
+  a=0 b=0 plus=1`;
+
 const BAD = `void main() {
     Qubit q = qubit();
     Bit m = measure(q);
@@ -166,7 +201,7 @@ export function Learn() {
       <header className="page-head">
         <h1>Learn Qxide</h1>
         <p className="lede">
-          A short tutorial for people new to quantum computing. Every snippet is a <code>.qx</code> program (or Rust code, where marked) that exists today, and every output shown was captured by running it with Qxide 0.6.0.
+          A short tutorial for people new to quantum computing. Every snippet is a <code>.qx</code> program (or Rust code, where marked) that exists today, and every output shown was captured by running it with Qxide 0.7.0.
         </p>
       </header>
 
@@ -331,6 +366,17 @@ export function Learn() {
         </p>
       </section>
 
+      <section aria-labelledby="packages">
+        <h2 id="packages">Projects and packages</h2>
+        <p>Running <code>qxide new</code> creates a project directory containing <code>qxide.toml</code>, a starter <code>src/main.qx</code>, <code>README.md</code>, and <code>.gitignore</code>. You can then run <code>qxide add</code> to download a package from the registry, record it in <code>qxide.toml</code>, and pin its SHA-256 checksum in <code>qxide.lock</code>.</p>
+        <CodeBlock label="New project and a package" copyable={false} code={PKG_SETUP} />
+        <p>Functions marked <code>public</code> can be brought into scope with <code>import</code>, using <code>_</code> in place of <code>-</code> for the package name so <code>bell-utils</code> becomes <code>bell_utils</code>. Qxide's qubit rules apply across package boundaries, so your code owns any qubits returned by an imported function and must still measure them.</p>
+        <CodeBlock label="src/main.qx" lang="qx" code={PKG_MAIN} />
+        <CodeBlock label="1000 shots" copyable={false} code={PKG_RUN} />
+        <p>In the output, <code>a</code> and <code>b</code> always agree because <code>bell_pair</code> entangles them, while the qubit from <code>plus</code> acts as an independent coin flip. To reproduce the exact same dependency set on another machine, run <code>qxide install --locked</code>, or use <code>qxide publish</code> to share your own package by opening a pull request to <code>qxide-lang/registry</code>.</p>
+        <p>Qxide also includes a few commands for everyday work inside or outside a project. <code>qxide fmt</code> formats a <code>.qx</code> file in place while preserving comments, and <code>qxide repl</code> opens an interactive session where you can try statements one at a time under the same qubit rules as <code>qxide run</code>. If the compiler reports an error code such as <code>Q0301</code>, running <code>qxide explain</code> with that code prints an explanation, an example, and a fix.</p>
+      </section>
+
       <section aria-labelledby="rust">
         <h2 id="rust">The Rust library</h2>
         <p>
@@ -374,7 +420,7 @@ export function Learn() {
             <Link to="/docs">Docs</Link>: the command line, the language design document and the API reference.
           </li>
           <li>
-            <Link to="/blog/qxide-0-6-0-functions-with-qubits">Qxide 0.6.0</Link>: functions that take and return qubits, conditional calls, <code>var</code>, casts, and <code>PI</code>.
+            <Link to="/blog/qxide-0-7-0-modules-and-packages">Qxide 0.7.0</Link>: modules and packages, <code>qxide new</code>, <code>qxide fmt</code>, <code>qxide repl</code>, <code>qxide explain</code>, and independent shots.
           </li>
         </ul>
       </section>

@@ -239,7 +239,7 @@ export function Home() {
         </h1>
         <p className="hero-sub">
           Familiar C-style syntax, compile-time qubit safety like Rust&apos;s ownership, and OpenQASM 3 output.
-          Version 0.6.0 is still an early experiment; the language may still change.
+          Version 0.7.0 is still an early experiment; the language may still change.
         </p>
         <div className="cta">
           <Link className="pill pill-solid" to="/learn">

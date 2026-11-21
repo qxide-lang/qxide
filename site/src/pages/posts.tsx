@@ -12,6 +12,80 @@ export type Post = {
   body: ReactNode;
 };
 
+const RELEASE_070 = `${GITHUB}/releases/tag/v0.7.0`;
+
+const setup070 = `$ qxide new demo
+Created project \`demo\` in \`demo\` with \`qxide.toml\`, \`src/main.qx\`, \`README.md\`, and \`.gitignore\`
+Next:
+  qxide run demo/src/main.qx
+  qxide fmt demo/src/main.qx
+$ cd demo
+$ qxide add bell-utils
+       Added bell-utils v0.1.0
+      Locked 1 packages
+  Downloaded bell-utils v0.1.0`;
+
+const main070 = `import bell_utils.bell_pair;
+import bell_utils.plus;
+
+void main() {
+    Qubit a = qubit();
+    Qubit b = qubit();
+    bell_pair(a, b);
+    Bit ma = measure(a);
+    Bit mb = measure(b);
+    Qubit p = plus();
+    Bit mp = measure(p);
+    println("a={} b={} plus={}", ma, mb, mp);
+}`;
+
+const run070 = `$ qxide run --shots 1000
+[1, 1, 0]  0b011 = 3  ×273
+  a=1 b=1 plus=0
+[0, 0, 0]  0b000 = 0  ×251
+  a=0 b=0 plus=0
+[1, 1, 1]  0b111 = 7  ×248
+  a=1 b=1 plus=1
+[0, 0, 1]  0b100 = 4  ×228
+  a=0 b=0 plus=1`;
+
+const release070 = (
+  <>
+    <p>Qxide 0.7.0 introduces modules and a package manager backed by a GitHub registry, along with the first published package, <code>bell-utils</code>. This release also adds four new commands (<code>qxide new</code>, <code>qxide fmt</code>, <code>qxide repl</code>, and <code>qxide explain</code>) and fixes shot sampling so that every shot uses an independent seed. Qxide is still an early experiment, and both the language and package format may continue to change.</p>
+
+    <h2>Modules and packages</h2>
+    <p>A Qxide project is defined by a <code>qxide.toml</code> manifest and a <code>qxide.lock</code> file that pins dependencies with SHA-256 checksums, and commands like <code>qxide run</code>, <code>qxide check</code>, and <code>qxide qasm</code> default to <code>src/main.qx</code> inside one. Packages come from <code>qxide-lang/registry</code>, a GitHub repository holding a JSON-lines index and archives with no separate server or accounts, where <code>bell-utils</code> 0.1.0 is the first published package.</p>
+    <CodeBlock label="New project and a package" copyable={false} code={setup070} />
+    <p>Every <code>.qx</code> file is a module, and functions marked <code>public</code> can be brought into scope with Java-style imports such as <code>import bell_utils.bell_pair;</code> or <code>import bell_utils.*;</code>. In the <code>src/main.qx</code> program below, <code>a</code> and <code>b</code> always agree in the 1000-shot output because <code>bell_pair(a, b)</code> entangles the two qubits that the caller allocated and still owns before the caller measures them.</p>
+    <CodeBlock label="src/main.qx" lang="qx" code={main070} />
+    <CodeBlock label="qxide run (output)" copyable={false} code={run070} />
+    <p>Publishing a package uses <code>qxide publish</code>, which bundles the project and opens a pull request to <code>qxide-lang/registry</code> with the GitHub CLI <code>gh</code>. CI verifies the JSON-lines index entry and archive before merge, and published versions are immutable and can only be yanked rather than overwritten. Because this is the first release of the package manager, the manifest and registry format may still change in future versions.</p>
+
+    <h2>New commands</h2>
+    <p><code>{"qxide new <NAME>"}</code> creates a project with <code>qxide.toml</code>, a Bell-pair program in <code>src/main.qx</code>, <code>README.md</code>, and <code>.gitignore</code>. <code>{"qxide fmt <FILE> [--check]"}</code> formats a file in place while keeping comments, and <code>--check</code> verifies formatting without changing the file. <code>qxide repl</code> opens an interactive session with the same rules as <code>qxide run</code>, and <code>{"qxide explain <CODE>"}</code> prints the explanation, an example, and the fix for an error code.</p>
+
+    <h2>Independent shot sampling</h2>
+    <p>Until 0.6.0, shot <code>k</code> under <code>--seed S</code> used seed <code>S + k</code>, so runs with nearby seeds reused almost all of each other's shots. Across seeds <code>0..199</code>, the Bell <code>00</code> count in 1000 shots had a standard deviation of 2.94 instead of about 15.8, and its 506.1 mean came from one frozen sample of shared shots rather than any real bias toward <code>00</code>. Now every shot gets an independent seed through <code>qxide::shot_seed</code> and <code>Circuit::simulate_shots</code>, bringing the standard deviation to 16.7 and the mean to 497.6. The same <code>--seed</code> still reproduces a run, but counts differ from 0.6.0 (the Bell example with seed 0 now prints 521 and 479 instead of 504 and 496), and the playground uses the same code.</p>
+
+    <h2>Breaking changes</h2>
+    <p><code>import</code> and <code>public</code> are now keywords, and <code>qxide new</code> creates the new project layout. The compiler now rejects consuming a qubit in the right operand of <code>{"&&"}</code> or <code>||</code> (<code>Q0315</code>) as well as consuming an operand borrowed by the same call (<code>Q0301</code>), and long operator chains count toward the 128-level nesting limit (<code>Q0106</code>). Passing a non-finite angle to <code>rx</code>, <code>ry</code>, or <code>rz</code> now panics in Rust and reports <code>Q0411</code> in <code>.qx</code> files.</p>
+
+    <h2>Install or upgrade</h2>
+    <p>
+      The install and upgrade commands are on the <Link to="/learn#install">Learn page</Link>
+      , and the full list of changes is in the{' '}
+      <a href={RELEASE_070} target="_blank" rel="noreferrer">
+        v0.7.0 GitHub release
+      </a>
+       and in{' '}
+      <a href={`${GITHUB_BLOB}/CHANGELOG.md`} target="_blank" rel="noreferrer">
+        CHANGELOG.md
+      </a>
+      .
+    </p>
+  </>
+);
+
 const RELEASE_060 = `${GITHUB}/releases/tag/v0.6.0`;
 
 const functions060 = `// Qubit parameters are borrowed by default; \`consume\` hands ownership to the callee.
@@ -384,6 +458,13 @@ let ma = c.measure(a); // a is gone; only a classical bit remains`}
 
 // Newest first.
 export const POSTS: Post[] = [
+  {
+    slug: 'qxide-0-7-0-modules-and-packages',
+    title: 'Qxide 0.7.0: modules and packages',
+    date: '2026-11-21',
+    summary: 'Qxide 0.7.0 adds modules and packages, four new CLI commands, and independent per-shot sampling.',
+    body: release070,
+  },
   {
     slug: 'qxide-0-6-0-functions-with-qubits',
     title: 'Qxide 0.6.0: functions with qubits',
