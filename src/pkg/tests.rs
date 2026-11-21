@@ -707,6 +707,64 @@ fn publishing_skips_symlinked_top_level_files() {
 }
 
 #[test]
+fn publishing_a_new_package_writes_its_owner_file() {
+    use super::cli::{write_into_registry, Owner};
+    let dir = tmp_dir("owners");
+    let owner = Owner::from_gh("295735711\nrigelx2b\n").unwrap();
+    assert_eq!(owner.to_json(), r#"{"id":295735711,"login":"rigelx2b"}"#);
+    let owners_file = dir.join(index::owners_path("demo"));
+    let first = entry("demo", "1.0.0", &[]);
+    let written = write_into_registry(&dir, &first, b"a", Some(&owner)).unwrap();
+    assert!(written.contains(&owners_file), "{written:?}");
+    assert_eq!(
+        std::fs::read_to_string(&owners_file).unwrap(),
+        "{\"id\":295735711,\"login\":\"rigelx2b\"}\n"
+    );
+    // Later versions, possibly by a co-owner, leave the owner file alone.
+    let other = Owner::from_gh("1\nbob").unwrap();
+    let second = entry("demo", "1.0.1", &[]);
+    let written = write_into_registry(&dir, &second, b"b", Some(&other)).unwrap();
+    assert!(!written.contains(&owners_file), "{written:?}");
+    assert!(std::fs::read_to_string(&owners_file)
+        .unwrap()
+        .contains("rigelx2b"));
+    // Local directory registries record no owner.
+    let written = write_into_registry(&dir, &entry("plain", "1.0.0", &[]), b"c", None).unwrap();
+    assert!(
+        !dir.join(index::owners_path("plain")).exists(),
+        "{written:?}"
+    );
+    assert_eq!(index::owners_path("bell-utils"), "owners/be/ll/bell-utils");
+}
+
+#[test]
+fn gh_user_output_must_be_an_id_and_a_login() {
+    use super::cli::Owner;
+    assert_eq!(
+        Owner::from_gh("42\r\nsome-user\r\n"),
+        Some(Owner {
+            id: 42,
+            login: "some-user".into()
+        })
+    );
+    for bad in [
+        "",
+        "42",
+        "rigelx2b\n42",
+        "042\nx",
+        "-1\nx",
+        "42\n-x",
+        "42\nx y",
+        "42\nx\"y",
+        "42\nx\nextra",
+        "99999999999999999999\nx",
+        &format!("42\n{}", "a".repeat(40)),
+    ] {
+        assert_eq!(Owner::from_gh(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
 fn installs_verify_the_checksum_first() {
     let dir = tmp_dir("install");
     let m = write_package(&dir.join("pkg"));

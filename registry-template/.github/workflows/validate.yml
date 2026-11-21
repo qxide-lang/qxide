@@ -32,9 +32,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The author comes from the event GitHub generates for the pull request (`pull_request.user`),
+      # which the pull request cannot set; not `github.actor` (whoever triggered this run) and not
+      # commit metadata. Owners are matched by the numeric id; the login is only shown.
       - if: github.event_name == 'pull_request_target'
         env:
           BASE: origin/${{ github.base_ref }}
-        run: python -I base/scripts/validate.py --root pr --base "$BASE" --summary "$GITHUB_STEP_SUMMARY"
+          AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+        run: python -I base/scripts/validate.py --root pr --base "$BASE" --author-id "$AUTHOR_ID" --author-login "$AUTHOR_LOGIN" --summary "$GITHUB_STEP_SUMMARY"
       - if: github.event_name != 'pull_request_target'
         run: python -I base/scripts/validate.py --root base --summary "$GITHUB_STEP_SUMMARY"

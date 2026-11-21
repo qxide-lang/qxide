@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Validates the Qxide registry: index format, archive checksums and contents, and (with
---base) that a pull request only appends versions.
+"""Validates the Qxide registry: index format, archive checksums and contents, owner files, and
+(with --base) that a pull request only appends versions to packages its author owns.
 
-Usage: python scripts/validate.py [--base <git ref>] [--summary <file>] [--root <dir>]
+Usage: python scripts/validate.py [--base <git ref> --author-id <id> --author-login <login>]
+                                  [--summary <file>] [--root <dir>]
 Standard library only (Python 3.11+ for tomllib).
 """
 
@@ -64,6 +65,17 @@ LOOK_ALIKE_PAIRS = (("rn", "m"), ("vv", "w"), ("cl", "d"))
 # New names may not pass for official packages: none may start like `qxide` or equal `std`.
 RESERVED_PREFIXES = ("qxide",)
 RESERVED_NAMES = ("std",)
+# Owner files: one `{"id": <GitHub user id>, "login": <login>}` line per owner, plus
+# `"pending": true` for an invited account that has not accepted yet. The numeric id is what is
+# compared; logins can be renamed and then registered again by someone else.
+OWNER_KEYS = {"id", "login"}
+INVITE_KEYS = OWNER_KEYS | {"pending"}
+MAX_OWNERS = 32
+GITHUB_ID = re.compile(r"[1-9][0-9]{0,18}")
+GITHUB_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
+# Pull request authors may also be GitHub Apps (`dependabot[bot]`); owner files list users only.
+AUTHOR_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?")
+REGISTRY_DATA = ("index/", "packages/", "owners/")
 
 errors: list[str] = []
 summary: list[str] = []
@@ -124,6 +136,61 @@ def prefix(name: str) -> str:
     if len(name) == 3:
         return f"3/{name[0]}"
     return f"{name[:2]}/{name[2:4]}"
+
+
+def owners_path(name: str) -> str:
+    return f"owners/{prefix(name)}/{name}"
+
+
+def confirmed(owners: list[dict]) -> set[int]:
+    """Ids of the owners in `owners`; invited accounts (`pending`) are not owners yet."""
+    return {o["id"] for o in owners if "pending" not in o}
+
+
+def invited(owners: list[dict]) -> set[int]:
+    return {o["id"] for o in owners if "pending" in o}
+
+
+def parse_owners(where: str, data: bytes) -> list[dict] | None:
+    """Returns the owners listed in an owner file, or `None` after reporting why it is invalid."""
+    try:
+        lines = [l for l in index_lines(data) if l.strip()]
+    except UnicodeDecodeError as e:
+        error(where, f"not UTF-8: {e}")
+        return None
+    owners, ids, ok = [], set(), True
+    for i, line in enumerate(lines, 1):
+        try:
+            owner = strict_json(line)
+        except ValueError as e:
+            error(f"{where}:{i}", f"invalid JSON: {e}")
+            ok = False
+            continue
+        if (
+            not isinstance(owner, dict)
+            or owner.keys() not in (OWNER_KEYS, INVITE_KEYS)
+            or owner.get("pending", True) is not True
+            # `True == 1` in Python, so check the type before the value.
+            or type(owner["id"]) is not int
+            or not GITHUB_ID.fullmatch(str(owner["id"]))
+            or not isinstance(owner["login"], str)
+            or not GITHUB_LOGIN.fullmatch(owner["login"])
+        ):
+            error(f"{where}:{i}", 'an owner line is {"id": <GitHub user id>, "login": "<GitHub login>"}, with "pending": true for an invitation')
+            ok = False
+            continue
+        if owner["id"] in ids:
+            error(f"{where}:{i}", f"owner id {owner['id']} is listed twice")
+            ok = False
+        ids.add(owner["id"])
+        owners.append(owner)
+    if ok and not confirmed(owners):
+        error(where, "an owner file lists at least one owner who is not only invited")
+        ok = False
+    if len(owners) > MAX_OWNERS:
+        error(where, f"more than {MAX_OWNERS} owners")
+        ok = False
+    return owners if ok else None
 
 
 def dl_template() -> str:
@@ -647,15 +714,113 @@ def base_lines(base: str, rel: str) -> list[str]:
     return index_lines(r.stdout) if r.returncode == 0 else []
 
 
+def name_status(out: str) -> list[list[str]]:
+    """Parses `git diff --name-status -z` into `[status, path...]` rows. Without `-z`, git quotes
+    paths with unusual characters, and a quoted path would not start with `packages/` and the like.
+    """
+    fields, rows = out.split("\0"), []
+    i = 0
+    while i < len(fields) and fields[i]:
+        status = fields[i]
+        n = 2 if status[0] in "RC" else 1
+        rows.append([status, *fields[i + 1 : i + 1 + n]])
+        i += 1 + n
+    return rows
+
+
+def git_bytes(*args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True).stdout
+
+
+def ls_base(base: str, top: str) -> set[str]:
+    return {p for p in git("ls-tree", "-r", "-z", "--name-only", base, "--", top).split("\0") if p}
+
+
+def check_ownership(base: str, author, diff, names, head_owners, archive_owner) -> None:
+    """Allows a pull request to change a package's index file, archives, or owner file only when its
+    author is an owner in the package's owner file on the base branch, or is invited there and the
+    pull request only accepts that invitation. A new package (no index file on the base branch) must
+    add an owner file that lists exactly its author.
+    """
+    # Ownership comes from the base branch only, never from the pull request; `git` fails closed.
+    base_index = ls_base(base, "index/")
+    base_owner_files = ls_base(base, "owners/")
+    touched: dict[str, set[str]] = {}
+    for status, *paths in diff:
+        for p in paths:
+            if p.startswith(("index/", "owners/")):
+                touched.setdefault(p.rsplit("/", 1)[-1], set()).add(p)
+            elif p.startswith("packages/"):
+                if p in archive_owner:
+                    touched.setdefault(archive_owner[p], set()).add(p)
+                elif status[0] not in "MDR":
+                    # A file nobody's index line points to, such as an archive placed ahead of
+                    # another package's next version. Changes to published archives are reported above.
+                    error(p, "file under packages/ is not the archive of a version in the registry")
+    for name, paths in sorted(touched.items()):
+        rel = f"index/{prefix(name)}/{name}"
+        orel = owners_path(name)
+        if author is None:
+            error(rel, "ownership cannot be checked without the pull request author")
+        elif rel in base_index:
+            if orel not in base_owner_files:
+                error(rel, f"`{name}` has no owner file on the base branch; a maintainer must add {orel} first")
+                continue
+            current = parse_owners(f"{orel} (base)", git_bytes("show", f"{base}:{orel}"))
+            if current is None:
+                continue
+            if not (ROOT / orel).is_file():
+                error(orel, "the owner file of a published package cannot be removed")
+                continue
+            head = head_owners.get(name)
+            if author["id"] in confirmed(current):
+                # Owners invite (`"pending": true`) and remove accounts; only the invited account
+                # can turn its own invitation into ownership.
+                added = confirmed(head) - confirmed(current) if head is not None else set()
+                if added:
+                    error(orel, f"ids {sorted(added)} become owners only by accepting an invitation in their own pull request")
+            elif author["id"] in invited(current):
+                # Accepting: the pull request changes only the owner file, and only the author's line,
+                # which loses `pending` and takes the author's current login.
+                accepted = [{"id": author["id"], "login": author["login"]} if o["id"] == author["id"] else o for o in current]
+                if paths != {orel}:
+                    error(rel, f"{author['login']} (id {author['id']}) is invited, not an owner, of `{name}`; accept the invitation first")
+                elif head is not None and head != accepted:
+                    error(orel, "a pull request from an invited account only accepts its own invitation")
+            else:
+                error(rel, f"pull request author {author['login']} (id {author['id']}) is not an owner of `{name}`")
+        elif name in names:
+            if not (ROOT / orel).is_file():
+                error(rel, f"a new package needs the owner file {orel} listing the pull request author")
+            elif name in head_owners and head_owners[name] is not None and head_owners[name] != [author]:
+                error(orel, "the owner file of a new package lists exactly the pull request author")
+        # Otherwise an owner file without an index file, reported above.
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", help="git ref of the target branch, to check what a PR changes")
     parser.add_argument("--summary", help="markdown file for reviewers (GITHUB_STEP_SUMMARY)")
     parser.add_argument("--root", help="registry checkout (default: this script's repository)")
+    # From the `pull_request_target` event (`pull_request.user`), which a pull request cannot set.
+    parser.add_argument("--author-id", help="GitHub user id of the pull request author (with --base)")
+    parser.add_argument("--author-login", help="GitHub login of the pull request author (with --base)")
     args = parser.parse_args()
     global ROOT
     if args.root:
         ROOT = Path(args.root).resolve()
+    author = None
+    if args.base:
+        # Fail closed: without a known author no pull request can show that it owns a package.
+        if (
+            isinstance(args.author_id, str)
+            and GITHUB_ID.fullmatch(args.author_id)
+            and isinstance(args.author_login, str)
+            and AUTHOR_LOGIN.fullmatch(args.author_login)
+        ):
+            author = {"id": int(args.author_id), "login": args.author_login}
+        else:
+            error("--author-id/--author-login", "the pull request author is required with --base")
 
     template = dl_template()
     index_dir = ROOT / "index"
@@ -697,6 +862,8 @@ def main() -> int:
     # Every archive must be in this repository and pass the checks, including one whose `dl` is an
     # https URL: clients verify `cksum`, so they can only install the bytes checked here (B-P3).
     new_files: dict[str, list[str]] = {}
+    # In-repository archive path -> package name, to tie files added under packages/ to a package.
+    archive_owner: dict[str, str] = {}
     for name, entries in names.items():
         for entry in entries:
             target = archive_path(entry, template)
@@ -711,6 +878,7 @@ def main() -> int:
                     continue
             else:
                 local = target
+            archive_owner[local] = name
             archive = ROOT / local
             try:
                 # Python 3.12's `is_file` raises for some errors, such as a component over 255 bytes.
@@ -735,6 +903,25 @@ def main() -> int:
                 if d["name"] not in names:
                     error(f"{name} {entry['vers']}", f"dependency `{d['name']}` is not in the registry")
 
+    # Owner files: well formed, and only for packages that exist. A package without one is locked
+    # for pull requests until a maintainer adds it (see `check_ownership`).
+    head_owners: dict[str, list[dict] | None] = {}
+    for path in sorted(p for p in (ROOT / "owners").rglob("*") if p.is_file() and p.name != ".gitkeep"):
+        rel = path.relative_to(ROOT).as_posix()
+        name = path.name
+        if rel != owners_path(name) or not NAME.fullmatch(name) or not portable(name):
+            error(rel, f"owner files live at {owners_path(name)} and use valid package names")
+            continue
+        if name not in names:
+            error(rel, f"owner file for `{name}`, which has no index file")
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            error(rel, f"cannot be read: {e}")
+            continue
+        head_owners[name] = parse_owners(rel, data)
+
     changed = set(new_files)
     if args.base:
         changed = set()
@@ -749,8 +936,7 @@ def main() -> int:
             old = [l for l in base_lines(args.base, rel) if l.strip()]
             new = [json.dumps(e, sort_keys=True) for e in entries]
             old_entries = [json.loads(l) for l in old]
-            # Published lines are immutable. `yanked` too: nothing records who owns a package, so a
-            # pull request could yank or restore anyone's version (B-P5); maintainers yank instead.
+            # Published lines are immutable, except that an owner may set `yanked` to true (B-P5).
             for i, o in enumerate(old_entries):
                 if i >= len(entries):
                     error(rel, f"version {o.get('vers')} was removed; ask a maintainer to yank it instead")
@@ -758,7 +944,10 @@ def main() -> int:
                 if json.dumps(entries[i], sort_keys=True) == json.dumps(o, sort_keys=True):
                     continue
                 if json.dumps(dict(entries[i], yanked=o.get("yanked")), sort_keys=True) == json.dumps(o, sort_keys=True):
-                    error(rel, f"line {i + 1} changes `yanked`; only maintainers yank versions, not pull requests")
+                    # Owners may yank (`check_ownership` checks the author, as for any change to the
+                    # index file); restoring a yanked version is left to maintainers.
+                    if not (o.get("yanked") is False and entries[i]["yanked"] is True):
+                        error(rel, f"line {i + 1} un-yanks a version; only maintainers do that, in a commit to main")
                 else:
                     error(rel, f"line {i + 1} changed; published versions are immutable")
             for e in entries[len(old_entries):]:
@@ -777,13 +966,23 @@ def main() -> int:
             for other in names:
                 if other != name and skeleton(other) == key:
                     error(rel, f"`{name}` is too similar to the package `{other}`")
-        diff = [l.split("\t") for l in git("diff", "--name-status", f"{args.base}...HEAD").splitlines()]
+        diff = name_status(git("diff", "--name-status", "-z", f"{args.base}...HEAD"))
         touched = [p for _, *paths in diff for p in paths]
-        # Publishing and yanking pull requests change registry data only, never scripts or workflows.
-        if any(p.startswith(("index/", "packages/")) for p in touched):
+        # Publishing and owner pull requests change registry data only, never scripts or workflows.
+        if any(p.startswith(REGISTRY_DATA) for p in touched):
             for p in touched:
-                if not p.startswith(("index/", "packages/")):
-                    error(p, "a pull request that changes index/ or packages/ may not change other files")
+                if not p.startswith(REGISTRY_DATA):
+                    error(p, "a pull request that changes index/, packages/ or owners/ may not change other files")
+        # The archive of a new version sits at the default path, which contains its own package name;
+        # a relative `dl` could otherwise place it at the path of another package's next version.
+        local_template = template if "://" not in template else DEFAULT_DL
+        for name, entries in names.items():
+            for e in entries:
+                where = f"{name} {e['vers']}"
+                target = archive_path(e, template)
+                if where in changed and "://" not in target and target != archive_path(dict(e, dl=None), local_template):
+                    error(where, INVALID_VALUE.format(key="dl", value=repr(target)) + "; new versions use the default archive path")
+        check_ownership(args.base, author, diff, names, head_owners, archive_owner)
         for status, *paths in diff:
             for p in paths:
                 # Paths such as `index/3/c/con` cannot be checked out on Windows (B-P7).
@@ -798,6 +997,8 @@ def main() -> int:
 
     if args.summary:
         lines = ["## Registry check", ""]
+        if author is not None:
+            lines += [f"Pull request author: {code(author['login'])} (id {author['id']})", ""]
         # Errors and file names carry text from the pull request: written as literal text (B-P8).
         lines += [f"- {code(e)}" for e in errors] or ["All checks passed."]
         for where in sorted(changed):

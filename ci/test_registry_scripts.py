@@ -32,6 +32,10 @@ CONFIG = '{"dl": "packages/{prefix}/{name}/{name}-{version}.tar.gz", "api": null
 LIB = "public void hello(Qubit a) {\n    h(a);\n}\n"
 # The client's limit on the decompressed tar stream (src/pkg/archive.rs `MAX_TAR`).
 MAX_TAR = (50 << 20) + (16 << 20)
+# Pull request authors as `pull_request_target` reports them (`pull_request.user`).
+ALICE = {"id": 1001, "login": "alice"}
+BOB = {"id": 1002, "login": "bob"}
+MALLORY = {"id": 666, "login": "mallory"}
 
 
 def prefix(name: str) -> str:
@@ -117,10 +121,13 @@ class Registry:
         (self.root / "index").mkdir()
         (self.root / "config.json").write_text(CONFIG, encoding="utf-8", newline="\n")
 
-    def add(self, name: str, vers: str, files=None, archive=True, raw=None, **over) -> dict:
+    def add(self, name: str, vers: str, files=None, archive=True, raw=None, owner=ALICE, **over) -> dict:
         """Appends one index line for the version and writes its archive unless `archive` is false;
-        `raw` gives the archive bytes instead of `files`; `over` overrides fields on the line.
+        `raw` gives the archive bytes instead of `files`; `over` overrides fields on the line. The
+        first version of a package also gets an owner file listing `owner` (none if `None`).
         """
+        if owner is not None and not (self.root / "index" / prefix(name) / name).exists():
+            self.write_owners(name, [owner])
         line = {"name": name, "vers": vers, "deps": [], "yanked": False, "v": 1, "qxide": ">=0.6", "description": "d"}
         if archive:
             data = raw if raw is not None else make_tar(files if files is not None else std_files(name, vers))
@@ -134,11 +141,20 @@ class Registry:
         self.append_raw(name, json.dumps(line, sort_keys=True))
         return line
 
+    def write_owners(self, name: str, owners: list, raw: bytes | None = None) -> Path:
+        path = self.root / "owners" / prefix(name) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw if raw is not None else "".join(json.dumps(o, sort_keys=True) + "\n" for o in owners).encode())
+        return path
+
     def append_raw(self, name: str, text: str) -> None:
         index = self.root / "index" / prefix(name) / name
         index.parent.mkdir(parents=True, exist_ok=True)
         with index.open("a", encoding="utf-8", newline="\n") as f:
             f.write(text + "\n")
+
+    def validate_pr(self, author=ALICE, base="main") -> subprocess.CompletedProcess:
+        return self.validate("--base", base, "--author-id", str(author["id"]), "--author-login", author["login"])
 
     def validate(self, *args: str, timeout=None) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -501,10 +517,10 @@ class ValidatePullRequests(unittest.TestCase):
         self.reg.git("commit", "-qm", "base")
         self.reg.git("checkout", "-qb", "pr")
 
-    def commit_and_validate(self) -> subprocess.CompletedProcess:
+    def commit_and_validate(self, author=ALICE) -> subprocess.CompletedProcess:
         self.reg.git("add", "-A")
         self.reg.git("commit", "-qm", "pr")
-        return self.reg.validate("--base", "main")
+        return self.reg.validate_pr(author)
 
     def test_a_new_version_passes(self):
         self.reg.add("evil", "1.0.1")
@@ -549,14 +565,14 @@ class ValidatePullRequests(unittest.TestCase):
         self.reg.git("add", "-A")
         self.reg.git("commit", "-qm", "pr")
         self.reg.git("merge", "-q", "--no-edit", "main")
-        r = self.reg.validate("--base", "main")
+        r = self.reg.validate_pr()
         self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_unknown_base_fails(self):
         self.reg.add("evil", "1.0.1")
         self.reg.git("add", "-A")
         self.reg.git("commit", "-qm", "pr")
-        r = self.reg.validate("--base", "no-such-ref")
+        r = self.reg.validate_pr(base="no-such-ref")
         self.assertNotEqual(r.returncode, 0, r.stdout)
 
     def test_config_json_is_locked(self):
@@ -574,16 +590,19 @@ class ValidatePullRequests(unittest.TestCase):
         self.assertIn(f'"yanked": {old}', text)
         index.write_text(text.replace(f'"yanked": {old}', f'"yanked": {new}'), encoding="utf-8", newline="\n")
 
-    def test_yanked_cannot_change_in_a_pull_request(self):
+    def test_only_owners_yank_in_a_pull_request(self):
         # B-P5, the report's input: a pull request that only sets `yanked` to true on a published
-        # line. There is no record of who owns a package, so yanking is left to maintainers.
+        # line. Rejected from anyone but an owner (ALICE owns `evil`).
         self.flip_yanked("false", "true")
-        r = self.commit_and_validate()
+        r = self.commit_and_validate(MALLORY)
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("index/ev/il/evil", r.stdout)
+        r = self.reg.validate_pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_unyanking_in_a_pull_request(self):
-        # B-P5, the other direction: a yanked version made selectable again.
+        # B-P5, the other direction: a yanked version made selectable again, even by its owner;
+        # maintainers restore versions in a commit to main.
         self.reg.git("checkout", "-q", "main")
         self.flip_yanked("false", "true")
         self.reg.git("commit", "-qam", "yank")
@@ -661,7 +680,7 @@ class ValidatePullRequests(unittest.TestCase):
                 # Git for Windows refuses such paths unless core.protectNTFS is off.
                 self.reg.git("-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", f"100644,{blob},index/{prefix(name)}/{name}")
                 self.reg.git("commit", "-qm", "pr")
-                r = self.reg.validate("--base", "main")
+                r = self.reg.validate_pr()
                 self.assertEqual(r.returncode, 1, r.stdout)
                 self.assertIn(f"index/{prefix(name)}/{name}", r.stdout)
 
@@ -675,6 +694,316 @@ class ValidatePullRequests(unittest.TestCase):
                 r = reg.validate()
                 self.assertEqual(r.returncode, 1, r.stdout)
                 self.assertIn(f"index/{prefix(name)}/{name}", r.stdout)
+
+
+class ValidateOwners(unittest.TestCase):
+    """Owner files: only accounts listed in `owners/<prefix>/<name>` on the base branch may change a
+    package; a new package lists exactly the author of the pull request that adds it. ALICE owns
+    `evil` on the base branch.
+    """
+
+    EVIL = "index/ev/il/evil"
+    EVIL_OWNERS = "owners/ev/il/evil"
+
+    def setUp(self):
+        self.reg = Registry(self)
+        self.reg.git("init", "-q", "-b", "main")
+        self.reg.add("evil", "1.0.0", owner=ALICE)
+        self.commit("base")
+        self.reg.git("checkout", "-qb", "pr")
+
+    def commit(self, message="pr") -> None:
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", message)
+
+    def pr(self, author) -> subprocess.CompletedProcess:
+        self.commit()
+        return self.reg.validate_pr(author)
+
+    def assert_rejected(self, r: subprocess.CompletedProcess, path: str) -> None:
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(path, r.stdout)
+
+    def on_main(self, change) -> None:
+        """Applies `change` as a maintainer commit on main and restarts the pull request branch."""
+        self.reg.git("checkout", "-q", "main")
+        change()
+        self.commit("maintainer")
+        self.reg.git("checkout", "-q", "-B", "pr", "main")
+
+    def test_owner_publishes_a_new_version(self):
+        self.reg.add("evil", "1.0.1")
+        r = self.pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_non_owner_cannot_publish_a_new_version(self):
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(MALLORY), self.EVIL)
+
+    def test_same_login_with_another_id_is_not_the_owner(self):
+        # A renamed account's login can be registered again by someone else.
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr({"id": 4242, "login": "alice"}), self.EVIL)
+
+    def test_new_package_by_anyone(self):
+        self.reg.add("mallory-tools", "1.0.0", owner=MALLORY)
+        r = self.pr(MALLORY)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        summary = self.reg.root.parent / f"{self.reg.root.name}-summary.md"
+        self.addCleanup(lambda: summary.unlink(missing_ok=True))
+        args = ("--author-id", str(MALLORY["id"]), "--author-login", MALLORY["login"])
+        self.reg.validate("--base", "main", *args, "--summary", str(summary))
+        self.assertIn(f"`mallory` (id {MALLORY['id']})", summary.read_text(encoding="utf-8"))
+
+    def test_owner_line_written_by_qxide_publish(self):
+        # `Owner::to_json` in src/pkg/cli.rs (see `publishing_a_new_package_writes_its_owner_file`).
+        self.reg.add("mallory-tools", "1.0.0", owner=None)
+        self.reg.write_owners("mallory-tools", [], raw=b'{"id":666,"login":"mallory"}\n')
+        r = self.pr(MALLORY)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_new_package_needs_an_owner_file(self):
+        self.reg.add("mallory-tools", "1.0.0", owner=None)
+        self.assert_rejected(self.pr(MALLORY), "index/ma/ll/mallory-tools")
+
+    def test_new_package_owner_file_lists_exactly_the_author(self):
+        for owners in ([ALICE], [MALLORY, ALICE], [ALICE, MALLORY], [{"id": MALLORY["id"], "login": "alice"}]):
+            with self.subTest(owners=owners):
+                self.reg.git("checkout", "-q", "-B", "pr-new", "pr")
+                self.reg.add("mallory-tools", "1.0.0", owner=None)
+                self.reg.write_owners("mallory-tools", owners)
+                self.assert_rejected(self.pr(MALLORY), "owners/ma/ll/mallory-tools")
+
+    def test_non_owner_cannot_add_themselves(self):
+        # Ownership is read from the base branch, so adding yourself and publishing in the same pull
+        # request does not work, nor does changing the owner file alone.
+        for owners, publish in (([ALICE, MALLORY], True), ([ALICE, MALLORY], False), ([MALLORY], False)):
+            with self.subTest(owners=owners, publish=publish):
+                self.reg.git("checkout", "-q", "-B", "pr-claim", "pr")
+                self.reg.write_owners("evil", owners)
+                if publish:
+                    self.reg.add("evil", "1.0.1")
+                self.assert_rejected(self.pr(MALLORY), self.EVIL)
+
+    def merge(self, branch: str) -> None:
+        """Merges `branch` into main and starts the next pull request branch from it."""
+        self.reg.git("checkout", "-q", "main")
+        self.reg.git("merge", "-q", "--ff-only", branch)
+        self.reg.git("checkout", "-q", "-B", f"after-{branch}", "main")
+
+    def test_owner_invites_and_invitee_accepts(self):
+        invite = dict(BOB, pending=True)
+        self.reg.write_owners("evil", [ALICE, invite])
+        r = self.pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.merge("pr")
+        # Invited is not an owner yet.
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(BOB), self.EVIL)
+        self.reg.git("checkout", "-q", "-B", "accept", "main")
+        self.reg.write_owners("evil", [ALICE, BOB])
+        r = self.pr(BOB)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.merge("accept")
+        # Now an owner: BOB publishes and takes the package over alone.
+        self.reg.add("evil", "1.0.1")
+        self.reg.write_owners("evil", [BOB])
+        r = self.pr(BOB)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owners_cannot_add_owners_without_acceptance(self):
+        # ALICE lists BOB directly, or confirms BOB's invitation for him.
+        self.reg.write_owners("evil", [ALICE, BOB])
+        self.assert_rejected(self.pr(ALICE), self.EVIL_OWNERS)
+        self.reg.git("checkout", "-q", "-B", "pr", "main")
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        self.reg.write_owners("evil", [ALICE, BOB])
+        self.assert_rejected(self.pr(ALICE), self.EVIL_OWNERS)
+
+    def test_invitee_pull_request_only_accepts(self):
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True), dict(MALLORY, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        cases = {
+            # Accepting someone else's invitation, or one's own plus someone else's.
+            "other": ([ALICE, dict(BOB, pending=True), MALLORY], self.EVIL_OWNERS),
+            "both": ([ALICE, BOB, MALLORY], self.EVIL_OWNERS),
+            # Removing the inviting owner, or reordering on the way.
+            "remove owner": ([BOB, dict(MALLORY, pending=True)], self.EVIL_OWNERS),
+            "add another": ([ALICE, dict(BOB, pending=True), dict(MALLORY, pending=True), {"id": 7, "login": "x"}], self.EVIL_OWNERS),
+        }
+        for what, (owners, path) in cases.items():
+            with self.subTest(what=what):
+                self.reg.git("checkout", "-q", "-B", f"accept-{what.replace(' ', '-')}", "main")
+                self.reg.write_owners("evil", owners)
+                self.assert_rejected(self.pr(BOB), path)
+        # Accepting and publishing in one pull request.
+        self.reg.git("checkout", "-q", "-B", "accept-publish", "main")
+        self.reg.write_owners("evil", [ALICE, BOB, dict(MALLORY, pending=True)])
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(BOB), self.EVIL)
+        # Accepting under another account with the same login.
+        self.reg.git("checkout", "-q", "-B", "accept-impostor", "main")
+        self.reg.write_owners("evil", [ALICE, BOB, dict(MALLORY, pending=True)])
+        self.assert_rejected(self.pr({"id": 4242, "login": "bob"}), self.EVIL)
+        # The plain acceptance passes, also when the login was renamed since the invitation.
+        self.reg.git("checkout", "-q", "-B", "accept-renamed", "main")
+        self.reg.write_owners("evil", [ALICE, {"id": BOB["id"], "login": "bobby"}, dict(MALLORY, pending=True)])
+        r = self.pr({"id": BOB["id"], "login": "bobby"})
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owner_withdraws_an_invitation(self):
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        self.reg.write_owners("evil", [ALICE])
+        r = self.pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owner_yanks(self):
+        # BOB is invited but has not accepted; MALLORY is unrelated.
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        index = self.reg.root / "index" / "ev" / "il" / "evil"
+        index.write_text(index.read_text(encoding="utf-8").replace('"yanked": false', '"yanked": true'), encoding="utf-8", newline="\n")
+        self.commit()
+        r = self.reg.validate_pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        for author in (BOB, MALLORY):
+            with self.subTest(author=author["login"]):
+                self.assert_rejected(self.reg.validate_pr(author), self.EVIL)
+
+    def test_owner_cannot_leave_a_package_without_owners(self):
+        self.reg.write_owners("evil", [], raw=b"")
+        self.assert_rejected(self.pr(ALICE), self.EVIL_OWNERS)
+        self.reg.git("checkout", "-q", "-B", "pr-rm", "main")
+        self.reg.git("rm", "-q", self.EVIL_OWNERS)
+        self.assert_rejected(self.pr(ALICE), self.EVIL_OWNERS)
+
+    def test_package_without_owner_file_is_locked(self):
+        # Before migration: a published package with no owner file cannot be claimed by anyone.
+        self.on_main(lambda: self.reg.git("rm", "-q", self.EVIL_OWNERS))
+        for author in (ALICE, MALLORY):
+            with self.subTest(author=author["login"]):
+                self.reg.git("checkout", "-q", "-B", "pr-claim", "main")
+                self.reg.add("evil", "1.0.1")
+                self.reg.write_owners("evil", [author])
+                self.assert_rejected(self.pr(author), self.EVIL)
+        # A maintainer adds the owner file on main (the migration); then the owner can publish.
+        self.on_main(lambda: self.reg.write_owners("evil", [ALICE]))
+        self.reg.add("evil", "1.0.1")
+        r = self.pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_archive_without_index_line_in_another_package(self):
+        # An archive placed where the owner's next version will go would block that publication.
+        path = self.reg.root / "packages" / "ev" / "il" / "evil" / "evil-1.0.1.tar.gz"
+        path.write_bytes(make_tar(std_files("evil", "1.0.1")))
+        self.assert_rejected(self.pr(MALLORY), "packages/ev/il/evil/evil-1.0.1.tar.gz")
+        # A name git would quote in plain `--name-status` output.
+        self.reg.git("checkout", "-q", "-B", "pr-junk", "main")
+        (path.parent / "évil.tar.gz").write_bytes(b"x")
+        self.assert_rejected(self.pr(MALLORY), "packages/ev/il/evil/évil.tar.gz")
+
+    def test_relative_dl_into_another_package(self):
+        # A new package of its own whose `dl` points at the path of `evil 1.0.1`, with a valid
+        # archive of that package there.
+        squat = "packages/ev/il/evil/evil-1.0.1.tar.gz"
+        data = make_tar(std_files("mallory-tools", "1.0.0"))
+        (self.reg.root / squat).write_bytes(data)
+        self.reg.add("mallory-tools", "1.0.0", archive=False, owner=MALLORY, cksum=hashlib.sha256(data).hexdigest(), dl=squat)
+        self.assert_rejected(self.pr(MALLORY), "mallory-tools 1.0.0")
+        # The same `dl` naming the default path is accepted.
+        self.reg.git("checkout", "-q", "-B", "pr-default", "main")
+        self.reg.add("mallory-tools", "1.0.0", owner=MALLORY, dl="packages/{prefix}/{name}/{name}-{version}.tar.gz")
+        r = self.pr(MALLORY)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_author_is_required_with_base(self):
+        self.reg.add("evil", "1.0.1")
+        self.commit()
+        for args in (
+            [],
+            ["--author-id", "1001"],
+            ["--author-login", "alice"],
+            ["--author-id", "01001", "--author-login", "alice"],
+            ["--author-id", "1001x", "--author-login", "alice"],
+            ["--author-id", "1001", "--author-login", "al/ice"],
+        ):
+            with self.subTest(args=args):
+                r = self.reg.validate("--base", "main", *args)
+                self.assertNotIn("Traceback", r.stderr)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("--author-id", r.stdout)
+
+    def test_bot_authors(self):
+        # A GitHub App such as Dependabot may change other files, but owns no package.
+        bot = {"id": 49699333, "login": "dependabot[bot]"}
+        (self.reg.root / "README.md").write_text("x\n", encoding="utf-8")
+        r = self.pr(bot)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(bot), self.EVIL)
+        self.reg.git("checkout", "-q", "-B", "pr-bot-new", "main")
+        self.reg.add("bot-tools", "1.0.0", owner=bot)
+        self.assert_rejected(self.pr(bot), "owners/bo/t-/bot-tools")
+
+    def test_malformed_owner_files(self):
+        cases = {
+            "empty": b"",
+            "blank": b"\n\n",
+            "json": b"{nope}\n",
+            "list": b"[1001]\n",
+            "bool id": b'{"id": true, "login": "alice"}\n',
+            "string id": b'{"id": "1001", "login": "alice"}\n',
+            "zero id": b'{"id": 0, "login": "alice"}\n',
+            "float id": b'{"id": 1001.0, "login": "alice"}\n',
+            "huge id": b'{"id": 99999999999999999999, "login": "alice"}\n',
+            "extra key": b'{"id": 1001, "login": "alice", "role": "admin"}\n',
+            "pending false": b'{"id": 1001, "login": "alice"}\n{"id": 1002, "login": "bob", "pending": false}\n',
+            "pending string": b'{"id": 1001, "login": "alice"}\n{"id": 1002, "login": "bob", "pending": "yes"}\n',
+            "pending one": b'{"id": 1001, "login": "alice"}\n{"id": 1002, "login": "bob", "pending": 1}\n',
+            "only invited": b'{"id": 1002, "login": "bob", "pending": true}\n',
+            "bad login": b'{"id": 1001, "login": "al ice"}\n',
+            "long login": b'{"id": 1001, "login": "' + b"a" * 40 + b'"}\n',
+            "duplicate": b'{"id": 1001, "login": "alice"}\n{"id": 1001, "login": "alias"}\n',
+            "not utf8": b'{"id": 1001, "login": "\xff"}\n',
+            "deep": b"[" * 5000 + b"]" * 5000 + b"\n",
+            "too many": b"".join(b'{"id": %d, "login": "u%d"}\n' % (i, i) for i in range(1, 34)),
+        }
+        for what, raw in cases.items():
+            with self.subTest(what=what):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0", owner=None)
+                reg.write_owners("evil", [], raw=raw)
+                self.assert_rejected(reg.validate(timeout=60), self.EVIL_OWNERS)
+
+    def test_owner_files_need_a_package(self):
+        reg = Registry(self)
+        reg.add("evil", "1.0.0")
+        reg.write_owners("ghost", [ALICE])
+        self.assert_rejected(reg.validate(), "owners/gh/os/ghost")
+        (reg.root / "owners" / "gh").joinpath("os", "ghost").unlink()
+        misplaced = reg.root / "owners" / "xx" / "evil"
+        misplaced.parent.mkdir(parents=True)
+        misplaced.write_text(json.dumps(ALICE) + "\n", encoding="utf-8")
+        self.assert_rejected(reg.validate(), "owners/xx/evil")
+
+    def test_owner_files_are_optional_outside_pull_requests(self):
+        # Registries published before owner files existed (such as the fixture) still validate.
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", owner=None)
+        r = reg.validate()
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owner_pull_request_may_not_change_other_files(self):
+        self.reg.write_owners("evil", [ALICE, BOB])
+        (self.reg.root / "README.md").write_text("x\n", encoding="utf-8")
+        self.assert_rejected(self.pr(ALICE), "README.md")
 
 
 class ValidateHostileInput(unittest.TestCase):
@@ -889,6 +1218,16 @@ class ValidateWorkflow(unittest.TestCase):
         for line in self.lines:
             if "run:" in line:
                 self.assertNotIn("${{", line)
+
+    def test_author_comes_from_the_pull_request_event(self):
+        # `pull_request.user` is set by GitHub when the pull request is opened; `github.actor`
+        # (whoever triggered the run) and commit metadata can differ from the author or be chosen
+        # by the pull request.
+        self.assertIn("AUTHOR_ID: ${{ github.event.pull_request.user.id }}", self.code)
+        self.assertIn("AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}", self.code)
+        self.assertRegex(self.code, r'--root pr --base "\$BASE" --author-id "\$AUTHOR_ID" --author-login "\$AUTHOR_LOGIN" ')
+        for forgeable in ("github.actor", "triggering_actor", "head_commit", "github.event.sender", ".head.", "author.name", "author.email"):
+            self.assertNotIn(forgeable, self.code)
 
 
 class BuildSearch(unittest.TestCase):

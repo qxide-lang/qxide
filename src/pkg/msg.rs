@@ -379,6 +379,14 @@ pub fn manual_append_line() -> &'static str {
     "append the JSON line above to"
 }
 
+pub fn manual_owner_line() -> &'static str {
+    "first version only: {\"id\":<your GitHub user id>,\"login\":\"<your GitHub login>\"} (id from `gh api user --jq .id`)"
+}
+
+pub fn unexpected_output(out: &str) -> String {
+    format!("unexpected output {out:?}")
+}
+
 pub fn help(code: Code) -> Option<String> {
     Some(match code {
         Code::ManifestNotFound => {
