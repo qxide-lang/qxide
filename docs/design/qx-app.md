@@ -209,11 +209,11 @@ When a command fails, the `Promise` rejects with a `QxError` object containing `
 - `diagnostics` is a list of `{ code, message, file, line, column, endLine, endColumn, help }` objects so editors such as Qxide Studio can mark source locations.
 - `rendered` is the exact formatted diagnostic output that the CLI would print.
 
-App-level errors use codes `Q0711` through `Q0715`.
+App-level errors use codes `Q0711` through `Q0716`.
 
 ### Threads and cancellation
 
-Each command call runs on a worker thread (at most one per CPU core, with additional calls waiting in a queue), so the window never freezes. Canceling a call through the `signal` option (an `AbortSignal`) sets a flag that the worker checks between shots, inside `std.time.sleep_millis`, and every 4096 interpreter steps; the `Promise` then rejects with `Q0713`. Closing the window cancels all running calls. Every message carries a random token for the page that sent it, so after a reload (F5) a response to a call made by the previous page is ignored.
+Each command call runs on one of a fixed pool of worker threads (one per CPU core, at most four; additional calls wait in a queue without a thread of their own), so the window never freezes. A call that fails inside the runtime rejects with `Q0412` instead of leaving its `Promise` pending, and a call id that is still in flight cannot be reused (`Q0712`). Canceling a call through the `signal` option (an `AbortSignal`) sets a flag that the worker checks between shots, inside `std.time.sleep_millis`, and every 4096 interpreter steps; the `Promise` then rejects with `Q0713`. Closing the window cancels all running calls. Every message carries a random token for the page that sent it, so after a reload (F5) a response to a call made by the previous page is ignored.
 
 ### Determinism and state
 
@@ -282,7 +282,7 @@ Every standard-library call passes through the `Host` trait supplied by the embe
 `std.fs` confines every operation to a host-defined data root:
 
 - Every path must be relative to the data root: `<data dir>/<identifier>/` for a built app (for example, `%APPDATA%\dev.qxide.app.bell-app` on Windows), `<project>/target/app-data/` in `qxide app dev`, and the project's `data/` folder (or `./data` for a standalone file) in `qxide run --allow fs`.
-- Paths are rejected with `Q0705` if they are absolute, contain drive letters or UNC paths, are empty, contain `..` segments, use Windows reserved names (`CON`, `NUL`, `COM1`, and similar), or have existing components that resolve through symlinks outside the data root.
+- Paths are rejected with `Q0705` if they are absolute, contain drive letters or UNC paths, are empty, contain `..` segments, use Windows reserved names (`CON`, `NUL`, `COM1`, and similar), have existing components that resolve through symlinks outside the data root, or pass through a symlink whose target does not exist. The data root itself must not be a symlink or junction, and `qxide app dev` refuses a linked `target/` or `target/app-data/`.
 - Files are UTF-8 text only, with a maximum size of 16 MiB per read.
 - Failed file operations (not found, exceeding the size limit, or invalid UTF-8) return `Q0704`.
 - Parent directories are created automatically on write.
@@ -334,9 +334,11 @@ Permissions are stored in the bundle inside the executable and cannot be changed
 
 ### Resource limits
 
-- Simulation memory follows the CLI limits: up to 1 GiB for the state vector and up to 1 GiB for the stabilizer tableau.
+- Each call (a command, or `std.qxide.run` in Qxide Studio) may simulate at most 24 qubits on the state-vector backend (256 MiB) and a stabilizer tableau of at most 256 MiB, failing with `Q0406` otherwise. With at most four calls running at once, simulation memory stays within 1 GiB in total. Larger programs run with `qxide run`, which keeps the CLI limits.
 - Shots are capped at `1,000,000` per command call.
 - `std.fs` reads are capped at 16 MiB per read.
+- A call result handed to the page is capped at 32 MiB (`Q0716`), and so is a `std.app.emit` event (`Q0706`).
+- Only the bare runtime started by `qxide app dev` accepts `--dev`; a built app (a runtime with a bundle attached) refuses it.
 
 ## 9. Command-line interface
 
@@ -469,6 +471,7 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 | `Q0713` | Call canceled | App call |
 | `Q0714` | Invalid command signature (not `public`, or uses a quantum or measurement parameter) | `qxide app dev` / `qxide app build`, and on each call |
 | `Q0715` | Invalid `[app]` section in `qxide.toml` | `qxide app dev` / `qxide app build` |
+| `Q0716` | Call result larger than 32 MiB | App call |
 
 ## 14. MVP status and follow-ups
 

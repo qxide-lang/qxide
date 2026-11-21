@@ -24,7 +24,7 @@ mod host;
 mod msg;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -130,23 +130,79 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Limits concurrent calls to the number of CPU cores; extra calls wait.
-struct Slots {
-    free: Mutex<usize>,
+/// Resource limits of one command call or `std.qxide.run`.
+const CALL_LIMITS: lang::Limits = lang::Limits::APP;
+/// Most calls running at once; with `CALL_LIMITS` they share a 1 GiB simulation budget.
+const MAX_WORKERS: usize = 4;
+/// Largest script handed to the webview at once (a call result, an event, a dev log line).
+pub const MAX_SCRIPT_BYTES: usize = 32 << 20;
+
+/// Concurrent command calls: the CPU cores, at most `MAX_WORKERS`.
+fn worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map_or(2, |n| n.get())
+        .min(MAX_WORKERS)
+}
+
+#[cfg(test)]
+/// Most simulation memory one call may use under `l`.
+fn call_bytes(l: lang::Limits) -> u64 {
+    let sv = l
+        .max_state_vector_qubits
+        .map_or(qxide::DEFAULT_MEMORY_LIMIT, |n| 16u64 << n);
+    sv.max(l.stabilizer_bytes)
+}
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// A fixed pool of worker threads (each with the interpreter's large stack) fed from a queue.
+/// Waiting calls are queued closures, not threads.
+struct Workers {
+    queue: Mutex<VecDeque<Job>>,
     cv: Condvar,
 }
 
-impl Slots {
-    fn acquire(&self) {
-        let mut n = self.free.lock().unwrap();
-        while *n == 0 {
-            n = self.cv.wait(n).unwrap();
+impl Workers {
+    fn new(n: usize) -> Result<Arc<Workers>, String> {
+        let w = Arc::new(Workers {
+            queue: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+        });
+        let mut started = 0;
+        for _ in 0..n.max(1) {
+            let me = w.clone();
+            let spawned = std::thread::Builder::new()
+                .stack_size(LANG_STACK)
+                .spawn(move || me.work());
+            started += usize::from(spawned.is_ok());
         }
-        *n -= 1;
+        if started == 0 {
+            return Err(msg::no_workers());
+        }
+        Ok(w)
     }
 
-    fn release(&self) {
-        *self.free.lock().unwrap() += 1;
+    fn work(&self) {
+        loop {
+            let job = {
+                let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    match q.pop_front() {
+                        Some(job) => break job,
+                        None => q = self.cv.wait(q).unwrap_or_else(|e| e.into_inner()),
+                    }
+                }
+            };
+            // A panicking call must not end the worker (its slot would be lost for good).
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+        }
+    }
+
+    fn submit(&self, job: Job) {
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(job);
         self.cv.notify_one();
     }
 }
@@ -154,7 +210,7 @@ impl Slots {
 struct Shared {
     app: App,
     proxy: EventLoopProxy<UserEvent>,
-    slots: Slots,
+    workers: Arc<Workers>,
     // In-flight calls by (page token, call id), for cancellation.
     calls: Mutex<HashMap<(String, u64), Arc<AtomicBool>>>,
 }
@@ -166,24 +222,47 @@ struct Reply {
     id: u64,
 }
 
-fn settle(proxy: &EventLoopProxy<UserEvent>, to: &Reply, ok: bool, json: &str) {
+/// The page script that settles call `to` with `json`. A result too large to hand to the webview
+/// rejects the call with Q0716 instead.
+fn settle_script(to: &Reply, ok: bool, json: &str) -> String {
     let mut page = String::new();
     command::json_str(&mut page, &to.page);
-    let _ = proxy.send_event(UserEvent::Eval(format!(
-        "window.__qxide_settle && window.__qxide_settle({page},{},{ok},{json});",
-        to.id
-    )));
+    let script = |ok: bool, json: &str| {
+        format!(
+            "window.__qxide_settle && window.__qxide_settle({page},{},{ok},{json});",
+            to.id
+        )
+    };
+    if json.len() + page.len() + 128 <= MAX_SCRIPT_BYTES {
+        return script(ok, json);
+    }
+    script(
+        false,
+        &app_error_json(
+            "Q0716",
+            &msg::result_too_large(json.len(), MAX_SCRIPT_BYTES),
+        ),
+    )
 }
 
-fn reject_app(proxy: &EventLoopProxy<UserEvent>, id: &Reply, code: &str, message: String) {
+/// A `QxError` without source diagnostics.
+fn app_error_json(code: &str, message: &str) -> String {
     let mut s = String::from("{\"code\":");
     command::json_str(&mut s, code);
     s.push_str(",\"message\":");
-    command::json_str(&mut s, &message);
+    command::json_str(&mut s, message);
     s.push_str(",\"diagnostics\":[],\"rendered\":");
     command::json_str(&mut s, &format!("error[{code}]: {message}\n"));
     s.push('}');
-    settle(proxy, id, false, &s);
+    s
+}
+
+fn settle(proxy: &EventLoopProxy<UserEvent>, to: &Reply, ok: bool, json: &str) {
+    let _ = proxy.send_event(UserEvent::Eval(settle_script(to, ok, json)));
+}
+
+fn reject_app(proxy: &EventLoopProxy<UserEvent>, id: &Reply, code: &str, message: String) {
+    settle(proxy, id, false, &app_error_json(code, &message));
 }
 
 fn js_arg(v: &Value) -> JsArg {
@@ -245,26 +324,25 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
     match kind {
         "cancel" => {
             if let Some(t) = m.get("target").and_then(Value::as_u64) {
-                if let Some(flag) = shared.calls.lock().unwrap().get(&(id.page.clone(), t)) {
+                if let Some(flag) = lock(&shared.calls).get(&(id.page.clone(), t)) {
                     flag.store(true, Ordering::Relaxed);
                 }
             }
         }
         "commands" => {
-            let shared = shared.clone();
-            spawn(move || {
-                let app = &shared.app;
-                let r = with_input(app, |input| {
-                    command::signatures(input, &app.module, &app.commands)
+            let s = shared.clone();
+            shared.workers.submit(Box::new(move || {
+                let shared = s;
+                let r = guarded(|| {
+                    let app = &shared.app;
+                    with_input(app, |input| {
+                        command::signatures(input, &app.module, &app.commands)
+                            .map(|sigs| command::signatures_json(&sigs))
+                            .map_err(|e| e.to_json())
+                    })
                 });
-                match r {
-                    Ok(Ok(sigs)) => {
-                        settle(&shared.proxy, &id, true, &command::signatures_json(&sigs))
-                    }
-                    Ok(Err(e)) => settle(&shared.proxy, &id, false, &e.to_json()),
-                    Err(e) => reject_app(&shared.proxy, &id, "Q0412", e),
-                }
-            });
+                answer(&shared.proxy, &id, r);
+            }));
         }
         _ => {
             let command = m
@@ -293,29 +371,49 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
             };
             let flag = Arc::new(AtomicBool::new(false));
             let key = (id.page.clone(), id.id);
-            shared
-                .calls
-                .lock()
-                .unwrap()
-                .insert(key.clone(), flag.clone());
-            let shared = shared.clone();
-            spawn(move || {
-                shared.slots.acquire();
-                let r = run_call(&shared, &command, &args, shots, seed, flag);
-                shared.slots.release();
-                shared.calls.lock().unwrap().remove(&key);
-                match r {
-                    Ok(Ok(json)) => settle(&shared.proxy, &id, true, &json),
-                    Ok(Err(json)) => settle(&shared.proxy, &id, false, &json),
-                    Err(e) => reject_app(&shared.proxy, &id, "Q0412", e),
+            {
+                let mut calls = lock(&shared.calls);
+                // A reused call id would replace the cancel flag of the call still running.
+                if calls.contains_key(&key) {
+                    drop(calls);
+                    reject_app(&shared.proxy, &id, "Q0712", msg::bad_message());
+                    return;
                 }
-            });
+                calls.insert(key.clone(), flag.clone());
+            }
+            let s = shared.clone();
+            shared.workers.submit(Box::new(move || {
+                let shared = s;
+                let r = guarded(|| run_call(&shared, &command, &args, shots, seed, flag));
+                lock(&shared.calls).remove(&key);
+                answer(&shared.proxy, &id, r);
+            }));
         }
     }
 }
 
-fn spawn(f: impl FnOnce() + Send + 'static) {
-    let _ = std::thread::Builder::new().stack_size(LANG_STACK).spawn(f);
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Runs a call; a panic becomes an internal error (Q0412) so the page's Promise still settles.
+fn guarded(
+    f: impl FnOnce() -> Result<Result<String, String>, String>,
+) -> Result<Result<String, String>, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(msg::call_panicked()))
+}
+
+fn answer(
+    proxy: &EventLoopProxy<UserEvent>,
+    id: &Reply,
+    r: Result<Result<String, String>, String>,
+) {
+    match r {
+        Ok(Ok(json)) => settle(proxy, id, true, &json),
+        Ok(Err(json)) => settle(proxy, id, false, &json),
+        Err(e) => reject_app(proxy, id, "Q0412", e),
+    }
 }
 
 /// Builds the `Input` for the command module (re-read on every call, so dev edits apply).
@@ -355,6 +453,18 @@ fn run_call(
         flag,
         app.dev,
     );
+    call_app(app, name, args, shots, seed, &mut host)
+}
+
+/// Runs command `name` of `app` with `host`: the JSON result, or the JSON error.
+fn call_app(
+    app: &App,
+    name: &str,
+    args: &[(String, JsArg)],
+    shots: u64,
+    seed: u64,
+    host: &mut dyn lang::stdlib::Host,
+) -> Result<Result<String, String>, String> {
     with_input(app, |input| {
         let call = Call {
             module: &app.module,
@@ -363,9 +473,9 @@ fn run_call(
             args,
             shots,
             seed,
-            limits: lang::Limits::CLI,
+            limits: CALL_LIMITS,
         };
-        command::call(input, &call, &mut host)
+        command::call(input, &call, host)
             .map(|r| r.to_json())
             .map_err(|e| e.to_json())
     })
@@ -374,19 +484,19 @@ fn run_call(
 /// What the command line asks for.
 enum Start {
     Version,
-    App(App),
+    App(Box<App>),
 }
 
 /// Decides what to run from the arguments and the bytes of this executable.
 fn start(args: &[String], exe: impl FnOnce() -> Result<Vec<u8>, String>) -> Result<Start, String> {
     match args {
-        [] => App::from_exe(&exe()?).map(Start::App),
+        [] => App::from_exe(&exe()?).map(|a| Start::App(Box::new(a))),
         [flag, path] if flag == "--dev" => {
             // Security: only the bare runtime started by `qxide app dev` takes `--dev` (B-A3).
             if bundle::read(&exe()?) != Err(bundle::BundleError::Missing) {
                 return Err(msg::dev_refused());
             }
-            App::from_dev(std::path::Path::new(path)).map(Start::App)
+            App::from_dev(std::path::Path::new(path)).map(|a| Start::App(Box::new(a)))
         }
         [v] if v == "--version" => Ok(Start::Version),
         _ => Err(msg::usage()),
@@ -400,7 +510,7 @@ fn main() -> ExitCode {
             println!("qxide-app {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Ok(Start::App(a)) => a,
+        Ok(Start::App(a)) => *a,
         Err(e) => {
             eprintln!("qxide-app: {e}");
             return ExitCode::from(1);
@@ -425,14 +535,10 @@ fn run(app: App) -> Result<(), String> {
         .with_resizable(app.resizable)
         .build(&event_loop)
         .map_err(|e| e.to_string())?;
-    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
     let dev = app.dev;
     let shared = Arc::new(Shared {
         proxy: event_loop.create_proxy(),
-        slots: Slots {
-            free: Mutex::new(cores),
-            cv: Condvar::new(),
-        },
+        workers: Workers::new(worker_count())?,
         calls: Mutex::new(HashMap::new()),
         app,
     });
@@ -476,7 +582,7 @@ fn run(app: App) -> Result<(), String> {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         let quit = |cf: &mut ControlFlow| {
-            for flag in shared.calls.lock().unwrap().values() {
+            for flag in lock(&shared.calls).values() {
                 flag.store(true, Ordering::Relaxed);
             }
             *cf = ControlFlow::Exit;
@@ -508,10 +614,15 @@ mod tests {
 
     // A bundle as `qxide app build` writes it, with a dependency package next to the app.
     fn bundled(lib: &str) -> App {
+        let app = "import bell_utils.prepare;\n\npublic BitReg pair() {\n    QReg q = qreg(2);\n    prepare(q[0], q[1]);\n    return measure(q);\n}\n";
+        bundled_app(app, "pair", lib)
+    }
+
+    fn bundled_app(app: &str, command: &str, lib: &str) -> App {
         let manifest = serde_json::json!({
             "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": false,
             "title": "t", "identifier": "dev.qxide.app.test", "module": "app",
-            "commands": ["pair"], "permissions": ["log"],
+            "commands": [command], "permissions": ["log"],
             "width": 400, "height": 300, "resizable": true,
             "packages": [
                 {"name": "demo", "src": "pkg/0/demo/src", "deps": [1]},
@@ -524,7 +635,6 @@ mod tests {
             bundle::MANIFEST.to_string(),
             manifest.to_string().into_bytes(),
         );
-        let app = "import bell_utils.prepare;\n\npublic BitReg pair() {\n    QReg q = qreg(2);\n    prepare(q[0], q[1]);\n    return measure(q);\n}\n";
         files.insert("pkg/0/demo/src/app.qx".into(), app.as_bytes().to_vec());
         files.insert(
             "pkg/1/bell_utils/src/lib.qx".into(),
@@ -535,21 +645,89 @@ mod tests {
     }
 
     fn call(app: &App) -> Result<String, String> {
-        with_input(app, |input| {
-            let call = Call {
-                module: &app.module,
-                commands: &app.commands,
-                name: "pair",
-                args: &[],
-                shots: 200,
-                seed: 1,
-                limits: lang::Limits::CLI,
-            };
-            command::call(input, &call, &mut LogOnly::default())
-                .map(|r| r.to_json())
-                .map_err(|e| e.to_json())
-        })
-        .unwrap()
+        call_app(app, "pair", &[], 200, 1, &mut LogOnly::default()).unwrap()
+    }
+
+    // M-13: command calls run under the desktop app limits, not the CLI's 1 GiB state vector.
+    #[test]
+    fn app_calls_use_app_limits() {
+        let src = "public BitReg big() {\n    QReg q = qreg(25);\n    t(q[0]);\n    return measure(q);\n}\n";
+        let app = bundled_app(src, "big", "public void unused() {\n}\n");
+        let e = call_app(&app, "big", &[], 1, 0, &mut LogOnly::default())
+            .unwrap()
+            .unwrap_err();
+        assert!(e.contains("\"code\":\"Q0406\""), "{e}");
+        assert!(e.contains("desktop app limit"), "{e}");
+    }
+
+    // M-13: concurrent calls together stay within one memory budget.
+    #[test]
+    fn concurrent_calls_share_one_memory_budget() {
+        let total = worker_count() as u64 * call_bytes(CALL_LIMITS);
+        assert!(
+            total <= 1 << 30,
+            "{total} bytes across {} workers",
+            worker_count()
+        );
+    }
+
+    // M-13 (B-A7): calls waiting for a worker must not each hold a thread (64 MiB stack).
+    #[test]
+    fn queued_calls_do_not_hold_threads() {
+        use std::collections::HashSet;
+        use std::time::Duration;
+        let w = Workers::new(2).unwrap();
+        let ids = Arc::new(Mutex::new(HashSet::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..16 {
+            let (ids, tx) = (ids.clone(), tx.clone());
+            w.submit(Box::new(move || {
+                ids.lock().unwrap().insert(std::thread::current().id());
+                std::thread::sleep(Duration::from_millis(5));
+                tx.send(()).unwrap();
+            }));
+        }
+        for _ in 0..16 {
+            rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        }
+        let n = ids.lock().unwrap().len();
+        assert!(n <= 2, "16 queued calls used {n} threads");
+    }
+
+    // M-13 (B-A7): a call that panics must not take its worker slot with it.
+    #[test]
+    fn a_panicking_call_keeps_its_worker() {
+        use std::time::Duration;
+        let w = Workers::new(1).unwrap();
+        let (started, ran) = std::sync::mpsc::channel();
+        w.submit(Box::new(move || {
+            started.send(()).unwrap();
+            panic!("call panicked (expected by this test)");
+        }));
+        ran.recv_timeout(Duration::from_secs(20)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let (tx, rx) = std::sync::mpsc::channel();
+        w.submit(Box::new(move || tx.send(()).unwrap()));
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("worker lost after a panic");
+    }
+
+    // M-13: an oversized result is turned into a rejection instead of a huge page script.
+    #[test]
+    fn oversized_results_are_rejected_not_sent() {
+        let to = Reply {
+            page: "p".into(),
+            id: 7,
+        };
+        let big = format!("\"{}\"", "x".repeat(MAX_SCRIPT_BYTES));
+        let script = settle_script(&to, true, &big);
+        assert!(script.len() <= MAX_SCRIPT_BYTES, "{} bytes", script.len());
+        assert!(script.contains("\"Q0716\"") && script.contains(",7,false,"));
+        let small = settle_script(&to, true, "1");
+        assert!(small.ends_with("(\"p\",7,true,1);"), "{small}");
+        let e = host::emit_event("e", &"x".repeat(MAX_SCRIPT_BYTES)).unwrap_err();
+        assert_eq!(e.kind, lang::stdlib::StdErrorKind::Argument);
+        assert!(host::emit_event("e", "ok").is_ok());
     }
 
     #[test]

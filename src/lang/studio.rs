@@ -101,7 +101,7 @@ pub fn call(function: &str, args: &[HostValue], cancelled: &dyn Fn() -> bool) ->
                 &input(src),
                 shots as u64,
                 seed as u64,
-                Limits::CLI,
+                Limits::APP,
                 &mut host,
             );
             let logs: Vec<String> = host.logs.lines.iter().map(|l| quoted(l)).collect();

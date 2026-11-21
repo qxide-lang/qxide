@@ -29,6 +29,26 @@ pub fn emit_script(event: &str, payload: &str) -> String {
     s
 }
 
+/// The page script for a `std.app.emit` event or a dev log line, refused (Q0706) when it would be
+/// too large to hand to the webview.
+pub fn emit_event(event: &str, payload: &str) -> Result<String, StdError> {
+    // JSON escaping can grow text up to 6x (`\u0000`); check the cheap bound first.
+    let raw = event.len() + payload.len();
+    if raw <= crate::MAX_SCRIPT_BYTES / 6 {
+        return Ok(emit_script(event, payload));
+    }
+    if raw <= crate::MAX_SCRIPT_BYTES {
+        let script = emit_script(event, payload);
+        if script.len() <= crate::MAX_SCRIPT_BYTES {
+            return Ok(script);
+        }
+    }
+    Err(StdError::new(
+        StdErrorKind::Argument,
+        crate::msg::emit_too_large(crate::MAX_SCRIPT_BYTES),
+    ))
+}
+
 impl AppHost {
     pub fn new(
         data: std::path::PathBuf,
@@ -43,7 +63,9 @@ impl AppHost {
             eprintln!("{line}");
             // In `qxide app dev`, `qxide.on("log", ...)` sees the lines too.
             if dev {
-                let _ = log_proxy.send_event(UserEvent::Eval(emit_script("log", &line)));
+                if let Ok(js) = emit_event("log", &line) {
+                    let _ = log_proxy.send_event(UserEvent::Eval(js));
+                }
             }
         });
         let mut native = NativeStd::new(data, log);
@@ -97,10 +119,10 @@ impl Host for AppHost {
                 self.send(UserEvent::SetSize(w as u32, h as u32))
             }
             ("app", "close") => self.send(UserEvent::Close),
-            ("app", "emit") => self.send(UserEvent::Eval(emit_script(
-                &arg_str(&args, 0),
-                &arg_str(&args, 1),
-            ))),
+            ("app", "emit") => {
+                let js = emit_event(&arg_str(&args, 0), &arg_str(&args, 1))?;
+                self.send(UserEvent::Eval(js))
+            }
             ("qxide", f) => {
                 let native = &self.native;
                 crate::lang::studio::call(f, &args, &|| native.is_cancelled())

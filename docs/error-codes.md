@@ -2035,3 +2035,20 @@ To fix it, correct the `[app]` section in `qxide.toml` so that all keys have val
 [app]
 commands = ["measure_bell"]
 ```
+
+## Q0716: call result too large
+
+The desktop app runtime hands each call result to the page as one script, and it refuses results larger than 32 MiB. The call's `Promise` rejects with `Q0716` instead, so a command cannot stall or exhaust the webview with a huge reply. Large results usually come from many shots that each produce a different measurement record or `println` output, or from a long `String` return value.
+
+Erroneous code example:
+
+```js
+// `noise` measures 24 qubits; a million shots give hundreds of thousands of distinct records.
+await qxide.invoke("noise", {}, { shots: 1000000 });  // rejects with code Q0716
+```
+
+To fix it, request fewer shots, return less data (for example a summary computed in `.qx`), or split the work into several calls.
+
+```js
+await qxide.invoke("noise", {}, { shots: 1000 });
+```

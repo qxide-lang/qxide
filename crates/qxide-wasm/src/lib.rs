@@ -22,6 +22,7 @@ pub const MAX_SHOTS: u64 = 100_000;
 pub const LIMITS: lang::Limits = lang::Limits {
     max_state_vector_qubits: Some(MAX_STATE_VECTOR_QUBITS),
     stabilizer_bytes: STABILIZER_BYTES,
+    scope: lang::LimitScope::Playground,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

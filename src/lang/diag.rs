@@ -121,6 +121,7 @@ codes! {
     Cancelled => "Q0713",
     BadCommand => "Q0714",
     BadAppConfig => "Q0715",
+    ResultTooLarge => "Q0716",
 }
 
 #[derive(Debug, Clone)]

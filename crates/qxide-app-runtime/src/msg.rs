@@ -9,6 +9,29 @@ pub fn dev_refused() -> String {
         .into()
 }
 
+pub fn no_workers() -> String {
+    "could not start any worker thread for command calls".into()
+}
+
+pub fn call_panicked() -> String {
+    "the call stopped because of an internal error in the runtime; please report it".into()
+}
+
+pub fn result_too_large(bytes: usize, limit: usize) -> String {
+    format!(
+        "the result is {} MiB, more than the {} MiB a call can return to the page; return less data or request fewer shots",
+        bytes.div_ceil(1 << 20),
+        limit >> 20
+    )
+}
+
+pub fn emit_too_large(limit: usize) -> String {
+    format!(
+        "`app.emit` event and payload must be at most {} MiB",
+        limit >> 20
+    )
+}
+
 pub fn no_bundle() -> String {
     "no Qxide app attached to this executable; build one with `qxide app build` or run a project with `qxide app dev`".into()
 }

@@ -300,19 +300,46 @@ fn table_row(bits: &[bool], count: u64) -> String {
     format!("{}  {}{value}  ×{count}", fmt_array(bits), fmt_binary(bits))
 }
 
-/// Resource limits for `run`. The CLI uses `Limits::CLI`; the browser playground passes tighter ones.
+/// Resource limits for `run`. The CLI uses `Limits::CLI`, desktop apps `Limits::APP`; the browser
+/// playground passes its own.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     /// Most qubit slots the state-vector backend may simulate; `None` leaves it to the memory limit.
     pub max_state_vector_qubits: Option<usize>,
     /// Largest stabilizer tableau, in bytes.
     pub stabilizer_bytes: u64,
+    /// Where the limits apply, for the wording of the diagnostic.
+    pub scope: LimitScope,
 }
+
+// `Playground` is constructed only by crates/qxide-wasm.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitScope {
+    Cli,
+    Playground,
+    App,
+}
+
+/// State-vector qubits of one desktop-app call: 2^24 amplitudes, 256 MiB.
+pub const APP_STATE_VECTOR_QUBITS: usize = 24;
+/// Stabilizer tableau bytes of one desktop-app call.
+pub const APP_STABILIZER_BYTES: u64 = 256 << 20;
 
 impl Limits {
     pub const CLI: Limits = Limits {
         max_state_vector_qubits: None,
         stabilizer_bytes: DEFAULT_MEMORY_LIMIT,
+        scope: LimitScope::Cli,
+    };
+
+    /// Each call of a desktop app (commands and `std.qxide.run`); the runtime bounds how many
+    /// run at once, so the total stays within one budget.
+    #[allow(dead_code)]
+    pub const APP: Limits = Limits {
+        max_state_vector_qubits: Some(APP_STATE_VECTOR_QUBITS),
+        stabilizer_bytes: APP_STABILIZER_BYTES,
+        scope: LimitScope::App,
     };
 }
 
@@ -472,10 +499,20 @@ fn sample(
     let backend = e.circuit.select_backend();
     if let Some(limit) = limits.max_state_vector_qubits {
         if backend == Backend::StateVector && e.slots > limit {
-            let reason = msg::playground_qubit_limit(e.slots, limit);
+            let (reason, help) = if limits.scope == LimitScope::App {
+                (
+                    msg::app_qubit_limit(e.slots, limit),
+                    msg::help_app_qubit_limit(),
+                )
+            } else {
+                (
+                    msg::playground_qubit_limit(e.slots, limit),
+                    msg::help_playground_qubit_limit(),
+                )
+            };
             return Err(
                 Diagnostic::new(Code::Simulation, at, msg::simulation_failed(&reason))
-                    .with_help(msg::help_playground_qubit_limit()),
+                    .with_help(help),
             );
         }
     }

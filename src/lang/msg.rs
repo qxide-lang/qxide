@@ -254,6 +254,14 @@ pub fn help_playground_qubit_limit() -> String {
     "use fewer qubits, or install `qxide` to run locally with `qxide run` (no qubit cap); the QASM button still exports the circuit".into()
 }
 
+pub fn app_qubit_limit(qubits: usize, limit: usize) -> String {
+    format!("state-vector simulation of {qubits} qubits exceeds the desktop app limit of {limit} qubits per call")
+}
+
+pub fn help_app_qubit_limit() -> String {
+    "use fewer qubits, or run the program with `qxide run`, which has no qubit cap".into()
+}
+
 pub fn no_return(name: &str) -> String {
     format!("function `{name}` ended without returning a value")
 }

@@ -456,3 +456,25 @@ fn cancelling_stops_between_shots() {
     assert_eq!(e.code, "Q0713");
     let _ = Ret::Null;
 }
+
+// M-13: programs typed into Qxide Studio (`std.qxide.run`) run under the desktop app limits,
+// not the CLI's 1 GiB state vector.
+#[test]
+fn studio_runs_use_app_limits() {
+    let src = "void main() {\n    QReg q = qreg(25);\n    t(q[0]);\n    BitReg b = measure(q);\n    println(\"{}\", b);\n}\n";
+    let r = super::studio::call(
+        "run",
+        &[
+            HostValue::Str(src.into()),
+            HostValue::Int(1),
+            HostValue::Int(0),
+        ],
+        &|| false,
+    )
+    .unwrap();
+    let HostValue::Str(json) = r else {
+        panic!("std.qxide.run returns a String");
+    };
+    assert!(json.contains("\"Q0406\""), "{json}");
+    assert!(json.contains("desktop app limit"), "{json}");
+}
