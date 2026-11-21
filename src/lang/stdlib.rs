@@ -642,6 +642,28 @@ mod tests {
         let base = scratch("ba2");
         let outside = base.join("home");
         std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(windows)]
+        {
+            // A junction needs no privilege on Windows, so this part runs even without symlinks.
+            let jroot = base.join("jdata");
+            let ok = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&jroot)
+                .arg(&outside)
+                .output()
+                .is_ok_and(|o| o.status.success());
+            assert!(ok, "mklink /J failed");
+            let p = |v: &str| HostValue::Str(v.into());
+            let mut s = NativeStd::new(jroot.clone(), Box::new(|_, _| {}));
+            let e = s
+                .call("fs", "write_text", &[p("b.txt"), p("x")])
+                .unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Path);
+            assert!(
+                !outside.join("b.txt").exists(),
+                "write went through the junction"
+            );
+        }
         let root = base.join("data");
         if !symlink(&outside, &root, true) {
             return;
@@ -657,27 +679,6 @@ mod tests {
             !outside.join("a.txt").exists(),
             "write went through the root link"
         );
-        #[cfg(windows)]
-        {
-            // A junction needs no privilege on Windows.
-            let jroot = base.join("jdata");
-            let ok = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(&jroot)
-                .arg(&outside)
-                .output()
-                .is_ok_and(|o| o.status.success());
-            assert!(ok, "mklink /J failed");
-            let mut s = NativeStd::new(jroot.clone(), Box::new(|_, _| {}));
-            let e = s
-                .call("fs", "write_text", &[p("b.txt"), p("x")])
-                .unwrap_err();
-            assert_eq!(e.kind, StdErrorKind::Path);
-            assert!(
-                !outside.join("b.txt").exists(),
-                "write went through the junction"
-            );
-        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

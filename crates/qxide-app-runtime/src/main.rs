@@ -136,6 +136,8 @@ const CALL_LIMITS: lang::Limits = lang::Limits::APP;
 const MAX_WORKERS: usize = 4;
 /// Largest script handed to the webview at once (a call result, an event, a dev log line).
 pub const MAX_SCRIPT_BYTES: usize = 32 << 20;
+/// Longest page token accepted in a message.
+const MAX_PAGE_TOKEN: usize = 64;
 
 /// Concurrent command calls: the CPU cores, at most `MAX_WORKERS`.
 fn worker_count() -> usize {
@@ -291,6 +293,20 @@ fn random_seed() -> u64 {
     (z ^ (z >> 31)) >> 11 // within 2^53 so it round-trips through a JavaScript number
 }
 
+/// Where to answer a message: its call id and page token.
+fn reply_to(m: &serde_json::Map<String, Value>) -> Option<Reply> {
+    let n = m.get("id").and_then(Value::as_u64)?;
+    // Security: the token is echoed in every answer; the bridge's is about 14 characters.
+    let page = m
+        .get("page")
+        .and_then(Value::as_str)
+        .filter(|p| p.len() <= MAX_PAGE_TOKEN)?;
+    Some(Reply {
+        page: page.to_string(),
+        id: n,
+    })
+}
+
 /// One IPC message from the page. Unknown kinds or fields are rejected.
 fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
     if !same_origin(url) {
@@ -300,15 +316,8 @@ fn handle_ipc(shared: &Arc<Shared>, url: &str, body: &str) {
     let Ok(Value::Object(m)) = serde_json::from_str::<Value>(body) else {
         return;
     };
-    let (Some(n), Some(page)) = (
-        m.get("id").and_then(Value::as_u64),
-        m.get("page").and_then(Value::as_str),
-    ) else {
+    let Some(id) = reply_to(&m) else {
         return;
-    };
-    let id = Reply {
-        page: page.to_string(),
-        id: n,
     };
     let kind = m.get("kind").and_then(Value::as_str).unwrap_or("");
     let allowed: &[&str] = match kind {
@@ -725,6 +734,11 @@ mod tests {
         assert!(script.contains("\"Q0716\"") && script.contains(",7,false,"));
         let small = settle_script(&to, true, "1");
         assert!(small.ends_with("(\"p\",7,true,1);"), "{small}");
+        // The page token is echoed in every answer, so an oversized one is not answered at all.
+        let msg = serde_json::json!({"id": 1, "page": "x".repeat(MAX_SCRIPT_BYTES)});
+        assert!(reply_to(msg.as_object().unwrap()).is_none());
+        let msg = serde_json::json!({"id": 1, "page": "abc123"});
+        assert!(reply_to(msg.as_object().unwrap()).is_some());
         let e = host::emit_event("e", &"x".repeat(MAX_SCRIPT_BYTES)).unwrap_err();
         assert_eq!(e.kind, lang::stdlib::StdErrorKind::Argument);
         assert!(host::emit_event("e", "ok").is_ok());
