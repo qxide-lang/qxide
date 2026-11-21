@@ -187,7 +187,8 @@ export function Playground() {
           setQasm(null);
           setNotice('');
           if (shared.shots && validShots(shared.shots)) setShots(shared.shots);
-          if (shared.seed && validSeed(shared.seed)) setSeed(shared.seed);
+          // A link without a seed means a random seed per run, not the seed typed before.
+          setSeed(shared.seed && validSeed(shared.seed) ? shared.seed : '');
         })
         .catch(() => {
           if (!live) return;
@@ -447,7 +448,7 @@ export function Playground() {
                 <code>$ {finished.echo}</code>
               </p>
             )}
-            {finished?.randomSeed && finished.seed && (
+            {finished?.randomSeed && finished.seed && outcome?.exit === 0 && (
               <p className="pg-seed-note">
                 {fill("Ran with random seed {seed}; enter it in the Seed field or use Copy link to reproduce this run.", {seed: finished.seed})}
               </p>
