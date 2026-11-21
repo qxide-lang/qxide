@@ -56,7 +56,7 @@ enum Idx {
 
 // Why a function cannot be called inside an `if` on a `Bit`: its body would run conditionally,
 // and qxide's conditional blocks only record gates and `reset`.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 enum Unconditional {
     Consume(String),
     ReturnsQuantum(Ty),
@@ -280,25 +280,7 @@ impl Checker {
             }
             edges.push((f.name.name.clone(), scan.calls));
         }
-        loop {
-            let mut changed = false;
-            for (name, calls) in &edges {
-                if self.unconditional.contains_key(name) {
-                    continue;
-                }
-                let hit = calls
-                    .iter()
-                    .find(|(callee, _)| self.unconditional.contains_key(callee));
-                if let Some((callee, at)) = hit {
-                    let why = Unconditional::Calls(callee.clone());
-                    self.unconditional.insert(name.clone(), (*at, why));
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
+        propagate(&edges, &mut self.unconditional);
     }
 
     fn function(&mut self, f: &FnDecl) {
@@ -1275,6 +1257,58 @@ impl Checker {
     }
 }
 
+type Edges = [(String, Vec<(String, Span)>)];
+
+// Marks every function that calls a marked one, recording the call that the sweep
+// `until no change { for f in declaration order, if unmarked: mark at its first call to a
+// marked function }` would record. Running that sweep takes one pass per link of a chain
+// declared callers first, which is quadratic. Instead, each function's marking time
+// (pass, declaration index) is computed with Dijkstra over reverse call edges: in pass q, the
+// function at index e sees a callee marked at an earlier time, which is in pass q - 1 or
+// before, or in pass q at a smaller index. Pass 0 holds the functions marked beforehand.
+fn propagate(edges: &Edges, marked: &mut HashMap<String, (Span, Unconditional)>) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let mut callers: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (e, (_, calls)) in edges.iter().enumerate() {
+        for (callee, _) in calls {
+            callers.entry(callee.as_str()).or_default().push(e);
+        }
+    }
+    let mut time: HashMap<&str, (usize, usize)> = HashMap::new();
+    let mut heap = BinaryHeap::new();
+    let reached = |name: &str, (pass, at): (usize, usize), heap: &mut BinaryHeap<_>| {
+        for &e in callers.get(name).into_iter().flatten() {
+            let q = match pass {
+                0 => 1,
+                _ if at < e => pass,
+                _ => pass + 1,
+            };
+            heap.push(Reverse((q, e)));
+        }
+    };
+    for (name, _) in edges {
+        if marked.contains_key(name) && !time.contains_key(name.as_str()) {
+            time.insert(name, (0, 0));
+            reached(name, (0, 0), &mut heap);
+        }
+    }
+    while let Some(Reverse(t)) = heap.pop() {
+        let (name, calls) = &edges[t.1];
+        if time.contains_key(name.as_str()) {
+            continue;
+        }
+        let hit = calls
+            .iter()
+            .find(|(callee, _)| time.get(callee.as_str()).is_some_and(|&c| c < t));
+        // The pushing callee was marked before `t`, so some call is always found.
+        let Some((callee, at)) = hit else { continue };
+        marked.insert(name.clone(), (*at, Unconditional::Calls(callee.clone())));
+        time.insert(name, t);
+        reached(name, t, &mut heap);
+    }
+}
+
 // Whether two operands can be the same qubit: a whole variable overlaps any of its elements;
 // dynamic indices are left to the runtime check.
 fn overlaps(a: (usize, Idx), b: (usize, Idx)) -> bool {
@@ -1290,5 +1324,75 @@ fn note(span: Span, message: String) -> super::diag::Note {
     super::diag::Note {
         span: Some(span),
         message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The sweep `propagate` replaces, kept as the reference for the differential test.
+    fn sweep(edges: &Edges, marked: &mut HashMap<String, (Span, Unconditional)>) {
+        loop {
+            let mut changed = false;
+            for (name, calls) in edges {
+                if marked.contains_key(name) {
+                    continue;
+                }
+                let hit = calls.iter().find(|(callee, _)| marked.contains_key(callee));
+                if let Some((callee, at)) = hit {
+                    let why = Unconditional::Calls(callee.clone());
+                    marked.insert(name.clone(), (*at, why));
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn propagate_records_what_the_sweep_records() {
+        // Random call graphs with several callees per function, cycles, self-calls, duplicate
+        // names, calls to undefined names, and both declaration orders.
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % m) as usize
+        };
+        for round in 0..3000 {
+            let names = 1 + next(12);
+            let fns = 1 + next(16);
+            let mut span = 0;
+            let mut edges = Vec::new();
+            for _ in 0..fns {
+                let calls = (0..next(5))
+                    .map(|_| {
+                        span += 1;
+                        // Names past `names` are never defined.
+                        let at = Span {
+                            start: span,
+                            end: span,
+                        };
+                        (format!("f{}", next(names as u64 + 2)), at)
+                    })
+                    .collect();
+                edges.push((format!("f{}", next(names as u64)), calls));
+            }
+            let mut direct = HashMap::new();
+            for (name, _) in &edges {
+                if next(4) == 0 {
+                    let why = (Span::default(), Unconditional::Op("println".into()));
+                    direct.entry(name.clone()).or_insert(why);
+                }
+            }
+            let (mut want, mut got) = (direct.clone(), direct);
+            sweep(&edges, &mut want);
+            propagate(&edges, &mut got);
+            assert_eq!(got, want, "round {round}: {edges:?}");
+        }
     }
 }
