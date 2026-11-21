@@ -339,6 +339,15 @@ fn freshness_checks_the_whole_graph() {
         a.dependencies.push("app".into());
     });
     assert!(!fresh(&m, &renamed, URL, &reg));
+    // Self-dependencies are stale even where the requirements are not known locally.
+    assert!(resolve::is_fresh(&m, &lock, URL, &mut |_| None));
+    for target in ["a", "app"] {
+        let cyclic = edit(&|l| pkg(l, "a").dependencies.push(target.into()));
+        assert!(
+            !resolve::is_fresh(&m, &cyclic, URL, &mut |_| None),
+            "{target}"
+        );
+    }
 }
 
 #[test]
@@ -426,6 +435,13 @@ fn resolution_errors_have_codes() {
         code("a = \"1\"\nb = \"1\"\n", &mut reg),
         Code::VersionConflict
     );
+    // A registry package that depends on itself (design §7: Q0606), directly or as a dependency.
+    let mut selfish = registry(vec![
+        entry("s", "1.0.0", &[("s", "^1")]),
+        entry("t", "1.0.0", &[("s", "^1")]),
+    ]);
+    assert_eq!(code("s = \"1\"\n", &mut selfish), Code::VersionConflict);
+    assert_eq!(code("t = \"1\"\n", &mut selfish), Code::VersionConflict);
     let mut newer = entry("d", "1.0.0", &[]);
     newer.qxide = Some(VersionReq::parse(">=9").unwrap());
     let mut reg = registry(vec![newer]);

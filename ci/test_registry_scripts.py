@@ -214,6 +214,11 @@ class ValidateEntries(unittest.TestCase):
                 reg.add("evil", vers, archive=False, **over)
                 self.assert_rejected(reg, "index/ev/il/evil:2")
 
+    def test_self_dependency(self):
+        reg = Registry(self)
+        reg.add("evil", "1.0.0", deps=[{"name": "evil", "req": "^1"}])
+        self.assert_rejected(reg, "evil 1.0.0")
+
     def test_download_locations(self):
         for dl in [
             "file:///C:/Windows/win.ini",

@@ -42,6 +42,7 @@ WINDOWS_INVALID = set('<>:"/\\|?*')
 ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 INVALID_VALUE = "`{key}` has invalid value {value}"
 CONFIG_LOCKED = "cannot be modified in a pull request"
+SELF_DEPENDENCY = "cannot depend on itself"
 
 errors: list[str] = []
 summary: list[str] = []
@@ -438,6 +439,8 @@ def main() -> int:
     for name, entries in names.items():
         for entry in entries:
             for d in entry["deps"]:
+                if d["name"] == name:
+                    error(f"{name} {entry['vers']}", SELF_DEPENDENCY)
                 if d["name"] not in names:
                     error(f"{name} {entry['vers']}", f"dependency `{d['name']}` is not in the registry")
 

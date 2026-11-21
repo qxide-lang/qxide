@@ -155,6 +155,12 @@ impl<'a> Resolver<'a> {
         let mut seen = vec![self.root.name.clone()];
         while let Some((from, deps)) = queue.pop() {
             for (name, req, path) in deps {
+                if name == from {
+                    return Err(Error::new(
+                        Code::VersionConflict,
+                        msg::depends_on_itself(&name),
+                    ));
+                }
                 let need = needs.entry(name.clone()).or_insert(Need {
                     reqs: Vec::new(),
                     path: None,
@@ -417,6 +423,14 @@ pub fn is_fresh(root: &Manifest, lock: &Lock, registry_url: &str, deps_of: &mut 
         i += 1;
     }
     if lock.packages.iter().any(|p| !reachable.contains(&p.name)) {
+        return false;
+    }
+    // Resolution refuses a package that depends on itself or on the root.
+    let cyclic = |p: &LockedPackage| {
+        p.dependencies.contains(&p.name)
+            || (p.source != Source::Root && p.dependencies.contains(&r.name))
+    };
+    if lock.packages.iter().any(cyclic) {
         return false;
     }
     // Every requirement edge, as (dependency, requirement, path relative to the project root).
