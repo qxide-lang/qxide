@@ -214,6 +214,39 @@ class ValidateEntries(unittest.TestCase):
                 reg.add("evil", vers, archive=False, **over)
                 self.assert_rejected(reg, "index/ev/il/evil:2")
 
+    def test_json_the_client_rejects(self):
+        # src/pkg/tests.rs `index_json_is_strict` checks that the client rejects the same lines.
+        deep = "[" * 130 + "]" * 130
+        # Spots the other checks accept: a description, and extra keys inside a dependency.
+        for old, new in [
+            ('"description": "d"', '"description": "\\ud800"'),
+            ('"req": "1"}', '"req": "1", "x": NaN}'),
+            ('"req": "1"}', f'"req": "1", "x": {deep}}}'),
+        ]:
+            with self.subTest(new=new[:40]):
+                reg = Registry(self)
+                reg.add("other", "1.0.0")
+                reg.add("evil", "1.0.0")
+                reg.add("evil", "1.0.1", deps=[{"name": "other", "req": "1"}])
+                index = reg.root / "index" / "ev" / "il" / "evil"
+                text = index.read_bytes().decode("utf-8")
+                lines = text.split("\n")
+                self.assertIn(old, lines[1])
+                lines[1] = lines[1].replace(old, new)
+                index.write_bytes("\n".join(lines).encode("utf-8"))
+                self.assert_rejected(reg, "index/ev/il/evil:2")
+
+    def test_only_newline_ends_a_line(self):
+        for sep in ["\x0c", "\r", "\x1c", " "]:
+            with self.subTest(sep=repr(sep)):
+                reg = Registry(self)
+                reg.add("evil", "1.0.0")
+                reg.add("evil", "1.0.1")
+                index = reg.root / "index" / "ev" / "il" / "evil"
+                text = index.read_bytes().decode("utf-8").rstrip("\n").replace("\n", sep) + "\n"
+                index.write_bytes(text.encode("utf-8"))
+                self.assert_rejected(reg, "index/ev/il/evil:1")
+
     def test_self_dependency(self):
         reg = Registry(self)
         reg.add("evil", "1.0.0", deps=[{"name": "evil", "req": "^1"}])

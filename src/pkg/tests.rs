@@ -186,11 +186,27 @@ fn index_lines_the_client_cannot_use_are_skipped() {
 }
 
 #[test]
+fn index_json_is_strict() {
+    // validate.py rejects the same lines (ci/test_registry_scripts.py).
+    let line = entry("evil", "1.0.0", &[]).to_json();
+    let with = |extra: &str| line.replacen('{', &format!("{{{extra},"), 1);
+    assert!(Entry::parse(&with("\"description\":\"\\ud800\"")).is_err());
+    assert!(Entry::parse(&with("\"x\":NaN")).is_err());
+    let deep = "[".repeat(130) + &"]".repeat(130);
+    assert!(Entry::parse(&with(&format!("\"x\":{deep}"))).is_err());
+    // Only `\n` ends a line: two entries joined by a form feed are one unusable line.
+    let dir = tmp_dir("formfeed");
+    let other = entry("evil", "1.1.0", &[]).to_json();
+    let reg = dir_registry(&dir, "evil", &[format!("{line}\u{c}{other}")]);
+    assert_eq!(reg.entries("evil").unwrap_err().code, Code::InvalidIndex);
+}
+
+#[test]
 fn curl_results_need_a_clean_exit() {
     use index::{fetched, Fetched};
     assert_eq!(fetched(true, "200"), Fetched::Body);
     assert_eq!(fetched(true, "404"), Fetched::NotFound);
-    assert_eq!(fetched(false, "404"), Fetched::NotFound);
+    assert_eq!(fetched(false, "404"), Fetched::Failed);
     // Exit 18 (partial file) and similar failures after a 200 status line.
     assert_eq!(fetched(false, "200"), Fetched::Failed);
     for code in ["000", "500", "403", "", "200 "] {
@@ -664,13 +680,21 @@ fn archive_paths_must_be_portable_and_unique() {
     assert!(archive::check_paths(["qxide.toml", "src/lib.qx", "src/lib/x.qx"]).is_ok());
 }
 
-#[cfg(unix)]
 #[test]
 fn publishing_skips_symlinked_top_level_files() {
     let dir = tmp_dir("symlink");
     let m = write_package(&dir.join("pkg"));
     std::fs::write(dir.join("secret"), "do not ship").unwrap();
-    std::os::unix::fs::symlink(dir.join("secret"), m.dir.join("LICENSE")).unwrap();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(dir.join("secret"), m.dir.join("LICENSE"));
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(dir.join("secret"), m.dir.join("LICENSE"));
+    #[cfg(not(any(unix, windows)))]
+    let linked: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
+    if linked.is_err() {
+        // Windows without Developer Mode or admin rights cannot create symlinks.
+        return;
+    }
     let files: Vec<String> = archive::package_files(&m)
         .unwrap()
         .into_iter()

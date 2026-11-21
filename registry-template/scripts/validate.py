@@ -368,11 +368,39 @@ def git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True, text=True).stdout
 
 
+def index_lines(data: bytes) -> list[str]:
+    """Same split as Rust's `str::lines` in the client: on `\\n` only, minus one trailing `\\r`."""
+    lines = data.decode("utf-8").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [l[:-1] if l.endswith("\r") else l for l in lines]
+
+
+def _reject_constant(name: str):
+    raise ValueError(name)
+
+
+def _depth(value, level: int = 1) -> int:
+    if isinstance(value, dict):
+        return max([level] + [_depth(v, level + 1) for v in value.values()])
+    if isinstance(value, list):
+        return max([level] + [_depth(v, level + 1) for v in value])
+    return level - 1
+
+
+def strict_json(line: str):
+    """json.loads limited to what serde_json (the client) accepts; raises ValueError otherwise."""
+    value = json.loads(line, parse_constant=_reject_constant)
+    # serde_json rejects lone surrogates (`"\\ud800"`) and nesting deeper than 128 levels.
+    json.dumps(value, ensure_ascii=False).encode("utf-8")
+    if _depth(value) > 100:
+        raise ValueError(f"depth {_depth(value)}")
+    return value
+
+
 def base_lines(base: str, rel: str) -> list[str]:
-    try:
-        return git("show", f"{base}:{rel}").splitlines()
-    except subprocess.CalledProcessError:
-        return []
+    r = subprocess.run(["git", "-C", str(ROOT), "show", f"{base}:{rel}"], capture_output=True)
+    return index_lines(r.stdout) if r.returncode == 0 else []
 
 
 def squash(name: str) -> str:
@@ -399,13 +427,13 @@ def main() -> int:
             error(rel, f"index files live at index/{prefix(name)}/{name} and use valid package names")
             continue
         entries, seen = [], set()
-        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for i, line in enumerate(index_lines(path.read_bytes()), 1):
             if not line.strip():
                 continue
             where = f"{rel}:{i}"
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as e:
+                entry = strict_json(line)
+            except ValueError as e:
                 error(where, f"invalid JSON: {e}")
                 continue
             if not check_entry(where, entry, name):

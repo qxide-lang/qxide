@@ -460,7 +460,7 @@ pub enum Fetched {
 /// but exits non-zero (18) with a truncated file.
 pub fn fetched(exit_ok: bool, http_code: &str) -> Fetched {
     match http_code {
-        "404" => Fetched::NotFound,
+        "404" if exit_ok => Fetched::NotFound,
         "200" if exit_ok => Fetched::Body,
         _ => Fetched::Failed,
     }

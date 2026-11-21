@@ -34,7 +34,9 @@ def main() -> None:
     root = Path(parser.parse_args().root)
     packages = []
     for path in sorted(p for p in (root / "index").rglob("*") if p.is_file() and p.name != ".gitkeep"):
-        entries = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        # Split on `\n` only, like the client (not on `\r`, `\f` or other line breaks).
+        text = path.read_bytes().decode("utf-8")
+        entries = [json.loads(l) for l in text.split("\n") if l.strip()]
         live = [e for e in entries if not e.get("yanked") and key(e.get("vers")) is not None]
         if not live:
             continue
