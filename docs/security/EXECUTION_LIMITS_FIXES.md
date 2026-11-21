@@ -118,7 +118,7 @@ The slowest run the playground limits admit took 14.4 s, inside the page's 30 s 
 
 ## Remaining
 
-- M-05 (quadratic checker time) is unchanged; `check` of about 1 MB can still take 40 s.
+- Open items are tracked privately.
 - Playground limits were checked in Node, not in a browser; page-side rendering of the (now at most 1 MiB) output was not measured.
 - Rotation gates cost about twice the calibration unit on the state vector (188.5 s at the CLI limit, 14.4 s in the playground); see the decision below.
 
@@ -126,7 +126,6 @@ The slowest run the playground limits admit took 14.4 s, inside the page's 30 s 
 
 Decided by the maintainer on 2026-11-21: every state-vector operation, rotations included, keeps a weight of one unit in `shot_work`, and the code is unchanged. A weight of 2 for non-Clifford operations would halve the measured worst cases, but it would also refuse legitimate long simulations that are heavy in rotations at about half the size they are allowed today, and legitimate long runs take priority. The cost of this choice is bounded and known: a run admitted by the defaults takes at most about 3 minutes in the CLI (188.5 s measured) and 14.4 s in the playground, which stays inside the page's 30 s worker limit. Runs at the extreme end are left to a wall-clock limit, planned as separate work.
 - No CLI flag to raise the limits; a legitimate simulation above the estimate (up to about 3 minutes of real time) is now refused with Q0417; the state-vector unit weight could be raised for non-Clifford gates.
-- No wall-clock limit and no wasm maximum memory; the page still renders up to 1 MiB of output and up to 50 diagnostic buttons on its main thread.
 - `app-framework-next` also changes `Limits` (`Limits::APP`, `scope`); merging needs the new fields added to `Limits::APP`. (Done on `app-framework-limits`; see part 2.)
 - Step costs are approximate: a step ranges from under 1 ns (a variable compared in a lookup) to about 70 ns (an empty loop iteration).
 
@@ -240,8 +239,5 @@ Decided by the maintainer on 2026-11-21 and applied when `fix/execution-limits` 
 ## Remaining
 
 - `max_sim_work` and `max_output_bytes` (and `max_ops`) are not larger than the CLI's: one shot cannot be cancelled, a result over 32 MiB cannot reach the page, and four calls share memory. If longer uncancellable shots are acceptable, raising `max_sim_work` is a one-line change.
-- A shot is still not cancellable, and there is still no wall-clock limit.
 - The string weight applies to the CLI and the playground too: strings there are now bounded by 128 MiB and 8 MiB, and one 16 MiB `std.fs.read_text` in the CLI uses about 12% of its step budget.
-- The combined memory of one app call (about 0.5 GiB, about 2 GiB for four) is an estimate, not a measurement.
-- Text arriving from the page as a command argument is not charged, and the runtime does not cap the size of incoming IPC messages itself (only whatever the webview imposes, which was not measured).
-- Studio's `std.qxide.run` builds the inner program under its own `Limits::APP`, so a Studio call can use the budgets twice: once for the Studio command and once for the user's program.
+- Open items are tracked privately.

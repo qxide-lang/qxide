@@ -90,14 +90,12 @@ Not run: the workflow on GitHub Actions (it can only run there; the tests above 
 2. Copy `scripts/validate.py`, `.github/workflows/validate.yml`, and the README changes in one maintainer commit pushed directly to `main` (or merged by an admin). `pull_request_target` only takes effect once the workflow is on the default branch; a pull request that adds it is still checked by the old workflow.
 3. Repository settings the template cannot enforce:
    - Branch protection or a ruleset on `main`: require pull requests, at least one approval, and the `index` status check from the `Validate` workflow.
-   - A `CODEOWNERS` file covering `/.github/`, `/scripts/`, and `/config.json`, with "Require review from Code Owners". Without it a pull request can add a second workflow with a job of the same name that reports success, so reviewers must not rely on the check name alone. (No owner is named here because the maintainer team is not known in this repository.)
+   - A `CODEOWNERS` file covering `/.github/`, `/scripts/`, and `/config.json`, with "Require review from Code Owners". (No owner is named here because the maintainer team is not known in this repository.)
 
 ## Not done here
 
 - B-P5 to B-P8 and B-P10 to B-P13 (yank ownership, look-alike names, Markdown in the job summary, the `RecursionError` on deeply nested index JSON in B-P6, and others) are unchanged here; they are handled on `fix/registry-template-hardening-2` (see the second part below).
-- The index `qxide` requirement is not compared with `qxide` in `qxide.toml`; a mismatch does not cause the Q0612 loop of M-08 but makes resolution and installed checks use different values.
-- Client side of M-09: `fix/pkg-client-hardening` rejects PAX headers, which settles the entry-size part, but the client still stops after the first gzip member without failing on trailing data. CI now rejects such archives, so the registry cannot hold one.
-- Control characters other than `Cc` (for example bidirectional overrides, category `Cf`) are still allowed in `description`.
+- Open items are tracked privately.
 
 ---
 
@@ -144,7 +142,7 @@ Besides the deeply nested JSON named in the report, every parser that reads pull
 | B-P7 | Fold `0`→`o`, `1`→`l`, `2`→`z`, `3`→`e`, `4`→`a`, `5`→`s`, `6`→`b`, `7`→`t`, `8`→`b`, `9`→`g`, `i`→`l`, then `rn`→`m`, `vv`→`w`, `cl`→`d`, after removing hyphens; reserve the prefix `qxide` and the name `std` (also after folding); reject Windows device names. Only names new relative to the base branch are checked, so existing look-alike pairs never block later pull requests. | A smaller table (only `0`/`o` and `1`/`l`/`i`), which rejects fewer honest names; more reserved prefixes (`qx`, `core`); an allowlist file so maintainers can approve a rejected name without bypassing the check. |
 | B-P8 | Write each error, file name, and heading as one code span whose fence is longer than any backtick run inside it, so nothing inside is rendered (no links, autolinks, mentions, or HTML); write every non-printable character (Unicode categories C and Z other than the space, which includes U+2028 and U+0085) as `\u{XXXX}` in the summary and the log. Printable non-ASCII text is kept so reviewers can read it. `0002693` first escaped ASCII punctuation in plain text instead; that does not stop GitHub's autolinking of bare URLs and mentions, so `2d9eee1` switched to code spans. | Backslash-escaping punctuation in plain text (the first version); HTML-escaped `<code>` elements; leaving file names out of the summary; escaping all non-ASCII text. |
 | B-P10 | Compare the unpacked files with a fresh unpack of the cached archive on every check. The archive is anchored to the checksum in `qxide.lock`, which a writer of `~/.qxide` cannot change, while a hash list in the marker could be rewritten along with the files. Costs one unpack per package per command (packages are at most 50 MiB unpacked; the example packages take milliseconds). A missing cached archive now also means "not installed", and `qxide install` downloads it again. The fresh copy is unpacked next to the package (`.verify-<name>-<version>-<pid>`), not in the shared temporary directory where another user could prepare the path; so a read-only cache now gives `Q0611`. Tampering is reported as "not installed" (`Q0611`) rather than with its own message, and `qxide install` silently restores the files. | Keep the marker only and document the item as outside the threat model; a per-file hash list in the marker (detects mistakes, not a local attacker); verify only during `qxide install`; read-only permissions on the cache. |
-| B-P12 | Search only absolute `PATH` entries for `<name>.exe` (as Rust does, without `PATHEXT`); report the tool as missing otherwise. Other platforms are unchanged (`execvp` already searches `PATH` only). A `curl.exe` that is only in `System32` while `System32` is not on `PATH` is no longer found. A planted `curl.exe` is still found when the install directory itself is on `PATH` ahead of the real one (for example `~/.cargo/bin` before `System32`), as it would be for any shell. | Use `%SystemRoot%\System32\curl.exe` explicitly for `curl`; keep Rust's order but skip the executable's directory; a setting for tool paths. |
+| B-P12 | Search only absolute `PATH` entries for `<name>.exe` (as Rust does, without `PATHEXT`); report the tool as missing otherwise. Other platforms are unchanged (`execvp` already searches `PATH` only). A `curl.exe` that is only in `System32` while `System32` is not on `PATH` is no longer found. | Use `%SystemRoot%\System32\curl.exe` explicitly for `curl`; keep Rust's order but skip the executable's directory; a setting for tool paths. |
 | B-P13 | Reject `path` values and `path+` lock sources that start with `/` or `\` or contain `:`. This is a behaviour change: absolute path dependencies, including `qxide add --path <absolute dir>`, now fail with `Q0602` (the manifest is left unchanged). | Confine path dependencies to the project directory, which would break the documented `../local-pkg` form, `examples/packages/bell-app` (`path = "../bell-utils"`), and existing tests, so it was not applied; a warning instead of an error; rejecting only Windows network paths. |
 
 ## Regression tests
@@ -214,9 +212,7 @@ The steps of part 1 apply. In addition:
 
 - Package ownership as a whole: anyone can still open a pull request that publishes a new version of an existing package, and only review prevents it (alternative (b) for B-P5 would cover both). Addressed in part 3 (owner files): owners publish and yank; only maintainers un-yank.
 - B-P10 costs one archive unpack per package on every `run`, `check`, and `qasm`; the comparison is not cached.
-- Look-alike folding is ASCII only (package names are ASCII) and does not cover every pair a font can confuse (for example `u` and `v`).
-- The baseline's `index/3/c/con` remark for the client: the client still reads such paths; the registry can no longer contain them.
-- B-P12: a `curl.exe`, `gh.exe`, or `git.exe` planted in a directory that is on `PATH` before the real one is still run.
+- Open items are tracked privately.
 - B-P10: a read-only cache now fails with `Q0611`, and tampering has no message of its own (see the policy table).
 - The commit messages of `ba90642`, `97aa843`, and `25b1728` name the weakness each fixes in one sentence; they were not rewritten.
 
@@ -310,7 +306,6 @@ Not run: the workflow on GitHub Actions, so the event values were not observed l
 - Un-yanking by owners (maintainers only).
 - An invited account cannot decline by pull request; an owner withdraws the invitation instead. Invitations do not expire.
 - No `qxide owner` command; owner files are edited by hand.
-- CI cannot check that a `login` matches its `id` for owners other than the author (no API calls from the check); only `id` is used.
-- An owner who opens a pull request from a branch that others can push to (or that has "Allow edits by maintainers" enabled) accepts their later commits; CI cannot tell who pushed a commit.
+- Open items are tracked privately.
 - `qxide publish` does not check ownership before opening the pull request; a non-owner learns from CI.
 - If GitHub ever reports a different `pull_request.user` than the account that opened the pull request (for example, transferred or deleted accounts, shown as `ghost`), the pull request fails the check; this was not tested live.

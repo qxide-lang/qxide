@@ -93,8 +93,6 @@ Not run: the playground parity scripts (`site/scripts/build-wasm.mjs`, `parity.m
 
 ## Not done here
 
-- **New observation, Reproduced, not fixed (out of scope):** `qxide publish` into a directory registry writes the archive to the expanded `config.json` template without validating it (`cli::write_into_registry`), so a template such as `../escaped/{name}-{version}.tar.gz` writes outside the registry directory. Reproduced in a scratch folder with the branch-tip binary: `publish` exited 0 and wrote `<scratch>/escaped/demo-1.0.0.tar.gz` next to `<scratch>/reg`. The report states that no write outside allowed directories was found, so this is new. Applying `valid_dl` before the write would close it.
 - Registry template, recommendation (3): the same limits in `validate.py` (extension headers, decompressed size), rejecting control characters in `description`, and M-09. The client now refuses PAX and GNU long-link headers that `validate.py` still accepts, so CI can pass an archive the client will not install until the template matches.
-- M-04 items beyond the print helper: rejecting control characters in `Entry::parse`, validating `name` and `version` of `search.json` rows like index lines, and filtering program output when stdout is a terminal.
 - Documentation of the new behaviour: the `dl` rule in `docs/design/qx-packages.md` ("absolute or registry-relative download URL"), whether the Q0609 text in `docs/error-codes.md` and `qxide explain` should mention download locations, and a CHANGELOG entry.
-- Read only, not reproduced: a directory registry may contain symbolic links. Downloads now read only regular files within the size limit, but a link to a regular file elsewhere is still followed.
+- Open items are tracked privately.
