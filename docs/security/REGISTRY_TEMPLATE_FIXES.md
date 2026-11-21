@@ -5,14 +5,14 @@
 - **Source:** recommendation (3) of `docs/security/MYTHOS_FINDINGS.md` on `security-review-prep` (`7b1f855`): fix the registry template for B-P1, B-P2, B-P3, M-08, and M-09. B-P1 to B-P4 are described in `docs/security/BASELINE_FINDINGS.md` on the same branch. Neither report is changed here; IDs refer to them.
 - **Also requested:** the archive limits of the hardened package client (`fix/pkg-client-hardening`, `98a5fe4`, read only and not merged) in `validate.py`, and rejecting control characters in `description` (the `validate.py` half of B-P4 / M-04).
 - **Scope:** `registry-template/` and its tests in this repository only. Nothing was pushed to `qxide-lang/registry` or any other remote.
-- **Commits:** `1e3e4f9` (fixes and tests), then this record with the documentation updates.
+- **Commits:** `1e3e4f9` (fixes and tests), `3fd419e` (this record and the documentation updates), then a follow-up that checks out the merge result instead of the pull request head (see B-P1 below).
 - **Method:** every reproduction input from the reports became a regression test in `ci/test_registry_scripts.py` first. The new test file was run against the unfixed template (a copy of `b8c385e`'s `registry-template/` next to the new tests) and the listed cases failed; after the fix all tests pass. The new error strings, this record, and the commit messages were written by hand: no part of this work was sent to an external text service.
 
 ## Summary
 
 | ID | Change | Files |
 | --- | --- | --- |
-| B-P1 | `validate.yml` uses `pull_request_target` instead of `pull_request`, so pull requests always run the target branch's workflow and `scripts/validate.py`. The base branch is checked out to `base/`, the pull request head (by SHA) to `pr/`, both with `persist-credentials: false`; the only command run is `python -I base/scripts/validate.py --root pr --base origin/<target>`. The fallback that ran the pull request's own script when the target branch had none is removed. Token stays `contents: read`. | `registry-template/.github/workflows/validate.yml` |
+| B-P1 | `validate.yml` uses `pull_request_target` instead of `pull_request`, so pull requests always run the target branch's workflow and `scripts/validate.py`. The base branch is checked out to `base/`, GitHub's merge result for the pull request (`refs/pull/<number>/merge`, which a `pull_request` run also used) to `pr/`, both with `persist-credentials: false`; the only command run is `python -I base/scripts/validate.py --root pr --base origin/<target>`. The fallback that ran the pull request's own script when the target branch had none is removed. Token stays `contents: read`. | `registry-template/.github/workflows/validate.yml` |
 | B-P2 | With `--base`, every index file of the base (`git ls-tree -r -z --name-only <base> -- index/`, run with `check=True`, so a bad ref fails) must still exist; a missing one is an error. | `registry-template/scripts/validate.py` |
 | B-P3 | Every version's archive must be in the repository and pass the archive checks. For an `https://` location (entry `dl` or the `config.json` template) the copy is expected at the template path, or at the default `packages/{prefix}/{name}/{name}-{version}.tar.gz` when the template itself is a URL. Clients verify `cksum`, so the bytes they install from any URL are the bytes CI checked. | `validate.py` |
 | M-08 | The `[dependencies]` of the archive's `qxide.toml` (string or `{ version = ... }` form, as `installed_deps` in the client reads them) must equal the entry's `deps` as a multiset of (name, requirement). Requirements are compared as `semver::VersionReq` values: `parse_req` ports the crate's comparator parser and returns `(op, major, minor, patch, pre)` tuples, so `1` equals `^1` and `>= 1.2,<2` equals `>=1.2, <2`, but `1.0` does not equal `1`. Path-only, non-string, and invalid requirements, a non-table `dependencies`, and duplicate names in `deps` are rejected. | `validate.py`, `tests/data/semver_cases.json` (`req_pairs`), `src/pkg/tests.rs` |
@@ -35,13 +35,14 @@ This makes `validate.py` stricter than both 0.7.0 on `main` and the hardened cli
 
 ## Regression tests
 
-"Before" is the new test file run against the unfixed template (`python -I ci/test_registry_scripts.py`: 29 tests, `failures=35, errors=20`, all in the tests below; the earlier 16 tests passed). "After" is this branch: 29 tests, OK.
+"Before" is the new test file run against the unfixed template (`python -I ci/test_registry_scripts.py`: 29 tests, `failures=35, errors=20`, all in the tests below; the earlier 16 tests passed). "After" is this branch: 30 tests (with `test_branch_behind_the_target`, added later), OK.
 
 | Test | Input | Before fix | After fix |
 | --- | --- | --- | --- |
 | `ValidateWorkflow.test_pull_requests_run_the_target_branch_workflow` | `validate.yml` triggers | Fails: `pull_request` trigger, no `pull_request_target` | Passes |
 | `ValidateWorkflow.test_checker_comes_from_the_target_branch` | every `validate.py` invocation | Fails: runs `$RUNNER_TEMP/validate.py`, falls back to `cp scripts/validate.py` | Passes: only `python -I base/scripts/validate.py`, `--root pr` |
-| `ValidateWorkflow.test_pull_request_is_data_only` | permissions, checkouts, `run:` lines | Fails: one checkout, credentials kept | Passes: `contents: read` only, two checkouts with `persist-credentials: false`, head SHA into `pr`, no `${{ }}` in `run:` |
+| `ValidateWorkflow.test_pull_request_is_data_only` | permissions, checkouts, `run:` lines | Fails: one checkout, credentials kept | Passes: `contents: read` only, two checkouts with `persist-credentials: false`, the merge ref into `pr`, no `${{ }}` in `run:` |
+| `ValidatePullRequests.test_branch_behind_the_target` | A pull request branched before another package was added to `main`, validated as its merge result | Passes (control) | Passes. Validating the pull request head instead fails with `index/ot/he/other: index file was removed`, which is why the workflow checks out the merge ref (found in review of the first version of this branch, which used the head SHA) |
 | `ValidatePullRequests.test_deleting_an_index_file` | B-P2 report input: PR runs `git rm index/ev/il/evil` | Fails: exit 0 | Passes: exit 1, `index/ev/il/evil` |
 | `ValidatePullRequests.test_readding_a_deleted_version_with_another_archive` | Report follow-up: after the deletion is merged, re-add `evil 1.0.0` with another `cksum` and an external `dl` | Fails: exit 0 | Passes: exit 1 (the published archive's sha256 differs) |
 | `ValidatePullRequests.test_unknown_base_fails` | `--base no-such-ref` | Passes (control) | Passes |
@@ -76,12 +77,12 @@ Run on Windows 11 with Python 3.14.10 and rustc 1.99.1 at the tip of this branch
 
 | Command | Result |
 | --- | --- |
-| `python -I ci/test_registry_scripts.py` | 29 tests OK |
+| `python -I ci/test_registry_scripts.py` | 30 tests OK, in this worktree and in a clean export of the committed tree (`git archive HEAD`) |
 | `cargo fmt --all --check` | clean |
 | `cargo clippy -j 8 --workspace --all-targets -- -D warnings` | clean |
 | `cargo test -j 8 --workspace` | all passed (binary unit tests 107, `cli` 21, `packages` 13, `qxide-wasm` 94 + 11, others unchanged) |
 
-Not run: the workflow on GitHub Actions (it can only run there; the tests above check its text only), the `ci.yml` jobs other than the commands listed, and the playground parity scripts. Python 3.12, the version CI uses, was not tried locally; the script uses nothing newer than 3.11.
+Not run: the workflow on GitHub Actions (it can only run there; the tests above check its text only, so the checkout of `refs/pull/<number>/merge` under `pull_request_target` was not exercised; for a pull request with merge conflicts GitHub has no merge ref, and the check is then expected to fail at checkout), the `ci.yml` jobs other than the commands listed, and the playground parity scripts. Python 3.12, the version CI uses, was not tried locally; the script uses nothing newer than 3.11.
 
 ## Applying this to `qxide-lang/registry`
 

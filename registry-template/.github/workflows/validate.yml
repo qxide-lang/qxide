@@ -20,10 +20,12 @@ jobs:
         with:
           path: base
           persist-credentials: false
+      # The merge result, as a `pull_request` run would see it: a branch behind the target would
+      # otherwise appear to delete everything added to the target since it was created.
       - if: github.event_name == 'pull_request_target'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
           path: pr
           fetch-depth: 0
           persist-credentials: false

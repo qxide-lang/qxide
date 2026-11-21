@@ -518,6 +518,21 @@ class ValidatePullRequests(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("evil 1.0.0", r.stdout)
 
+    def test_branch_behind_the_target(self):
+        # CI checks the merge result (refs/pull/N/merge); the pull request's own head lacks what
+        # the target gained since the branch point and would look like a deletion (B-P2).
+        self.reg.git("checkout", "-q", "main")
+        self.reg.add("other", "1.0.0")
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", "other")
+        self.reg.git("checkout", "-q", "pr")
+        self.reg.add("evil", "1.0.1")
+        self.reg.git("add", "-A")
+        self.reg.git("commit", "-qm", "pr")
+        self.reg.git("merge", "-q", "--no-edit", "main")
+        r = self.reg.validate("--base", "main")
+        self.assertEqual(r.returncode, 0, r.stdout)
+
     def test_unknown_base_fails(self):
         self.reg.add("evil", "1.0.1")
         self.reg.git("add", "-A")
@@ -578,7 +593,8 @@ class ValidateWorkflow(unittest.TestCase):
         checkouts = self.code.count("uses: actions/checkout@")
         self.assertEqual(checkouts, 2)
         self.assertEqual(self.code.count("persist-credentials: false"), checkouts)
-        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", self.code)
+        # The merge result, like a `pull_request` run (see `test_branch_behind_the_target`).
+        self.assertIn("ref: refs/pull/${{ github.event.pull_request.number }}/merge", self.code)
         self.assertEqual(self.code.count("path: pr"), 1)
         # Expressions reach shell commands through `env`, never spliced into `run:`.
         for line in self.lines:
