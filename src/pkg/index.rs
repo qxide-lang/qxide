@@ -8,7 +8,6 @@
 //   search.json                    {"packages": [{"name", "version", "description"}]}
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use semver::{Version, VersionReq};
 use serde_json::{json, Map, Value};
@@ -484,8 +483,8 @@ fn curl(url: &str, dir: &Path) -> Result<Option<Vec<u8>>> {
         .create_new(true)
         .open(&tmp)
         .map_err(|e| Error::io(&tmp, &e))?;
-    let out = Command::new("curl")
-        .args([
+    let out = super::command("curl").and_then(|mut curl| {
+        curl.args([
             "--silent",
             "--show-error",
             "--location",
@@ -502,7 +501,8 @@ fn curl(url: &str, dir: &Path) -> Result<Option<Vec<u8>>> {
         .arg(&tmp)
         .args(["--write-out", "%{http_code}"])
         .arg(url)
-        .output();
+        .output()
+    });
     let out = match out {
         Ok(out) => out,
         Err(e) => {

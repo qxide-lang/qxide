@@ -390,8 +390,8 @@ fn build_metadata_versions_are_never_published_or_selected() {
 }
 
 // Compiles `tests/support/fake_curl.rs` with `rustc` into a `curl` binary next to a copy of `qxide`
-// and returns the copy. Windows checks the executable's own directory before System32 (which
-// includes a real `curl.exe`), and on Unix this directory is also placed first on `PATH`.
+// and returns the copy. Tests that use it place this directory first on `PATH`, where `qxide`
+// looks for `curl` (it no longer runs one just because it is next to the executable, B-P12).
 fn fake_curl_qxide(env: &Env) -> PathBuf {
     let bin = env.root.join("fakebin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -494,6 +494,39 @@ fn failed_downloads_are_never_accepted_or_cached() {
             "{o}"
         );
     }
+}
+
+// B-P12: `Command::new("curl")` on Windows runs a `curl.exe` next to `qxide.exe` before looking at
+// `PATH`, so a writable install directory could supply one. External tools now come from `PATH`
+// only: with no `curl` on `PATH`, the planted one must not run.
+#[cfg(windows)]
+#[test]
+fn tools_next_to_the_executable_are_not_run() {
+    let env = Env::new("plantedcurl");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let qxide = fake_curl_qxide(&env);
+    let app = env.app("demo", BELL_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nbell-utils = \"0.1\"\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    let empty = env.root.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let log = env.root.join("curl.log");
+    let out = Command::new(&qxide)
+        .arg("install")
+        .current_dir(&app)
+        .env("PATH", &empty)
+        .env("QXIDE_HOME", env.root.join("home-planted"))
+        .env("QXIDE_REGISTRY", "https://fake.invalid/")
+        .env_remove("QXIDE_OFFLINE")
+        .env("FAKE_ROOT", &env.registry)
+        .env("FAKE_LOG", &log)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!log.exists(), "the planted curl ran: {err}");
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0608]"), "{err}");
 }
 
 #[test]
