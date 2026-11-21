@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Validates the Qxide registry: index format, archive checksums and contents, and (with
---base) that a pull request only appends versions.
+"""Validates the Qxide registry: index format, archive checksums and contents, owner files, and
+(with --base) that a pull request only appends versions to packages its author owns.
 
-Usage: python scripts/validate.py [--base <git ref>] [--summary <file>] [--root <dir>]
+Usage: python scripts/validate.py [--base <git ref> --author-id <id> --author-login <login>]
+                                  [--summary <file>] [--root <dir>]
 Standard library only (Python 3.11+ for tomllib).
 """
 
@@ -62,6 +63,13 @@ LOOK_ALIKE_PAIRS = (("rn", "m"), ("vv", "w"), ("cl", "d"))
 # New names may not pass for official packages: none may start like `qxide` or equal `std`.
 RESERVED_PREFIXES = ("qxide",)
 RESERVED_NAMES = ("std",)
+# Owner files: one `{"id": <GitHub user id>, "login": <login>}` line per owner. The numeric id is
+# what is compared; logins can be renamed and then registered again by someone else.
+OWNER_KEYS = {"id", "login"}
+MAX_OWNERS = 32
+GITHUB_ID = re.compile(r"[1-9][0-9]{0,18}")
+GITHUB_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
+REGISTRY_DATA = ("index/", "packages/", "owners/")
 
 errors: list[str] = []
 summary: list[str] = []
@@ -122,6 +130,51 @@ def prefix(name: str) -> str:
     if len(name) == 3:
         return f"3/{name[0]}"
     return f"{name[:2]}/{name[2:4]}"
+
+
+def owners_path(name: str) -> str:
+    return f"owners/{prefix(name)}/{name}"
+
+
+def parse_owners(where: str, data: bytes) -> list[dict] | None:
+    """Returns the owners listed in an owner file, or `None` after reporting why it is invalid."""
+    try:
+        lines = [l for l in index_lines(data) if l.strip()]
+    except UnicodeDecodeError as e:
+        error(where, f"not UTF-8: {e}")
+        return None
+    owners, ids, ok = [], set(), True
+    for i, line in enumerate(lines, 1):
+        try:
+            owner = strict_json(line)
+        except ValueError as e:
+            error(f"{where}:{i}", f"invalid JSON: {e}")
+            ok = False
+            continue
+        if (
+            not isinstance(owner, dict)
+            or owner.keys() != OWNER_KEYS
+            # `True == 1` in Python, so check the type before the value.
+            or type(owner["id"]) is not int
+            or not GITHUB_ID.fullmatch(str(owner["id"]))
+            or not isinstance(owner["login"], str)
+            or not GITHUB_LOGIN.fullmatch(owner["login"])
+        ):
+            error(f"{where}:{i}", 'an owner line is {"id": <GitHub user id>, "login": "<GitHub login>"}')
+            ok = False
+            continue
+        if owner["id"] in ids:
+            error(f"{where}:{i}", f"owner id {owner['id']} is listed twice")
+            ok = False
+        ids.add(owner["id"])
+        owners.append(owner)
+    if ok and not owners:
+        error(where, "an owner file lists at least one owner")
+        ok = False
+    if len(owners) > MAX_OWNERS:
+        error(where, f"more than {MAX_OWNERS} owners")
+        ok = False
+    return owners if ok else None
 
 
 def dl_template() -> str:
@@ -642,15 +695,94 @@ def base_lines(base: str, rel: str) -> list[str]:
     return index_lines(r.stdout) if r.returncode == 0 else []
 
 
+def name_status(out: str) -> list[list[str]]:
+    """Parses `git diff --name-status -z` into `[status, path...]` rows. Without `-z`, git quotes
+    paths with unusual characters, and a quoted path would not start with `packages/` and the like.
+    """
+    fields, rows = out.split("\0"), []
+    i = 0
+    while i < len(fields) and fields[i]:
+        status = fields[i]
+        n = 2 if status[0] in "RC" else 1
+        rows.append([status, *fields[i + 1 : i + 1 + n]])
+        i += 1 + n
+    return rows
+
+
+def git_bytes(*args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True).stdout
+
+
+def ls_base(base: str, top: str) -> set[str]:
+    return {p for p in git("ls-tree", "-r", "-z", "--name-only", base, "--", top).split("\0") if p}
+
+
+def check_ownership(base: str, author, diff, names, head_owners, archive_owner) -> None:
+    """Allows a pull request to change a package's index file, archives, or owner file only when its
+    author is listed in the package's owner file on the base branch. A new package (no index file on
+    the base branch) must add an owner file that lists exactly its author.
+    """
+    # Ownership comes from the base branch only, never from the pull request; `git` fails closed.
+    base_index = ls_base(base, "index/")
+    base_owner_files = ls_base(base, "owners/")
+    touched: set[str] = set()
+    for status, *paths in diff:
+        for p in paths:
+            if p.startswith(("index/", "owners/")):
+                touched.add(p.rsplit("/", 1)[-1])
+            elif p.startswith("packages/"):
+                if p in archive_owner:
+                    touched.add(archive_owner[p])
+                elif status[0] not in "MDR":
+                    # A file nobody's index line points to, such as an archive placed ahead of
+                    # another package's next version. Changes to published archives are reported above.
+                    error(p, "file under packages/ is not the archive of a version in the registry")
+    for name in sorted(touched):
+        rel = f"index/{prefix(name)}/{name}"
+        orel = owners_path(name)
+        if author is None:
+            error(rel, "ownership cannot be checked without the pull request author")
+        elif rel in base_index:
+            if orel not in base_owner_files:
+                error(rel, f"`{name}` has no owner file on the base branch; a maintainer must add {orel} first")
+                continue
+            current = parse_owners(f"{orel} (base)", git_bytes("show", f"{base}:{orel}"))
+            if current is not None and author["id"] not in {o["id"] for o in current}:
+                error(rel, f"pull request author {author['login']} (id {author['id']}) is not an owner of `{name}`")
+            elif not (ROOT / orel).is_file():
+                error(orel, "the owner file of a published package cannot be removed")
+        elif name in names:
+            if not (ROOT / orel).is_file():
+                error(rel, f"a new package needs the owner file {orel} listing the pull request author")
+            elif name in head_owners and head_owners[name] is not None and head_owners[name] != [author]:
+                error(orel, "the owner file of a new package lists exactly the pull request author")
+        # Otherwise an owner file without an index file, reported above.
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", help="git ref of the target branch, to check what a PR changes")
     parser.add_argument("--summary", help="markdown file for reviewers (GITHUB_STEP_SUMMARY)")
     parser.add_argument("--root", help="registry checkout (default: this script's repository)")
+    # From the `pull_request_target` event (`pull_request.user`), which a pull request cannot set.
+    parser.add_argument("--author-id", help="GitHub user id of the pull request author (with --base)")
+    parser.add_argument("--author-login", help="GitHub login of the pull request author (with --base)")
     args = parser.parse_args()
     global ROOT
     if args.root:
         ROOT = Path(args.root).resolve()
+    author = None
+    if args.base:
+        # Fail closed: without a known author no pull request can show that it owns a package.
+        if (
+            isinstance(args.author_id, str)
+            and GITHUB_ID.fullmatch(args.author_id)
+            and isinstance(args.author_login, str)
+            and GITHUB_LOGIN.fullmatch(args.author_login)
+        ):
+            author = {"id": int(args.author_id), "login": args.author_login}
+        else:
+            error("--author-id/--author-login", "the pull request author is required with --base")
 
     template = dl_template()
     index_dir = ROOT / "index"
@@ -692,6 +824,8 @@ def main() -> int:
     # Every archive must be in this repository and pass the checks, including one whose `dl` is an
     # https URL: clients verify `cksum`, so they can only install the bytes checked here (B-P3).
     new_files: dict[str, list[str]] = {}
+    # In-repository archive path -> package name, to tie files added under packages/ to a package.
+    archive_owner: dict[str, str] = {}
     for name, entries in names.items():
         for entry in entries:
             target = archive_path(entry, template)
@@ -706,6 +840,7 @@ def main() -> int:
                     continue
             else:
                 local = target
+            archive_owner[local] = name
             archive = ROOT / local
             try:
                 # Python 3.12's `is_file` raises for some errors, such as a component over 255 bytes.
@@ -730,6 +865,25 @@ def main() -> int:
                 if d["name"] not in names:
                     error(f"{name} {entry['vers']}", f"dependency `{d['name']}` is not in the registry")
 
+    # Owner files: well formed, and only for packages that exist. A package without one is locked
+    # for pull requests until a maintainer adds it (see `check_ownership`).
+    head_owners: dict[str, list[dict] | None] = {}
+    for path in sorted(p for p in (ROOT / "owners").rglob("*") if p.is_file() and p.name != ".gitkeep"):
+        rel = path.relative_to(ROOT).as_posix()
+        name = path.name
+        if rel != owners_path(name) or not NAME.fullmatch(name) or not portable(name):
+            error(rel, f"owner files live at {owners_path(name)} and use valid package names")
+            continue
+        if name not in names:
+            error(rel, f"owner file for `{name}`, which has no index file")
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            error(rel, f"cannot be read: {e}")
+            continue
+        head_owners[name] = parse_owners(rel, data)
+
     changed = set(new_files)
     if args.base:
         changed = set()
@@ -744,8 +898,8 @@ def main() -> int:
             old = [l for l in base_lines(args.base, rel) if l.strip()]
             new = [json.dumps(e, sort_keys=True) for e in entries]
             old_entries = [json.loads(l) for l in old]
-            # Published lines are immutable. `yanked` too: nothing records who owns a package, so a
-            # pull request could yank or restore anyone's version (B-P5); maintainers yank instead.
+            # Published lines are immutable. `yanked` too: maintainers yank on request (B-P5); owner
+            # files do not extend to yanking yet.
             for i, o in enumerate(old_entries):
                 if i >= len(entries):
                     error(rel, f"version {o.get('vers')} was removed; ask a maintainer to yank it instead")
@@ -772,13 +926,14 @@ def main() -> int:
             for other in names:
                 if other != name and skeleton(other) == key:
                     error(rel, f"`{name}` is too similar to the package `{other}`")
-        diff = [l.split("\t") for l in git("diff", "--name-status", f"{args.base}...HEAD").splitlines()]
+        diff = name_status(git("diff", "--name-status", "-z", f"{args.base}...HEAD"))
         touched = [p for _, *paths in diff for p in paths]
-        # Publishing and yanking pull requests change registry data only, never scripts or workflows.
-        if any(p.startswith(("index/", "packages/")) for p in touched):
+        # Publishing and owner pull requests change registry data only, never scripts or workflows.
+        if any(p.startswith(REGISTRY_DATA) for p in touched):
             for p in touched:
-                if not p.startswith(("index/", "packages/")):
-                    error(p, "a pull request that changes index/ or packages/ may not change other files")
+                if not p.startswith(REGISTRY_DATA):
+                    error(p, "a pull request that changes index/, packages/ or owners/ may not change other files")
+        check_ownership(args.base, author, diff, names, head_owners, archive_owner)
         for status, *paths in diff:
             for p in paths:
                 # Paths such as `index/3/c/con` cannot be checked out on Windows (B-P7).
@@ -793,6 +948,8 @@ def main() -> int:
 
     if args.summary:
         lines = ["## Registry check", ""]
+        if author is not None:
+            lines += [f"Pull request author: {code(author['login'])} (id {author['id']})", ""]
         # Errors and file names carry text from the pull request: written as literal text (B-P8).
         lines += [f"- {code(e)}" for e in errors] or ["All checks passed."]
         for where in sorted(changed):
