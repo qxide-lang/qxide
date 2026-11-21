@@ -627,8 +627,8 @@ fn archive_paths_must_be_portable_and_unique() {
         "demo-1.0.0/src/lib/x.qx",
     ]);
     archive::unpack(&ok, "demo-1.0.0", &dir.join("ok")).unwrap();
-    // Each of these would overwrite `src/lib.qx` (or another entry) on Windows or macOS, or
-    // cannot be created there at all.
+    // Each path either collides with `src/lib.qx` (or another entry) on Windows or macOS, or cannot
+    // be created on those platforms.
     for second in [
         "src/lib.qx.",
         "src/lib.qx ",

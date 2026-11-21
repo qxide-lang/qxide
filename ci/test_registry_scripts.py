@@ -1,8 +1,10 @@
-"""Tests for registry-template/scripts (validate.py, build_search.py) against throwaway registries.
+"""Tests for `registry-template/scripts` (`validate.py`, `build_search.py`) run against throwaway
+registries in temporary directories.
 
 Usage: python -I ci/test_registry_scripts.py
-Standard library only; needs `git` for the pull-request (--base) checks. Assertions use exit codes
-and the offending path or version, never message prose.
+
+Standard library only; requires `git` for the pull-request (`--base`) checks. Assertions check exit
+codes and the offending path or version, never message prose.
 """
 
 import hashlib
@@ -56,7 +58,7 @@ def std_files(name: str, vers: str) -> list[tuple[str, str]]:
 
 
 class Registry:
-    """A registry checkout in a temporary directory."""
+    """Registry checkout in a temporary directory, removed after the test."""
 
     def __init__(self, test: unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="qxide-registry-test-"))
@@ -65,7 +67,9 @@ class Registry:
         (self.root / "config.json").write_text(CONFIG, encoding="utf-8", newline="\n")
 
     def add(self, name: str, vers: str, files=None, archive=True, **over) -> dict:
-        """Appends one index line (and its archive unless `archive` is false)."""
+        """Appends one index line for the version and writes its archive unless `archive` is false;
+        `over` overrides fields on the line.
+        """
         line = {"name": name, "vers": vers, "deps": [], "yanked": False, "v": 1, "qxide": ">=0.6", "description": "d"}
         if archive:
             data = make_tar(files if files is not None else std_files(name, vers))

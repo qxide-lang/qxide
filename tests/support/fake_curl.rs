@@ -1,8 +1,8 @@
-// Stand-in for the system `curl`, compiled by tests/packages.rs: serves
-// `https://fake.invalid/<path>` from `$FAKE_ROOT/<path>` and appends its arguments to `$FAKE_LOG`
-// (one per line, then an empty line). When `<path>` contains `$FAKE_TRUNC`, it writes only the
-// first line of the file, prints http_code 200 and exits 18, like a curl whose connection
-// dropped mid-body.
+// Test stub standing in for the system `curl`, compiled by `tests/packages.rs`. Serves
+// `https://fake.invalid/<path>` from `$FAKE_ROOT/<path>`, prints 404 when the file is missing, and
+// appends its arguments to `$FAKE_LOG` (one per line, followed by an empty line). When `<path>`
+// contains `$FAKE_TRUNC`, writes only the first line of the file, prints `http_code` 200, and exits
+// 18, like a `curl` whose connection dropped mid-body.
 use std::io::Write;
 
 fn main() {

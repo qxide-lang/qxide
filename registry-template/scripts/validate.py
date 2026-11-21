@@ -49,7 +49,8 @@ summary: list[str] = []
 
 
 def portable(part: str) -> bool:
-    """Same rule as `portable_component` in the client: a name every OS stores unchanged."""
+    """Matches the client's `portable_component` rule: a path component every OS stores unchanged.
+    """
     if not part or part.endswith((".", " ")):
         return False
     if any(c in WINDOWS_INVALID or unicodedata.category(c) == "Cc" for c in part):
@@ -58,7 +59,7 @@ def portable(part: str) -> bool:
 
 
 def fold(part: str) -> str:
-    """Case folding used to find entries that collide on case-insensitive file systems."""
+    """Case folding used to detect archive entries that collide on case-insensitive file systems."""
     return part.lower().upper()
 
 
@@ -98,15 +99,17 @@ def archive_path(entry: dict, template: str) -> str:
 
 
 def valid_dl(target: str) -> bool:
-    """An expanded download location: an https URL, or a relative path of plain segments."""
+    """Reports whether an expanded download location is valid: an `https` URL or a relative path of
+    plain segments inside the registry.
+    """
     if target.startswith("https://"):
         return DL_URL.fullmatch(target) is not None
     parts = target.split("/")
     return all(DL_SEGMENT.fullmatch(p) and p not in (".", "..") and portable(p) for p in parts)
 
 
-# A port of the `semver` crate's parser (the one the client uses), so this checker accepts exactly
-# the versions and requirements the client accepts: u64 numbers, no leading zeros, ASCII only.
+# Port of the Rust `semver` crate parser used by the qxide client, so this checker accepts the exact
+# same versions and requirements: 64-bit numbers, no leading zeros, ASCII only.
 class _Bad(Exception):
     pass
 
@@ -130,7 +133,9 @@ def _dot(s: str, i: int) -> int:
 
 
 def _identifier(s: str, i: int, pre: bool) -> tuple[str, int]:
-    """Dot-separated [0-9A-Za-z-] segments; numeric pre-release segments have no leading zero."""
+    """Parses dot-separated `[0-9A-Za-z-]` segments of a pre-release or build identifier; numeric
+    pre-release segments may not have a leading zero.
+    """
     start = i
     while True:
         j = i
@@ -146,7 +151,7 @@ def _identifier(s: str, i: int, pre: bool) -> tuple[str, int]:
 
 
 def parse_version(s: str):
-    """(major, minor, patch, pre, build) as the client parses it, or None."""
+    """Returns `(major, minor, patch, pre, build)` as parsed by the client, or `None`."""
     try:
         major, i = _number(s, 0)
         minor, i = _number(s, _dot(s, i))
@@ -164,13 +169,17 @@ def parse_version(s: str):
 
 
 def registry_version(s) -> bool:
-    """A valid `vers`: semver without build metadata, which would tie with the plain version."""
+    """Reports whether `s` is a valid `vers`: semver without build metadata, which would tie in
+    precedence with the plain version.
+    """
     v = parse_version(s) if isinstance(s, str) else None
     return v is not None and v[4] == ""
 
 
 def _comparator(s: str) -> int:
-    """Parses one comparator at the start of `s`; returns the index after it and its spaces."""
+    """Parses one comparator at the start of `s` and returns the index past it and its trailing
+    spaces.
+    """
     i = 0
     if s.startswith((">=", "<=")):
         i = 2
@@ -205,7 +214,7 @@ def _comparator(s: str) -> int:
 
 
 def valid_req(s) -> bool:
-    """Whether the client accepts `s` as a version requirement."""
+    """Reports whether the client accepts `s` as a version requirement."""
     if not isinstance(s, str):
         return False
     try:
@@ -226,7 +235,7 @@ def valid_req(s) -> bool:
 
 
 def precedence(vers: str):
-    """Sort key giving semver precedence; versions with equal keys are the same release."""
+    """Sort key giving semver precedence; versions with equal keys represent the same release."""
     major, minor, patch, pre, _ = parse_version(vers)
     if not pre:
         return (major, minor, patch, 1, ())
@@ -369,7 +378,9 @@ def git(*args: str) -> str:
 
 
 def index_lines(data: bytes) -> list[str]:
-    """Same split as Rust's `str::lines` in the client: on `\\n` only, minus one trailing `\\r`."""
+    """Decodes UTF-8 and splits lines like Rust's `str::lines` in the client: only on a newline
+    character, stripping a single trailing carriage return.
+    """
     lines = data.decode("utf-8").split("\n")
     if lines[-1] == "":
         lines.pop()
@@ -389,7 +400,9 @@ def _depth(value, level: int = 1) -> int:
 
 
 def strict_json(line: str):
-    """json.loads limited to what serde_json (the client) accepts; raises ValueError otherwise."""
+    """Wrapper around `json.loads` restricted to what the client's `serde_json` accepts; raises
+    `ValueError` otherwise.
+    """
     value = json.loads(line, parse_constant=_reject_constant)
     # serde_json rejects lone surrogates (`"\\ud800"`) and nesting deeper than 128 levels.
     json.dumps(value, ensure_ascii=False).encode("utf-8")

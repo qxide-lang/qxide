@@ -37,8 +37,8 @@ impl Home {
         self.root.join("registry")
     }
 
-    /// Where downloads are written while `curl` runs: private to this user, unlike the system
-    /// temporary directory.
+    /// Directory under the qxide home where `curl` writes in-progress downloads; private to the
+    /// current user, unlike the shared system temporary directory.
     pub fn download_dir(&self) -> PathBuf {
         self.registry().join("tmp")
     }

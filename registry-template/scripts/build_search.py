@@ -14,7 +14,9 @@ SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9
 
 
 def key(vers: str):
-    """Semver precedence (build metadata ignored); None for a version that does not parse."""
+    """Sort key for semver precedence (ignoring build metadata), or `None` if the version does not
+    parse.
+    """
     m = SEMVER.fullmatch(vers.split("+", 1)[0]) if isinstance(vers, str) else None
     if not m:
         return None
@@ -22,8 +24,8 @@ def key(vers: str):
     if pre is None:
         # A release sorts after all of its pre-releases.
         return (int(major), int(minor), int(patch), 1, ())
-    # Numeric identifiers compare as numbers and before alphanumeric ones; a longer list of
-    # otherwise equal identifiers is newer (1.0.0-rc.2 < 1.0.0-rc.10 < 1.0.0-rc.10.1).
+    # Numeric pre-release identifiers compare numerically and sort before alphanumeric ones; with an
+    # equal prefix, the longer identifier list is newer (1.0.0-rc.2 < 1.0.0-rc.10 < 1.0.0-rc.10.1).
     ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
     return (int(major), int(minor), int(patch), 0, ids)
 

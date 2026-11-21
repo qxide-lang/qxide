@@ -247,9 +247,9 @@ impl Registry {
         Ok(fetched)
     }
 
-    /// Every version of `name`, in index order. Lines this client cannot use (malformed, another
-    /// package, or a version listed earlier) are skipped, so they can never be selected; only an
-    /// index without a single usable line is an error.
+    /// Returns every usable version of `name` in index order. Unusable lines (malformed, naming
+    /// another package, or duplicating an earlier version) are skipped and never selected; only an
+    /// index with no usable lines fails.
     pub fn entries(&self, name: &str) -> Result<Vec<Entry>> {
         let not_found = || {
             Error::new(
@@ -448,7 +448,7 @@ pub fn file_url(path: &Path) -> String {
     }
 }
 
-/// What a finished `curl` run produced, from its exit status and the `%{http_code}` it printed.
+/// Outcome of a completed `curl` run, determined from its exit status and printed `%{http_code}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fetched {
     Body,
@@ -456,8 +456,8 @@ pub enum Fetched {
     Failed,
 }
 
-/// A body counts only when curl exited successfully: a dropped connection still prints `200`
-/// but exits non-zero (18) with a truncated file.
+/// Treats `200` and `404` as valid only when `curl` exited cleanly; a mid-body disconnect still
+/// prints `200` but exits non-zero (`18`) with a truncated file, so it maps to a failure.
 pub fn fetched(exit_ok: bool, http_code: &str) -> Fetched {
     match http_code {
         "404" if exit_ok => Fetched::NotFound,
@@ -466,8 +466,8 @@ pub fn fetched(exit_ok: bool, http_code: &str) -> Fetched {
     }
 }
 
-/// GET with the system `curl` into a file under `dir`: `None` on 404, an error on any other
-/// failure.
+/// Downloads `url` via system `curl` into a new file under `dir`, returning `None` on 404 and an
+/// error on any other failure.
 fn curl(url: &str, dir: &Path) -> Result<Option<Vec<u8>>> {
     let unavailable =
         |reason: String| Error::new(Code::RegistryUnavailable, msg::fetch_failed(url, &reason));

@@ -130,8 +130,9 @@ const RESERVED: [&str; 30] = [
     "LPT\u{b3}",
 ];
 
-/// Whether `s` names the same file on every OS: not empty, no character Windows rejects or
-/// strips (control characters, `<>:"/\|?*`, a trailing `.` or space) and no device name.
+/// Returns `true` when path component `s` is stored unchanged on every OS: non-empty, no trailing
+/// `.` or space (Windows strips them), no control characters, double quote, or `<>:/\|?*`, and not
+/// a Windows device name (`CON`, `NUL`, `COM1`, etc.) with or without an extension.
 pub fn portable_component(s: &str) -> bool {
     if s.is_empty() || s.ends_with(['.', ' ']) {
         return false;
@@ -146,8 +147,8 @@ pub fn portable_component(s: &str) -> bool {
     !RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
 }
 
-/// Files of one package compared the way case-insensitive file systems compare names: no two may
-/// fold to the same path, and no file may also be a parent directory of another.
+/// Set of file paths in a package, compared case-insensitively as on Windows and macOS: no two
+/// files may fold to the same path, and no file may serve as a parent directory of another.
 #[derive(Default)]
 pub struct PathSet {
     files: HashSet<Vec<String>>,
@@ -155,7 +156,8 @@ pub struct PathSet {
 }
 
 impl PathSet {
-    /// Adds a file given by its components; `false` if it collides with an earlier one.
+    /// Inserts a file given by its path components, returning `false` if it collides with an
+    /// earlier entry.
     pub fn insert(&mut self, parts: &[&str]) -> bool {
         let folded: Vec<String> = parts
             .iter()
@@ -177,7 +179,8 @@ impl PathSet {
     }
 }
 
-/// Checks package paths (`/`-separated, relative to the package root) the way `unpack` will.
+/// Validates `/`-separated package-relative paths for `qxide publish` using the same rules as
+/// `unpack`, returning the failure reason in `Err`.
 pub fn check_paths<'a>(
     paths: impl IntoIterator<Item = &'a str>,
 ) -> std::result::Result<(), String> {
@@ -194,8 +197,8 @@ pub fn check_paths<'a>(
     Ok(())
 }
 
-// `<root>/a/b.qx` -> `a/b.qx`; rejects absolute paths, `..`, drive prefixes and names that are
-// not portable (see `portable_component`).
+// Maps `<root>/a/b.qx` -> `a/b.qx`, rejecting absolute paths, `..`, drive prefixes, and
+// non-portable components (see `portable_component`).
 fn entry_path(path: &Path, root: &str) -> Result<PathBuf> {
     let shown = path.display().to_string();
     let mut comps = path.components();
@@ -222,8 +225,9 @@ fn entry_path(path: &Path, root: &str) -> Result<PathBuf> {
     Ok(rel)
 }
 
-/// Unpacks a verified archive into `dest` (which must not exist yet), keeping only regular files
-/// and directories under `<root>/`. Every entry is checked before the first file is written.
+/// Unpacks a checksum-verified archive into `dest` (which must not yet exist), keeping only regular
+/// files and directories under `<root>/`. Every entry is validated before writing starts, so a bad
+/// archive leaves nothing behind.
 pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
     if bytes.len() as u64 > MAX_ARCHIVE {
         return Err(bad(msg::reason_too_large(MAX_ARCHIVE)));

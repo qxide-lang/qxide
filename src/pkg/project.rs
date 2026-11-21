@@ -62,7 +62,8 @@ fn package_dir(root: &Manifest, p: &lock::LockedPackage, home: &Home) -> Result<
     }
 }
 
-/// Requirements of an unpacked registry package on its dependencies, from its `qxide.toml`.
+/// Reads a registry package's dependency requirements from its cached unpacked `qxide.toml`,
+/// returning `None` if it is not unpacked.
 fn installed_deps(home: &Home, p: &lock::LockedPackage) -> Option<Vec<(String, VersionReq)>> {
     let Source::Registry(url) = &p.source else {
         return None;
@@ -78,8 +79,8 @@ fn installed_deps(home: &Home, p: &lock::LockedPackage) -> Option<Vec<(String, V
     )
 }
 
-/// The same from the unpacked package, else from the registry index (which `install` reads
-/// anyway to download it).
+/// Like `installed_deps`, falling back to the package's registry index entry when not unpacked
+/// (since `install` reads the index to download it anyway).
 fn locked_deps(registry: &Registry, p: &lock::LockedPackage) -> Option<Vec<(String, VersionReq)>> {
     if let Some(deps) = installed_deps(&registry.home, p) {
         return Some(deps);

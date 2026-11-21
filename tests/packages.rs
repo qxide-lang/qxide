@@ -91,7 +91,8 @@ impl Env {
         dir
     }
 
-    /// A library package with an empty public function and these `[dependencies]` lines.
+    /// Creates a library package directory containing an empty public function in `src/lib.qx` and
+    /// the given `[dependencies]` lines.
     fn lib(&self, name: &str, version: &str, deps: &str) -> PathBuf {
         let dir = self.root.join(format!("{name}-{version}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -107,7 +108,7 @@ impl Env {
         dir
     }
 
-    /// Edits `qxide.lock` of `dir` with `f`.
+    /// Rewrites `qxide.lock` in `dir` using closure `f`.
     fn edit_lock(&self, dir: &Path, f: impl FnOnce(String) -> String) {
         let path = dir.join("qxide.lock");
         let text = std::fs::read_to_string(&path).unwrap();
@@ -388,9 +389,9 @@ fn build_metadata_versions_are_never_published_or_selected() {
     env.ok(&app, &["run"]);
 }
 
-// Builds tests/support/fake_curl.rs as `curl` next to a copy of `qxide`: Windows looks for
-// programs in the executable's own directory before System32 (which has a real curl.exe), and
-// on Unix the directory also goes first on PATH. Returns the copied `qxide`.
+// Compiles `tests/support/fake_curl.rs` with `rustc` into a `curl` binary next to a copy of `qxide`
+// and returns the copy. Windows checks the executable's own directory before System32 (which
+// includes a real `curl.exe`), and on Unix this directory is also placed first on `PATH`.
 fn fake_curl_qxide(env: &Env) -> PathBuf {
     let bin = env.root.join("fakebin");
     std::fs::create_dir_all(&bin).unwrap();

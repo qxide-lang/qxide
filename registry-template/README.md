@@ -87,7 +87,7 @@ Example line:
 | Field | Required | Description |
 | --- | --- | --- |
 | `name` | Yes | Package name. |
-| `vers` | Yes | Semver version string. |
+| `vers` | Yes | Semver version string without build metadata (no `+...` suffix). |
 | `deps` | Yes | List of dependency objects `{name, req}`. |
 | `cksum` | Yes | Hex-encoded sha256 checksum of the archive. |
 | `qxide` | No | Qxide language version requirement. |
@@ -102,17 +102,19 @@ Example line:
 
 Every pull request runs `scripts/validate.py`, which checks:
 
-- JSON syntax and required fields for every index line
+- JSON syntax, required fields, and qxide client compatibility for every index line (`v` is the integer `1`; no build metadata in `vers`; versions, dependency requirements, and `qxide` checked with the same rules as the client's semver parser)
 - Correct `index/<prefix>/<name>` path
-- No duplicate versions
-- Archive exists, its sha256 matches `cksum`, it contains only regular files under `<name>-<version>/` with safe paths, and it respects size and file-count limits
+- No duplicate versions, compared by semver precedence
+- Expanded download locations (`dl` and the `config.json` template) are `https://` URLs or plain paths inside the repository
+- Archive exists, its sha256 matches `cksum`, it contains only regular files under `<name>-<version>/` with safe, portable paths (no trailing dots or spaces, no Windows device names such as `CON` or `NUL`, no characters Windows rejects) and no two entries differing only in letter case, and it respects size and file-count limits
 - `qxide.toml` inside the archive matches `name` and `vers` and defines `description`, `license`, and `qxide`
 - `src/lib.qx` is present in the archive
-- All declared dependencies exist in the registry
+- All declared dependencies exist in the registry and a package does not depend on itself
 - Existing published index lines are unchanged except for `yanked`
 - No published version is removed
 - No existing archive is modified or deleted
 - `search.json` is untouched
+- `config.json` is untouched
 - New package names do not match any existing package name when hyphens are removed (look-alike prevention)
 
 The workflow job summary lists the files included in each new version for reviewers.

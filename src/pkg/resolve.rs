@@ -380,14 +380,14 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// Requirements a locked registry package puts on its dependencies (from its unpacked manifest
-/// or its index entry), or `None` when they are not known locally.
+/// Callback returning a locked registry package's dependency requirements from its unpacked
+/// manifest or index entry, or `None` if unavailable locally.
 pub type DepsOf<'a> = dyn FnMut(&LockedPackage) -> Option<Vec<(String, VersionReq)>> + 'a;
 
-/// Whether `lock` still matches `root` without resolving again: same direct dependencies, every
-/// locked version satisfies every requirement on it (from the root, path packages as they are on
-/// disk now, and registry packages through `deps_of`), sources are the ones a resolution would
-/// pick, and every locked package is reachable from the root.
+/// Reports whether `lock` still matches `root` without re-resolving: identical direct dependencies,
+/// every locked version satisfies all requirements (from `root`, current on-disk path packages, and
+/// registry packages via `deps_of`), every source matches what resolution would pick, and every
+/// locked package is reachable from `root`.
 pub fn is_fresh(root: &Manifest, lock: &Lock, registry_url: &str, deps_of: &mut DepsOf) -> bool {
     let Some(r) = lock.root() else { return false };
     let names: Vec<String> = root.dependencies.keys().cloned().collect();
@@ -407,8 +407,8 @@ pub fn is_fresh(root: &Manifest, lock: &Lock, registry_url: &str, deps_of: &mut 
             return false;
         }
     }
-    // Every package's dependencies must be locked too, and nothing may be locked that the root
-    // does not reach: `install` would fetch it.
+    // Every dependency of every package must be locked, and no unreachable package may remain in
+    // the lockfile since `install` would fetch it.
     let mut reachable = vec![r.name.clone()];
     let mut i = 0;
     while i < reachable.len() {
