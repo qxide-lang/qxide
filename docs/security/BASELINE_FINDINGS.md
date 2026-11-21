@@ -1,0 +1,476 @@
+# Baseline Security Review Findings
+
+- **Date:** 2026-11-21
+- **Reviewer:** Claude Opus 5.5 in Claude Code
+- **Commits:** `main` (`b8c385e`) unless noted; `app-framework` branch (`eea71a6`, not merged)
+- **Purpose:** First-pass security review recorded as a baseline for comparison with a later review (by Claude Mythos). Nothing was fixed.
+- **Method:** Read the code of the surfaces in `docs/security/THREAT_MODEL.md`; built the release CLI (`cargo build --release -j 4`) and the playground wasm (`cargo build -p qxide-wasm --target wasm32-unknown-unknown --profile wasm -j 4`) on Windows 11; ran crafted inputs with time limits and sampled the process working set once per second; ran the new random smoke test and share-link fuzz script. Two read-only sub-reviews (`app-framework` branch; site, CI, and registry template) were done by sub-agents; their claims marked "read" were spot-checked where noted.
+- **Status definitions:**
+  - `REPRODUCED` = triggered on this machine with the input given.
+  - `READ` = confirmed by reading the code, not executed.
+  - `SUSPECTED` = plausible from the code, not confirmed.
+- **Severity definitions:** `Critical` / `High` / `Medium` / `Low` / `Info` (reviewer's estimate; the threat model's actors decide the real priority).
+- **Repro files:** The exact `.qx` inputs are reproduced inline below; scratch copies live under `target/sec-repro/` (ignored, not committed).
+- **Paths:** Bare `validate.py`, `build_search.py`, and `scripts/...` paths refer to `registry-template/scripts/`; paths in the app-framework section are on the `app-framework` branch.
+
+## Summary
+
+| ID | Severity | Status | Area | Title |
+| --- | --- | --- | --- | --- |
+| B-01 | Medium | REPRODUCED | Interpreter | Unbounded loop/recursion: no step or time limit in the interpreter |
+| B-02 | Medium | REPRODUCED | Interpreter / Circuit | Unbounded memory from gates or output produced in a loop |
+| B-03 | Medium | REPRODUCED | Multi-shot runtime | Multi-shot output amplification |
+| B-04 | Low | REPRODUCED | Site / Playground | Share link is fully inflated before the size check |
+| B-05 | Info | REPRODUCED | CLI | CLI panics when stderr/stdout is closed early |
+| B-06 | Info | REPRODUCED | Parser | Smallest i64 literal cannot be written |
+| B-P1 | Medium | READ | Package system / Registry CI | Registry PR can disable its own validation |
+| B-P2 | Medium | READ | Package system / Registry CI | Deleting a whole index file passes validation |
+| B-P3 | Medium-Low | READ | Package system / Registry CI | Externally hosted `dl` skips every archive check in CI |
+| B-P4 | Low-Medium | READ | Package system / CLI | Package descriptions can carry terminal escape sequences |
+| B-P5 | Low | READ | Package system / Registry | Anyone can flip `yanked` in either direction for any package |
+| B-P6 | Low | READ | Package system / Registry CI | `validate.py` reads archive members without a per-member cap |
+| B-P7 | Low/Info | READ | Package system / Registry CI | Look-alike name check only strips hyphens |
+| B-P8 | Low/Info | READ | Package system / Registry CI | Markdown injection into the CI job summary through archive member names |
+| B-P9 | Low/Info | READ | Package system / Client | Index `dl` may point at a local file |
+| B-P10 | Info | READ | Package system / Client | Unpacked packages are trusted by a marker file |
+| B-P11 | Info | SUSPECTED | Package system / Client | tar GNU long-name / PAX header buffering |
+| B-P12 | Info | SUSPECTED | Package system / Client | Windows program search for `curl`, `gh`, `git` |
+| B-S1 | Low | READ | Site | No security headers on `qxide.dev` |
+| B-S2 | Medium | READ | CI / Distribution | PyPI publishing uses a long-lived token |
+| B-S3 | Medium-Low | READ | CI / Distribution | Actions pinned to mutable tags |
+| B-S4 | Low | READ | CI | `ci.yml` has no `permissions:` block |
+| B-S5 | Info | READ | CI / Distribution | `release.yml` interpolates `github.ref_name` in `run:` lines and grants `contents: write` workflow-wide |
+| B-S6 | Info | READ | Distribution | Installer integrity cannot be checked from the repo |
+| B-S7 | Info | READ | Site (dev) | Vite dev server may serve the repo root |
+| B-A1 | Medium | READ | App framework (`std.fs`) | `std.fs` escape through a dangling symlink |
+| B-A2 | Medium | READ | App framework (`std.fs`) | The data root itself may be a symlink |
+| B-A3 | Low-Medium | READ | App framework (runtime) | Every built app exe accepts `--dev <json>` |
+| B-A4 | Low | READ | App framework (runtime) | Runtime trusts `app.json`; bundle has no integrity check |
+| B-A5 | Low-Medium | READ | App framework (interpreter) | Empty loop bodies cannot be cancelled |
+| B-A6 | Info | READ | App framework (distribution) | Authenticode signing would break built apps |
+| B-A7 | Low | READ | App framework (IPC) | IPC worker robustness |
+| B-A8 | Low-Medium | READ | App framework (interpreter) | Unbounded `String` growth |
+| B-A9 | Low | SUSPECTED | App framework (runtime) | `percent_decode` slices `&str` by bytes |
+| B-A10 | Info | READ | App framework (dev) | Dev-mode UI serving follows symlinks, has no reserved-name filter and no size cap |
+| B-A11 | Low | SUSPECTED | App framework (`std.fs`) | Reserved-name list in stdlib `confine` is shorter than `archive.rs`'s |
+| B-A12 | Info | READ | App framework (IPC) | The page token in `bridge.js:11` is page-generated and compared only in JS |
+| B-A13 | Info | READ | App framework (CLI) | `qxide app new` puts the folder name unescaped into TOML and HTML templates |
+
+## Reproduced
+
+### B-01: Unbounded loop/recursion: no step or time limit in the interpreter
+
+- **Severity:** Medium
+- **Status:** REPRODUCED
+- **Location:** `src/lang/interp.rs:218` (`for k in a..b` with any i64 bounds); recursion bounded only in depth (`MAX_CALL_DEPTH` 200), not in total calls.
+- **Input:**
+
+`loop.qx`:
+```
+void main() {
+    for i in 0..9223372036854775807 {
+    }
+}
+```
+
+`rec.qx` (2^62 calls):
+```
+int f(int n) {
+    if (n == 0) { return 1; }
+    return f(n - 1) + f(n - 1);
+}
+void main() {
+    println("{}", f(62));
+}
+```
+
+- **Command:** `qxide run loop.qx` (`check` is fine; `qasm` and `run` hang).
+- **Observed:** Killed by `timeout 10` (exit 124) for both `loop.qx` and `rec.qx`. In the playground wasm (Node harness), `loop.qx` also ran until the 60 s harness timeout without trapping; the site stops it with its 30 s worker kill.
+- **Impact:** CLI and any embedder (LSP branch, REPL, app framework) can be hung by a shared `.qx` file; the playground relies only on the JS worker timeout. On the `app-framework` branch the cancel check runs only per statement, so an empty loop body cannot be cancelled (see B-A5).
+- **Fix idea:** A step budget in `Interp` (count loop iterations, calls and gates) with a diagnostic, configurable per host via `Limits`.
+
+### B-02: Unbounded memory from gates or output produced in a loop
+
+- **Severity:** Medium
+- **Status:** REPRODUCED
+- **Location:** `src/lang/interp.rs:517` (`fn text`, output pieces appended without a cap) and every gate call appending to the `Circuit` (no op-count cap); the loop at `interp.rs:218`.
+- **Input:**
+
+`print.qx`:
+```
+void main() {
+    for i in 0..9223372036854775807 {
+        println("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+    }
+}
+```
+
+`gates.qx`:
+```
+void main() {
+    Qubit q = qubit();
+    for i in 0..9223372036854775807 {
+        h(q);
+    }
+    discard(q);
+}
+```
+
+- **Observed:** Working set (MB, one sample per second, process then killed):
+  - `print.qx`: 785, 1560, 2091, 2643, 3150, 5759, 3447, 3987
+  - `gates.qx`: 305, 609, 862, 1011, 1170, 1874
+  Nothing is printed until elaboration ends, so the output is held in memory.
+- **Impact:** A `.qx` file can exhaust the memory of the machine running `qxide run`/`qasm` (no OS-level cap); in the playground it grows wasm memory toward the 4 GiB wasm32 maximum within the 30 s budget (no `-zmax-memory` link argument in `crates/qxide-wasm/build.rs`).
+- **Fix idea:** Cap total output bytes and circuit operations in `Limits` (tighter for the playground), and set a wasm max-memory.
+
+### B-03: Multi-shot output amplification
+
+- **Severity:** Medium
+- **Status:** REPRODUCED
+- **Location:** `src/lang/mod.rs:355-363` (`groups: HashMap<Vec<bool>, (u64, String)>`; each distinct measurement record stores its own fully rendered output).
+- **Input:**
+
+`amplify.qx` (about 100 KB): 17 qubits put in superposition, measured, then 100 `println` calls of a 1000-character literal, then the bits (abridged below; `<1000 x 'y'>` stands for a literal of 1,000 `y` characters):
+```
+void main() {
+    QReg r = qreg(17);
+    for i in 0..17 { h(r[i]); }
+    BitReg b = measure(r);
+    for i in 0..100 {
+        println("<1000 x 'y'>");
+    }
+    println("{}", b);
+}
+```
+
+- **Command:** `qxide run amplify.qx --shots 100000`
+- **Observed:** Working set (MB per second): 3220, 6248, 8460, 8780, 8591, 8338, 8258, 8148, 8409, 8060 (then killed; the machine started paging). Up to 100,000 distinct records x 100 KB each = about 10 GB. The playground accepts the same shot count (`MAX_SHOTS` 100,000); in the Node wasm harness the run did not finish or trap within 120 s.
+- **Impact:** A short program plus a large `--shots` value uses memory proportional to shots x output size. Combined with share links (which carry shots), a victim who presses Run on a shared link gets a frozen tab until the 30 s kill.
+- **Fix idea:** Render each row lazily or cap the total rendered bytes; reject when shots x output size exceeds a budget.
+
+### B-04: Share link is fully inflated before the size check
+
+- **Severity:** Low
+- **Status:** REPRODUCED
+- **Location:** `site/src/playground/share.ts:42-54` (`pipe(...DecompressionStream('deflate-raw'))` buffers everything; `MAX_CODE` is checked afterwards). Runs on page load and on every `hashchange` (`site/src/pages/Playground.tsx:171-197`).
+- **Input:** 140 MiB of `a` deflated (142,692 bytes) -> base64url hash of 190,262 characters, under `MAX_HASH` 200,000.
+- **Command:** Node 24 importing `share.ts` directly (`target/sec-repro/share_bomb.mjs`).
+- **Observed:** Rejected with `"shared program too large"` after 442 ms, but `ArrayBuffer` memory grew about 280 MiB first.
+- **Impact:** Transient memory and CPU spike in the victim's tab (bounded by the 200,000-character hash, about 150 MB inflated). Not code execution; the oversize result is discarded.
+- **Fix idea:** Read the decompression stream chunk by chunk and abort after 256 KiB.
+
+### B-05: CLI panics when stderr/stdout is closed early
+
+- **Severity:** Info
+- **Status:** REPRODUCED
+- **Location:** Diagnostics printed with `eprint!`/`print!` in `src/main.rs` (e.g. after `lang_command`), which panic on a broken pipe.
+- **Command:** `qxide run chain.qx 2>&1 | head -c 400` where `chain.qx` produces a long diagnostic.
+- **Observed:** Exit code 101 instead of 1. Without the pipe the exit code is 1.
+- **Impact:** None for security; noisy exit status in scripts.
+
+### B-06: Smallest i64 literal cannot be written
+
+- **Severity:** Info (correctness, not security)
+- **Status:** REPRODUCED
+- **Input:**
+```
+int b = -9223372036854775808;
+```
+- **Observed:** Error `Q0104` `"integer literal is too large for \`int\`"` (the literal is parsed before negation).
+- **Impact:** Correctness, not security. Listed only so later reviews do not re-report it as a parser crash.
+
+## Checked and held
+
+Reproduced checks with no issue found:
+
+- **Parser depth limit:** 100,000 nested parentheses, 100,000 unary minus, a 200,000-term `1+1+...` chain, 5,000 `else if` and 100,000 nested `if (true) {` all stop with `Q0106` at depth 128; no stack overflow.
+- **Deepest legal recursion:** 199 nested calls, each returning a call wrapped in 120 parentheses, runs in both the CLI (64 MiB stack) and the wasm build (16 MiB shadow stack).
+- **Size limits:** `qreg(1048576)` -> stabilizer tableau 512 GiB exceeds 1 GiB (`Q0406`); two of them -> `Q0409` (> 2^20 qubits); 30 state-vector qubits -> 16 GiB exceeds 1 GiB (`Q0406`); 90,000-qubit Clifford circuit -> 3.8 GiB tableau rejected.
+- **Random smoke test (`tests/smoke_random.rs`, new):** 300 mutants with the default seed plus 3,000 mutants each with seeds 1, 2 and 3 (9,300 mutants), each run through `check`, `fmt --check`, `qasm` and `run` with a 3 s limit: no panic, crash or time-out (about 2 minutes per 3,000 mutants). Most mutants stop at a diagnostic, so this is a shallow check; replaying `loop.qx` with `QXIDE_SMOKE_REPLAY` confirmed that the test does report a hang (`qasm` and `run` time-outs).
+- **Share-link fuzz script (`fuzz/js/share_decode.mjs`, new):** 20,000 mutated hashes, seed 1: 5,248 decoded, 4,947 without a program, 9,805 rejected with an `Error`; all invariants held.
+- **Fuzz harness replay (`fuzz/tests/replay.rs` on stable):** All targets accept the example programs and package manifests.
+
+## Read and suspected: package system
+
+### B-P1: Registry PR can disable its own validation
+
+- **Severity:** Medium
+- **Status:** READ (spot-checked)
+- **Location:** `registry-template/.github/workflows/validate.yml:3-4, 21-32`; `scripts/validate.py:514-517`.
+- **Observed:** On `pull_request`, the workflow file comes from the PR merge ref, so a PR can edit the step that runs the base branch's `validate.py` (or replace it with `true`). The rule "a PR that changes `index/` or `packages/` may not change other files" lives inside `validate.py` (`scripts/validate.py:514-517`), so it never runs.
+- **Impact:** Not a secret-exfiltration issue (no secrets, `contents: read`); the impact is a misleading green check for reviewers.
+- **Fix idea:** `CODEOWNERS` + required review for `.github/` and `scripts/`, or a trusted `pull_request_target` job that checks out the base and reads the PR only as git data.
+
+### B-P2: Deleting a whole index file passes validation
+
+- **Severity:** Medium
+- **Status:** READ (spot-checked)
+- **Location:** `registry-template/scripts/validate.py:488-503` (the `packages/` deny-list at `518-525` covers archives only).
+- **Observed:** `validate.py:488-503` compares only index files that still exist at HEAD; a deleted `index/...` file is never compared with the base. Repro idea (local throwaway registry): `git rm index/3/f/foo`, run `python scripts/validate.py --base main` -> 0 errors.
+- **Impact:** A follow-up PR can re-add the same name and version with a different `cksum` and an external `dl` (B-P3). Clients with an existing `qxide.lock` catch the `cksum` mismatch; fresh resolutions do not.
+
+### B-P3: Externally hosted `dl` skips every archive check in CI
+
+- **Severity:** Medium-Low
+- **Status:** READ (spot-checked)
+- **Location:** `registry-template/scripts/validate.py:471-472` (`if "://" in target: continue`); client verification in `src/pkg/cache.rs` `install`.
+- **Observed:** No sha256, path, size or manifest check and no file list in the reviewer summary; any https host (IP, localhost, any port) is accepted. The client still verifies the `cksum` (`src/pkg/cache.rs` `install`) and unpacks with its own checks.
+
+### B-P4: Package descriptions can carry terminal escape sequences
+
+- **Severity:** Low-Medium
+- **Status:** READ (spot-checked)
+- **Location:** `validate.py`; `build_search.py` (`search.json`); `src/pkg/cli.rs:282` (`println!("{left:<width$} # {}", r.description)`).
+- **Observed:** `validate.py` only checks that `description` is a string; `build_search.py` copies it into `search.json`; `qxide search` prints it unchanged.
+- **Impact:** A description with `\u001b]8;;...` (OSC-8 links), screen clears or title changes runs in the terminal of anyone who searches.
+- **Fix idea:** Strip control characters when printing registry text in the client, and reject them in `validate.py`.
+
+### B-P5: Anyone can flip `yanked` in either direction for any package
+
+- **Severity:** Low
+- **Status:** READ
+- **Location:** `validate.py:501` (`n = dict(entries[i], yanked=o.get("yanked"))`).
+- **Observed:** There is no ownership model; review is the only control.
+
+### B-P6: `validate.py` reads archive members without a per-member cap
+
+- **Severity:** Low (fails closed)
+- **Status:** READ
+- **Location:** `validate.py:349-356`.
+- **Observed:** Checks the unpacked total only after the loop.
+- **Impact:** A compressible multi-GB member in a 10 MiB gzip, or deeply nested JSON (`RecursionError`), crashes the job rather than bypassing it.
+
+### B-P7: Look-alike name check only strips hyphens
+
+- **Severity:** Low/Info
+- **Status:** READ
+- **Location:** `validate.py:419-420` (`squash()`).
+- **Observed:** No `l`/`1` or `rn`/`m` folding, no prefix squatting rule (e.g. `qxide-std`), and two new look-alikes in the same PR are not compared. Windows device names (`con`, `com1`) pass the name regex; with an external `dl` they create `index/3/c/con`, which breaks Windows checkouts.
+
+### B-P8: Markdown injection into the CI job summary through archive member names
+
+- **Severity:** Low/Info
+- **Status:** READ
+- **Location:** `validate.py:529-531`.
+- **Observed:** Writes member names inside backticks; backticks and brackets are allowed in names.
+
+### B-P9: Index `dl` may point at a local file
+
+- **Severity:** Low/Info
+- **Status:** READ
+- **Location:** `src/pkg/index.rs:331-344`.
+- **Observed:** An entry's `dl` can be `file://...` or a relative path, which the client reads from disk.
+- **Impact:** The archive must still match the `cksum` from the same index line, so this matters only for a malicious index.
+
+### B-P10: Unpacked packages are trusted by a marker file
+
+- **Severity:** Info
+- **Status:** READ
+- **Location:** `src/pkg/cache.rs` (`installed()`).
+- **Observed:** Checks only `.qxide-checksum`, not the files.
+- **Impact:** A local attacker who can write `~/.qxide` can change package sources. Outside the threat model unless `~/.qxide` is shared.
+
+### B-P11: tar GNU long-name / PAX header buffering
+
+- **Severity:** Info
+- **Status:** SUSPECTED
+- **Location:** `archive.rs` (`unpack`).
+- **Observed:** The `tar` crate reads long-name and PAX extension data before our per-entry checks in `archive.rs` `unpack`; a 10 MiB gzip could expand such a header a lot. Not tested.
+- **Impact:** Requires a package whose sha256 is in the index (i.e. a published malicious package).
+
+### B-P12: Windows program search for `curl`, `gh`, `git`
+
+- **Severity:** Info
+- **Status:** SUSPECTED
+- **Observed:** `Command::new("curl")` on Windows searches the directory of `qxide.exe` before `PATH` (Rust std behavior).
+- **Impact:** A writable install directory would allow a planted `curl.exe`. Depends on how the user installed `qxide`.
+
+## Read and suspected: site, CI and distribution
+
+### B-S1: No security headers on `qxide.dev`
+
+- **Severity:** Low
+- **Status:** READ
+- **Location:** No `site/public/_headers`.
+- **Observed:** No CSP, `frame-ancestors`/`X-Frame-Options`, `X-Content-Type-Options` or `Referrer-Policy`.
+- **Impact:** No XSS sink exists today, so this is defence in depth (a CSP needs `'wasm-unsafe-eval'` and `worker-src 'self'`).
+
+### B-S2: PyPI publishing uses a long-lived token
+
+- **Severity:** Medium
+- **Status:** READ
+- **Location:** `.github/workflows/pypi.yml:129-131` (`password: ${{ secrets.PYPI_API_TOKEN }}`), although `id-token: write` (line 121) is already granted.
+- **Observed:** Whether the `pypi` environment has protection rules is not visible from the repo.
+- **Fix idea:** Trusted Publishing would remove the token.
+
+### B-S3: Actions pinned to mutable tags
+
+- **Severity:** Medium-Low
+- **Status:** READ
+- **Location:** `pypi.yml:82, 102` (`PyO3/maturin-action@v1`); `ci.yml` (`dtolnay/rust-toolchain@stable`).
+- **Observed:** Includes the third-party `PyO3/maturin-action@v1`, whose wheels are uploaded to PyPI, and `dtolnay/rust-toolchain@stable` in `ci.yml`.
+
+### B-S4: `ci.yml` has no `permissions:` block
+
+- **Severity:** Low
+- **Status:** READ
+- **Location:** `ci.yml`.
+- **Observed:** Uses the repo default token scope.
+
+### B-S5: `release.yml` interpolates `github.ref_name` in `run:` lines and grants `contents: write` workflow-wide
+
+- **Severity:** Info
+- **Status:** READ
+- **Location:** `release.yml:80, :279` (cargo-dist generated).
+- **Observed:** Interpolates `github.ref_name` in `run:` lines and grants `contents: write` workflow-wide.
+- **Impact:** Tags need push access; fork PRs get a read-only token.
+
+### B-S6: Installer integrity cannot be checked from the repo
+
+- **Severity:** Info
+- **Status:** READ
+- **Observed:** The generated `qxide-installer.sh`/`.ps1` are not committed; any checksum they embed comes from the same GitHub release (integrity, not authenticity); `/install.sh` and `/install.ps1` redirect to `releases/latest`, so trust = Cloudflare Pages account + GitHub account.
+
+### B-S7: Vite dev server may serve the repo root
+
+- **Severity:** Info
+- **Status:** READ
+- **Location:** `site/vite.config.ts:7` (`server.fs.allow: ['..']`).
+- **Impact:** Matters only with `--host`.
+
+## Read and suspected: app framework (branch app-framework, eea71a6)
+
+All findings in this section are on the unmerged `app-framework` branch (`eea71a6`).
+
+### B-A1: `std.fs` escape through a dangling symlink
+
+- **Severity:** Medium
+- **Status:** READ (confirmed in code by reviewer)
+- **Location:** `src/lang/stdlib.rs` `confine` (around `:479-492`); `write_text`/`append_text` (`:324-341`).
+- **Observed:** The deepest existing ancestor is canonicalized and checked, but a symlink whose target does not exist fails `canonicalize`, so the loop pops to the parent (inside the root) and passes; `write_text`/`append_text` (`:324-341`) then follow the link and create the target outside the root. Repro idea (needs symlink rights, so Unix or Windows developer mode): `data/notes.txt -> ~/.zshenv` (absent), `fs.write_text("notes.txt", "...")` under `qxide run --allow fs`.
+
+### B-A2: The data root itself may be a symlink
+
+- **Severity:** Medium
+- **Status:** READ (sub-agent)
+- **Location:** `src/main.rs:291-293` on the branch (`<project>/data`); `src/app/mod.rs:307` (`qxide app dev`'s `target/app-data`).
+- **Observed:** If `data` links to `..` or `$HOME`, every "inside" path is outside. Same for `qxide app dev`'s `target/app-data`.
+
+### B-A3: Every built app exe accepts `--dev <json>`
+
+- **Severity:** Low-Medium
+- **Status:** READ (sub-agent)
+- **Location:** `crates/qxide-app-runtime/src/main.rs:378`.
+- **Observed:** Runs `App::from_dev` whether or not a bundle is attached.
+- **Impact:** A shipped (later signed) app can be pointed at any `.qx`/UI with any permissions, any data root (e.g. `C:\`) and devtools.
+- **Fix idea:** Honor `--dev` only when no bundle is attached.
+
+### B-A4: Runtime trusts `app.json`; bundle has no integrity check
+
+- **Severity:** Low
+- **Status:** READ (sub-agent)
+- **Location:** `crates/qxide-app-runtime/src/app.rs:85-146`; `src/lang/link.rs:344/351`.
+- **Observed:** `identifier` is joined raw (`..\..\X` escapes `%APPDATA%`); `data`, `dev`, `permissions`, and `deps` indices (out-of-range -> panic at `src/lang/link.rs:344/351`) are not re-validated.
+
+### B-A5: Empty loop bodies cannot be cancelled
+
+- **Severity:** Low-Medium
+- **Status:** READ (confirmed in code by reviewer)
+- **Location:** `src/lang/interp.rs` on the branch.
+- **Observed:** Polls `host.cancelled()` only inside `stmt()` (every `CANCEL_POLL` statements); `for i in 0..9000000000000000000 {}` never polls. Studio's `std.qxide.qasm` uses `NoEffects` whose `cancelled()` is always false.
+- **Impact:** Studio's Stop does nothing and the call holds a worker slot.
+
+### B-A6: Authenticode signing would break built apps
+
+- **Severity:** Info
+- **Status:** READ (sub-agent)
+- **Location:** `src/app/bundle.rs:46`; `docs/design/qx-app.md:381`.
+- **Observed:** `src/app/bundle.rs:46` requires the bundle magic in the last 8 bytes; signing appends the certificate table; `docs/design/qx-app.md:381` says to sign after build. The macOS Resources layout promised in the doc is not implemented.
+
+### B-A7: IPC worker robustness
+
+- **Severity:** Low
+- **Status:** READ (sub-agent)
+- **Location:** `crates/qxide-app-runtime/src/main.rs:302-306`, `:317-319`.
+- **Observed:** Acquire/release without a guard (a panic leaks the slot and the Promise never settles); `:317-319` ignores spawn failures; threads with 64 MiB stacks are spawned before acquiring a slot (unbounded queued threads); the `"commands"` request bypasses the slots; duplicate `(page,id)` overwrites the cancel flag.
+
+### B-A8: Unbounded `String` growth
+
+- **Severity:** Low-Medium
+- **Status:** READ (confirmed in code by reviewer)
+- **Location:** `src/lang/interp.rs:691` on the branch (`Value::Str(a + &concat_text(b, at)?)`).
+- **Repro idea (not run):**
+```
+void main(){ String s="xxxxxxxx"; for i in 0..60 { s = s + s; } println("{}", len(s)); }
+```
+- **Observed:** Has no length cap; doubles to GBs before any cancel poll and aborts on allocation failure.
+- **Impact:** Reachable from the playground once merged.
+
+### B-A9: `percent_decode` slices `&str` by bytes
+
+- **Severity:** Low
+- **Status:** SUSPECTED
+- **Location:** `crates/qxide-app-runtime/src/main.rs:121` (`&s[i + 1..i + 3]`).
+- **Observed:** Panics if `%` is followed by a multi-byte character; likely unreachable because the webview percent-encodes.
+
+### B-A10: Dev-mode UI serving follows symlinks, has no reserved-name filter and no size cap
+
+- **Severity:** Info (dev only)
+- **Status:** READ
+- **Location:** `crates/qxide-app-runtime/src/app.rs:195`.
+
+### B-A11: Reserved-name list in stdlib `confine` is shorter than `archive.rs`'s
+
+- **Severity:** Low
+- **Status:** SUSPECTED (Windows-version dependent)
+- **Observed:** No `CONIN$`, `CONOUT$`, `COM0`/`LPT0`, or superscript digits; `"CON .txt"` is not caught (stem taken before the first dot without trimming).
+
+### B-A12: The page token in `bridge.js:11` is page-generated and compared only in JS
+
+- **Severity:** Info
+- **Status:** READ
+- **Location:** `bridge.js:11`; `main.rs:217`.
+- **Observed:** The origin check (`main.rs:217`) is the only gate; matches its documented purpose (ignore stale replies).
+
+### B-A13: `qxide app new` puts the folder name unescaped into TOML and HTML templates
+
+- **Severity:** Info
+- **Status:** READ
+- **Location:** `src/app/mod.rs:121, :128`.
+
+## Defended (read)
+
+### Site, CI and distribution
+
+- React text rendering for all output, diagnostics and QASM.
+- External links use `rel=noreferrer`.
+- Share links are not auto-run, use a fixed file name, and accept digits-only `shots`/`seed`.
+- Limits enforced in Rust.
+- Fresh instance per run.
+- Stale worker messages dropped by id.
+- `_middleware.ts` is not an open redirect.
+- No secrets in history.
+
+### App framework (`app-framework`, `eea71a6`)
+
+- Exact-origin IPC check (rejects `qxapp.localhost.evil.com` and other ports).
+- Navigation handler uses the same predicate.
+- New windows denied.
+- Devtools off unless dev.
+- CSP + `nosniff` + `no-store` on every response including 404.
+- Strict per-kind IPC key allow-list.
+- Commands must be listed in `[app]` `commands` and `public`.
+- Shots `1..=1,000,000`.
+- All strings sent back through `evaluate_script` escaped by `json_str` (quotes, backslash, control chars, U+2028/2029).
+- Bundle parsing uses checked offsets, no decompression, no extraction.
+- Build walk skips symlinks.
+- `std` permission check per import before caching.
+- Dependencies limited to `std.log`.
+- `std` reserved as a package name.
+
+## Suggested priorities
+
+1. **B-01 / B-02 / B-03 together:** An execution budget (steps, gates, output bytes, shots x output) shared by CLI, playground, LSP, REPL and apps, before the app framework ships.
+2. **B-A1 / B-A2 / B-A3:** Before merging `app-framework`.
+3. **Registry:** B-P1, B-P2, B-P3, B-P4, and syncing the live registry scripts with the template.
+4. **Supply chain:** B-S2, B-S3.
