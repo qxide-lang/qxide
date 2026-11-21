@@ -144,6 +144,14 @@ pub fn parse(text: &str, dir: &Path) -> Result<Manifest> {
     })
 }
 
+/// Whether a path dependency is relative on every platform: no leading `/` or `\` (a root, or a
+/// UNC network path on Windows) and no `:` (a drive such as `C:`). A cloned project could otherwise
+/// make `qxide` read any directory or network share (B-P13); `..` stays allowed for sibling
+/// packages.
+pub fn relative_dep_path(path: &str) -> bool {
+    !path.starts_with(['/', '\\']) && !path.contains(':')
+}
+
 // `name = "0.1"` or `name = { version = "0.1", path = "../name" }`.
 fn parse_dep(name: &str, value: &Item, dir: &Path) -> Result<Dep> {
     let req =
@@ -161,6 +169,9 @@ fn parse_dep(name: &str, value: &Item, dir: &Path) -> Result<Dep> {
     let path = string(t, "path", dir)?;
     if version.is_none() && path.is_none() {
         return Err(invalid(dir, msg::reason_bad_dep(name)));
+    }
+    if let Some(p) = path.as_deref().filter(|p| !relative_dep_path(p)) {
+        return Err(invalid(dir, msg::reason_absolute_path(name, p)));
     }
     Ok(Dep {
         req: version.as_deref().map(req).transpose()?,

@@ -931,6 +931,12 @@ fn semver_cases_match_the_registry_checker() {
         let line = serde_json::json!({"name": "a", "vers": "1.0.0", "deps": dep, "cksum": cksum, "qxide": text});
         assert_eq!(Entry::parse(&line.to_string()).is_ok(), ok, "req {text:?}");
     }
+    // `validate.py` compares qxide.toml requirements with the index line's by this equality.
+    for pair in cases["req_pairs"].as_array().unwrap() {
+        let (a, b) = (pair[0].as_str().unwrap(), pair[1].as_str().unwrap());
+        let same = VersionReq::parse(a).unwrap() == VersionReq::parse(b).unwrap();
+        assert_eq!(same, pair[2].as_bool().unwrap(), "req pair {a:?} {b:?}");
+    }
 }
 
 // Every variant once, in order: the exhaustive `match` breaks the build when a variant is added

@@ -331,6 +331,87 @@ fn lock_entries_cannot_escape_the_cache() {
     env.ok(&app, &["run"]);
 }
 
+// B-P13: a cloned project's manifest or lock could name any directory, including a network path
+// such as `//host/share/x`. Path dependencies stay relative (`../shared` still works).
+#[test]
+fn path_dependencies_must_be_relative() {
+    let env = Env::new("abspath");
+    let mid = env.lib("mid", "0.1.0", "");
+    let absolute = mid.to_str().unwrap().replace('\\', "/");
+    for path in [
+        absolute.as_str(),
+        "/mid",
+        "//host/share/mid",
+        "C:/mid",
+        "C:mid",
+    ] {
+        let app = env.app("demo", PLAIN_MAIN);
+        let m = format!(
+            "{}\n[dependencies]\nmid = {{ path = \"{path}\" }}\n",
+            read(&app.join("qxide.toml"))
+        );
+        std::fs::write(app.join("qxide.toml"), m).unwrap();
+        env.fails(&app, &["install"], "Q0602");
+        env.fails(&app, &["run"], "Q0602");
+        let _ = std::fs::remove_dir_all(&app);
+    }
+    // `qxide add --path` with an absolute directory leaves the manifest as it was.
+    let app = env.app("demo", PLAIN_MAIN);
+    let before = read(&app.join("qxide.toml"));
+    env.fails(&app, &["add", "mid", "--path", &absolute], "Q0602");
+    assert_eq!(read(&app.join("qxide.toml")), before);
+    // The relative form works, and its lock entry cannot be pointed elsewhere.
+    env.ok(&app, &["add", "mid", "--path", "../mid-0.1.0"]);
+    env.ok(&app, &["run"]);
+    for source in [format!("path+{absolute}"), "path+//host/share/mid".into()] {
+        env.edit_lock(&app, |l| l.replace("path+../mid-0.1.0", &source));
+        env.fails(&app, &["run"], "Q0603");
+        env.fails(&app, &["install", "--locked"], "Q0603");
+        env.edit_lock(&app, |l| l.replace(&source, "path+../mid-0.1.0"));
+    }
+    env.ok(&app, &["run"]);
+}
+
+// B-P10: an unpacked package was trusted by its `.qxide-checksum` marker alone, so edited files in
+// the cache were used. The files must match the cached archive, whose checksum is the lock's.
+#[test]
+fn modified_package_files_are_not_used() {
+    let env = Env::new("tamper");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils"]);
+    env.ok(&app, &["run"]);
+    let ids: Vec<PathBuf> = std::fs::read_dir(env.home.join("registry/src"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let pkg = ids[0].join("bell-utils-0.1.0");
+    let lib_qx = pkg.join("src/lib.qx");
+    let original = read(&lib_qx);
+    let extra = pkg.join("src/extra.qx");
+    let edits: [&dyn Fn(); 3] = [
+        &|| std::fs::write(&lib_qx, original.clone() + "\npublic void tampered() {}\n").unwrap(),
+        &|| std::fs::write(&extra, "public void extra() {}\n").unwrap(),
+        &|| std::fs::remove_file(&lib_qx).unwrap(),
+    ];
+    for edit in edits {
+        edit();
+        env.fails(&app, &["run"], "Q0611");
+        env.ok(&app, &["install"]);
+        assert_eq!(read(&lib_qx), original);
+        assert!(!extra.exists());
+        env.ok(&app, &["run"]);
+    }
+    // Without the archive nothing vouches for the files; `install` downloads it again.
+    let cache = env.home.join("registry/cache");
+    std::fs::remove_dir_all(&cache).unwrap();
+    env.fails(&app, &["run"], "Q0611");
+    env.ok(&app, &["install"]);
+    env.ok(&app, &["run"]);
+}
+
 #[test]
 fn checksums_are_enforced() {
     let env = Env::new("cksum");
@@ -390,8 +471,8 @@ fn build_metadata_versions_are_never_published_or_selected() {
 }
 
 // Compiles `tests/support/fake_curl.rs` with `rustc` into a `curl` binary next to a copy of `qxide`
-// and returns the copy. Windows checks the executable's own directory before System32 (which
-// includes a real `curl.exe`), and on Unix this directory is also placed first on `PATH`.
+// and returns the copy. Tests that use it place this directory first on `PATH`, where `qxide`
+// looks for `curl` (it no longer runs one just because it is next to the executable, B-P12).
 fn fake_curl_qxide(env: &Env) -> PathBuf {
     let bin = env.root.join("fakebin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -494,6 +575,39 @@ fn failed_downloads_are_never_accepted_or_cached() {
             "{o}"
         );
     }
+}
+
+// B-P12: `Command::new("curl")` on Windows runs a `curl.exe` next to `qxide.exe` before looking at
+// `PATH`, so a writable install directory could supply one. External tools now come from `PATH`
+// only: with no `curl` on `PATH`, the planted one must not run.
+#[cfg(windows)]
+#[test]
+fn tools_next_to_the_executable_are_not_run() {
+    let env = Env::new("plantedcurl");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let qxide = fake_curl_qxide(&env);
+    let app = env.app("demo", BELL_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nbell-utils = \"0.1\"\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    let empty = env.root.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let log = env.root.join("curl.log");
+    let out = Command::new(&qxide)
+        .arg("install")
+        .current_dir(&app)
+        .env("PATH", &empty)
+        .env("QXIDE_HOME", env.root.join("home-planted"))
+        .env("QXIDE_REGISTRY", "https://fake.invalid/")
+        .env_remove("QXIDE_OFFLINE")
+        .env("FAKE_ROOT", &env.registry)
+        .env("FAKE_LOG", &log)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!log.exists(), "the planted curl ran: {err}");
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0608]"), "{err}");
 }
 
 #[test]

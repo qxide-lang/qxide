@@ -66,6 +66,7 @@ dev-only  = { path = "../dev-only" }                # path-only: cannot be publi
 - Package names consist of lowercase ASCII letters, digits, and single hyphens. They must start with a letter, must not end with a hyphen, are at most 64 characters long, and cannot contain underscores.
 - In `.qx` source files, a package is addressed by its import name, formed by replacing hyphens with underscores (`bell-utils` becomes `bell_utils`). Because underscores are disallowed in package names, the mapping between package names and import names is one-to-one.
 - Dependency values are either a version requirement string or an inline table with `version` and/or `path`. Bare version strings are caret requirements (`"0.1.0"` is equivalent to `^0.1.0`).
+- A `path` is relative to the project directory and may use `..` (for example `../local-pkg`). Absolute paths, paths starting with `/` or `\` (including Windows network paths such as `//host/share`), and paths containing `:` (drive letters) are rejected with `Q0602`, and the same `path+` sources in `qxide.lock` with `Q0603`, so a cloned project cannot point `qxide` at an arbitrary directory or network share by an absolute path.
 - `qxide add` and `qxide remove` edit `qxide.toml` using a format-preserving TOML editor (`toml_edit`), preserving comments and layout.
 
 ## 3. Modules and import syntax
@@ -261,8 +262,8 @@ Each line in `index/<prefix>/<name>` is a JSON object with sorted keys, represen
 - `deps`: array of `{"name", "req"}` objects.
 - `cksum`: 64-character lowercase hex SHA-256 digest of the package archive.
 - `qxide`: optional `qxide` version requirement.
-- `description`: optional package description (used by search).
-- `dl`: optional absolute or registry-relative download URL overriding `config.json`'s `dl` template (for example, a GitHub Release asset).
+- `description`: optional package description (used by search); registry CI rejects control characters in it.
+- `dl`: optional absolute or registry-relative download URL overriding `config.json`'s `dl` template (for example, a GitHub Release asset). Registry CI still requires a copy of the archive in the repository (at the template path, or at the default `packages/...` path when the template is a URL) and checks it; clients verify `cksum`, so they can only install those bytes.
 - `yanked`: boolean indicating whether the version is yanked.
 - `v`: index schema version (`1`).
 
@@ -317,23 +318,25 @@ If `--dry-run` is passed, `qxide publish` stops after printing this summary. Oth
 
 `registry-template/` contains the automation prepared for the registry repository:
 
-- `scripts/validate.py` (using only the Python standard library) runs on every pull request and push and verifies:
+- `scripts/validate.py` (using only the Python standard library) runs on every pull request and push and verifies the following. Pull requests are checked by the `validate.yml` workflow with `pull_request_target`, so the workflow and `validate.py` come from the target branch; the pull request is checked out only as data and nothing from it is executed.
   - Index files live at the correct `<prefix>/<name>` path and use valid package names.
-  - Every line is accepted by the client: valid JSON containing the required keys, a valid package name, a 64-hex checksum, `v` equal to the integer `1` (not `true`), `vers` without build metadata, string `description` and `dl` fields, and `vers`, dependency `req`, and `qxide` values checked with a port of the `semver` crate parser the client uses (64-bit numbers, no leading zeros, and the same requirement syntax); the shared case list `tests/data/semver_cases.json` in the `qxide` repository is checked against both parsers.
+  - Every line is accepted by the client: valid JSON containing the required keys, a valid package name, a 64-hex checksum, `v` equal to the integer `1` (not `true`), `vers` without build metadata, string `description` and `dl` fields, no control characters in `description`, and `vers`, dependency `req`, and `qxide` values checked with a port of the `semver` crate parser the client uses (64-bit numbers, no leading zeros, and the same requirement syntax); the shared case list `tests/data/semver_cases.json` in the `qxide` repository is checked against both parsers.
   - No version appears more than once, compared by semver precedence.
   - Every download location, after template expansion, is an `https://` URL or a plain relative path inside the registry.
-  - Every archive hosted in the repository exists, its SHA-256 matches `cksum`, and it is a valid gzip tar containing only regular files and directories under `<name>-<version>/`, enforcing the same path rules as the client (no absolute, `..`, drive-letter, or backslash paths, only portable components, and no entries that collide after case folding), with at most 2000 files (the check stops reading at the limit), at most 10 MiB compressed, and at most 50 MiB unpacked.
-  - Each archive contains `qxide.toml` whose `name` and `version` match the index entry and which defines `description`, `license`, and `qxide`, and contains exactly `src/lib.qx`.
+  - Every version's archive exists in the repository, also when its `dl` is an `https://` URL; its SHA-256 matches `cksum`; and it is read the way the client reads it: exactly one gzip member with nothing after it, at most 66 MiB decompressed, raw tar headers with valid checksums and plain octal sizes, GNU long names of at most 4096 bytes, and no PAX, GNU long-link, or other extension headers or data after the end-of-archive block. It contains only regular files and directories under `<name>-<version>/`, enforcing the same path rules as the client (no absolute, `..`, drive-letter, or backslash paths, only portable components, and no entries that collide after case folding), with at most 2000 files (the check stops reading at the limit), at most 10 MiB compressed, and at most 50 MiB unpacked.
+  - Each archive contains `qxide.toml` whose `name` and `version` match the index entry and which defines `description`, `license`, and `qxide`, whose `[dependencies]` equal the entry's `deps` (names and requirements compared as the client's `semver::VersionReq` values, with the shared pairs in `tests/data/semver_cases.json`), and contains exactly `src/lib.qx`.
   - Every dependency listed in an entry names a package present in the registry, and no entry depends on its own package.
-  - Against the pull request's base branch: previously published lines are unchanged except for `yanked`; no version is removed; no archive under `packages/` is modified or deleted; `search.json` is not manually edited; `config.json` is not changed in a pull request; and a new package name is not a look-alike of an existing package (identical after removing hyphens).
-  - Outputs a summary listing the files inside each newly added archive for reviewers.
+  - Index file names are not Windows device names (`con`, `nul`, `com1`, and so on).
+  - Malformed input (invalid UTF-8, JSON or TOML nested deeper than the client accepts, numbers too long to be versions) is reported as an error instead of stopping the script.
+  - Against the pull request's base branch: previously published lines are unchanged, including `yanked`; no version or index file is removed; no archive under `packages/` is modified or deleted; `search.json` is not manually edited; `config.json` is not changed in a pull request; every changed path can be checked out on Windows; and a new package name is not a look-alike of another package, existing or added in the same pull request, nor reserved (names are compared after removing hyphens and folding look-alike digits, `i`, `rn`, `vv`, and `cl`; names starting like `qxide` and the name `std` are reserved).
+  - Outputs a summary listing the files inside each newly added archive for reviewers; file names and messages are escaped so that they cannot add Markdown or new lines to the summary or the job log.
 - `scripts/build_search.py` regenerates `search.json` with the newest non-yanked version and description for each package, where newest is determined by semver precedence (numeric pre-release identifiers compare as numbers, so `1.0.0-rc.10` is newer than `1.0.0-rc.2`). The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`. The `search.yml` workflow runs it after pushes to `main` that touch `index/` and commits only `search.json` as `github-actions[bot]`.
 - `.gitattributes` keeps index files LF-terminated and marks archives as binary.
 - Human review on pull requests covers name squatting, malicious or misleading packages, and licensing issues according to the policy documented in the registry `README`.
 
 ### Yanking
 
-Yanking a version is performed by setting `"yanked": true` on that version's index line in a pull request. This is the only modification permitted on an already published line; versions are never deleted or overwritten.
+Yanking a version is performed by a registry maintainer, who sets `"yanked": true` on that version's index line in a commit to `main` at the request of the account that published it. The registry has no record of package ownership, so CI rejects pull requests that change `yanked` in either direction. Versions are never deleted or overwritten.
 
 Yanked versions are skipped during fresh version resolution and by `qxide add`, while projects whose `qxide.lock` already pins a yanked version continue to install it.
 
@@ -347,6 +350,7 @@ Yanked versions are skipped during fresh version resolution and by `qxide add`, 
     1. If a cached archive exists and its SHA-256 still matches the lock, it is reused.
     2. Otherwise the client verifies that the registry index entry lists the same checksum as `qxide.lock` (`Q0607` before downloading if they differ), downloads the archive, and checks the downloaded bytes' SHA-256 against the lock (`Q0607` on mismatch, unpacking nothing).
     3. Unpacks the archive defensively into a temporary directory alongside the destination, renames it into place, and writes a `.qxide-checksum` marker file last.
+  - A package counts as unpacked only if its marker holds the locked checksum, the cached archive still matches that checksum, and the unpacked files are exactly the archive's files (compared with a fresh unpack of the archive on every `run`, `check`, `qasm`, and `install`). Edited, added, or removed files in the cache, or a missing cached archive, make the package not unpacked (`Q0611` for `run`, `check`, and `qasm`); `qxide install` then unpacks it again, downloading the archive if needed.
 - `qxide add <pkg>[@<req>] [--path <dir>]`:
   - Selects the newest non-yanked version compatible with the current `qxide` version (writing, for example, `bell-utils = "0.1.0"`), or adds a path dependency when `--path` is supplied, and then runs installation.
   - If installation fails, the edit to `qxide.toml` is rolled back.
@@ -379,7 +383,7 @@ The cache root is `$QXIDE_HOME`, defaulting to `~/.qxide` (resolved from `HOME` 
 ## 12. Security
 
 - **Checksum verification at three points:** SHA-256 digests are mandatory and verified by registry CI against the committed archive, by the client comparing the index entry against `qxide.lock` before downloading, and by the client hashing the downloaded archive against `qxide.lock` before unpacking.
-- **Immutability:** Once published, a version's index entry and archive cannot be overwritten or deleted; CI allows only the `yanked` field to change.
+- **Immutability:** Once published, a version's index entry and archive cannot be overwritten or deleted; CI rejects any change to a published line in a pull request, and only maintainers change `yanked`.
 - **Defensive extraction:** Archives are verified prior to unpacking and extracted into a temporary directory with path, entry-type, size (10 MiB compressed, 50 MiB unpacked), and file-count (2000 files) restrictions, rejecting `..`, absolute paths, drive letters, backslashes, symlinks, and hard links; entry paths must be portable and must not collide after case folding (see Archive format), and every entry is checked before the first file is written.
 - **Transport:** Plain `http://` registries are refused; HTTPS requests require TLS 1.2 or higher.
 - **Index trust:** The index is trusted as served by GitHub over TLS. Cryptographic index signatures (such as signed index commits or TUF-style metadata) are not implemented yet and remain a follow-up.

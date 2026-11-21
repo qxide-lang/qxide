@@ -151,3 +151,30 @@ pub fn import_name(name: &str) -> String {
 pub fn language_version() -> semver::Version {
     semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("crate version is semver")
 }
+
+/// A command for the external tool `name` (`curl`, `gh`, `git`), found on `PATH` only.
+///
+/// On Windows, `Command::new(name)` looks in the directory of `qxide.exe` and in the system
+/// directories before `PATH` (B-P12), so this searches the absolute `PATH` entries itself, as a
+/// shell would, and fails with `NotFound` when none has `<name>.exe`.
+pub fn command(name: &str) -> std::io::Result<std::process::Command> {
+    #[cfg(windows)]
+    {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join(format!("{name}.exe")))
+            .find(|exe| exe.is_file())
+            .map(std::process::Command::new)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("`{name}.exe` was not found on PATH"),
+                )
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(std::process::Command::new(name))
+    }
+}

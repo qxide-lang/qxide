@@ -62,7 +62,8 @@ impl Home {
             .join(archive::prefix(name, version))
     }
 
-    /// The unpacked package, if it is complete and came from an archive with this checksum.
+    /// The unpacked package, if it is complete and its files are still exactly those of the cached
+    /// archive with this checksum.
     pub fn installed(
         &self,
         id: &str,
@@ -72,7 +73,20 @@ impl Home {
     ) -> Option<PathBuf> {
         let dir = self.src_dir(id, name, version);
         let marker = std::fs::read_to_string(dir.join(MARKER)).ok()?;
-        (marker.trim() == cksum).then_some(dir)
+        if marker.trim() != cksum {
+            return None;
+        }
+        // B-P10: the marker can be rewritten along with the files, the lock's checksum cannot, so
+        // the files are compared with the archive that matches it, unpacked afresh.
+        let bytes = self.cached_archive(id, name, version, cksum)?;
+        let root = archive::prefix(name, version);
+        let fresh = dir
+            .parent()?
+            .join(format!(".verify-{root}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fresh);
+        let same = archive::unpack(&bytes, &root, &fresh).is_ok() && same_files(&dir, &fresh);
+        let _ = std::fs::remove_dir_all(&fresh);
+        same.then_some(dir)
     }
 
     /// A cached archive whose checksum still matches.
@@ -130,6 +144,49 @@ impl Home {
         std::fs::rename(&tmp, &dest).map_err(|e| Error::io(&dest, &e))?;
         Ok(dest)
     }
+}
+
+/// Whether `installed` (apart from its marker) and `fresh` hold the same regular files with the
+/// same contents. Symbolic links and other special files never match.
+fn same_files(installed: &Path, fresh: &Path) -> bool {
+    fn files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { return false };
+            let Ok(kind) = entry.file_type() else {
+                return false;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
+                if !files(root, &path, out) {
+                    return false;
+                }
+            } else if kind.is_file() {
+                let rel = path.strip_prefix(root).expect("walk stays below root");
+                if rel != Path::new(MARKER) {
+                    out.push(rel.to_path_buf());
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    if !files(installed, installed, &mut a) || !files(fresh, fresh, &mut b) {
+        return false;
+    }
+    a.sort();
+    b.sort();
+    a == b
+        && a.iter().all(|rel| {
+            matches!(
+                (std::fs::read(installed.join(rel)), std::fs::read(fresh.join(rel))),
+                (Ok(x), Ok(y)) if x == y
+            )
+        })
 }
 
 /// Writes through a temporary file and a rename.

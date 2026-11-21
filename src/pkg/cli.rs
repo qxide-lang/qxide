@@ -469,10 +469,21 @@ pub fn write_into_registry(dir: &Path, entry: &Entry, bytes: &[u8]) -> Result<Ve
 }
 
 fn gh_available() -> bool {
-    Command::new("gh")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
+    super::command("gh").is_ok_and(|mut gh| {
+        gh.arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// `gh` or `git` from `PATH` (see `super::command`).
+fn tool(name: &str) -> Result<Command> {
+    super::command(name).map_err(|e| {
+        Error::new(
+            Code::RegistryUnavailable,
+            msg::command_failed(name, &e.to_string()),
+        )
+    })
 }
 
 fn run(cmd: &mut Command) -> Result<String> {
@@ -496,23 +507,23 @@ fn run(cmd: &mut Command) -> Result<String> {
 fn open_pull_request(entry: &Entry, bytes: &[u8]) -> Result<()> {
     let version = entry.vers.to_string();
     let branch = format!("publish/{}-{version}", entry.name);
-    let user = run(Command::new("gh").args(["api", "user", "--jq", ".login"]))?;
+    let user = run(tool("gh")?.args(["api", "user", "--jq", ".login"]))?;
     status(msg::verb_forking(), REGISTRY_REPO);
-    run(Command::new("gh").args(["repo", "fork", REGISTRY_REPO, "--clone=false"]))?;
+    run(tool("gh")?.args(["repo", "fork", REGISTRY_REPO, "--clone=false"]))?;
     let work = std::env::temp_dir().join(format!(
         "qxide-publish-{}-{version}-{}",
         entry.name,
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&work);
-    run(Command::new("gh")
+    run(tool("gh")?
         // `--no-upstream`: the `upstream` remote is added explicitly below.
         .args(["repo", "clone", &format!("{user}/registry")])
         .arg("--no-upstream")
         .arg(&work)
         .args(["--", "--depth", "1"]))?;
     let git = |args: &[&str]| {
-        let mut c = Command::new("git");
+        let mut c = tool("git")?;
         c.arg("-C").arg(&work).args(args);
         run(&mut c)
     };
@@ -528,7 +539,7 @@ fn open_pull_request(entry: &Entry, bytes: &[u8]) -> Result<()> {
     git(&["add", "-A"])?;
     git(&["commit", "-m", &msg::pr_title(&entry.name, &version)])?;
     git(&["push", "-u", "origin", &branch])?;
-    let url = run(Command::new("gh").args([
+    let url = run(tool("gh")?.args([
         "pr",
         "create",
         "--repo",

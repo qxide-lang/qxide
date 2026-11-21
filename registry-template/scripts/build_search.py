@@ -26,7 +26,9 @@ def key(vers: str):
         return (int(major), int(minor), int(patch), 1, ())
     # Numeric pre-release identifiers compare numerically and sort before alphanumeric ones; with an
     # equal prefix, the longer identifier list is newer (1.0.0-rc.2 < 1.0.0-rc.10 < 1.0.0-rc.10.1).
-    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+    # validate.py rejects leading zeros, so length then digits is numeric order, without `int()`,
+    # which refuses more than 4300 digits.
+    ids = tuple((0, len(p), p) if p.isdigit() else (1, 0, p) for p in pre.split("."))
     return (int(major), int(minor), int(patch), 0, ids)
 
 
