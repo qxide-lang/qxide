@@ -115,9 +115,12 @@ Covers the parser, checker, linker, interpreter, and simulators across stack ove
 #### Known gaps
 
 - **B-01** (MEDIUM, REPRODUCED): Unbounded loop/recursion; there is no step or wall-clock time limit in the interpreter (`src/lang/interp.rs`, `src/main.rs`), and loop bounds can be any `i64`.
-- **B-02** (MEDIUM, REPRODUCED): Unbounded memory consumption from gates or output produced inside a loop.
-- **B-03** (MEDIUM, REPRODUCED): Multi-shot output amplification.
+- **B-02** (MEDIUM, REPRODUCED): Unbounded memory consumption from gates or output produced inside a loop (about 300-500 MB per second of growth in the CLI).
+- **B-03** (MEDIUM, REPRODUCED): Multi-shot output amplification (about 8.7 GB within 4 s in the CLI with `--shots 100000`).
 - **B-06** (INFO, correctness not security, REPRODUCED): Smallest `i64` literal cannot be written.
+- **B-07** (INFO, SUSPECTED for Windows before 11): An import whose module segment is a Windows device name (`import devp.con.f;` maps to `src/con.qx` via `src/lang/link.rs:153`) was read as an ordinary missing file on Windows 11; older Windows may map it to the console device and block; not tested.
+- **B-08** (MEDIUM-LOW, REPRODUCED): Stabilizer simulation time grows roughly cubically with qubit count inside the memory limit (`qxide run` of a GHZ program: 2.0 s at 8,192 qubits, 19.6 s at 16,384, 97.9 s at 32,768); the check in `src/lang/mod.rs` bounds memory, not time.
+- **B-09** (MEDIUM-LOW, REPRODUCED timing; cause READ): Every `r[i]` clones the whole register (`src/lang/interp.rs:75-83`, `Frame::get` returns `v.clone()`), so a loop over a register is O(n^2); `qxide qasm` of the same GHZ program takes 1.47 s at 65,536 qubits and 86.0 s at 131,072. A limit on loop iterations alone would not catch it.
 - **B-A5** (LOW-MEDIUM, READ, `app-framework` branch): Empty loop bodies cannot be cancelled because `src/lang/interp.rs` polls `host.cancelled()` only inside `stmt()` (every `CANCEL_POLL` statements); `for i in 0..9000000000000000000 {}` never polls, and `std.qxide.qasm` uses `NoEffects` whose `cancelled()` always returns false.
 - **B-A8** (LOW-MEDIUM, READ, `app-framework` branch): Unbounded `String` growth at `src/lang/interp.rs:691` (`Value::Str(a + &concat_text(b, at)?)`) has no length cap; repeated doubling allocates gigabytes before any cancel poll and aborts on allocation failure (reachable from the playground once merged).
 - Direct Rust library callers of `src/stabilizer.rs` bypass the `.qx` runner's `stabilizer_bytes` check because the stabilizer backend has no internal memory limit.
@@ -152,7 +155,7 @@ Covers wasm execution limits, share-link decoding, and output rendering/XSS on `
 #### Known gaps
 
 - **B-04** (LOW, REPRODUCED): Share links are fully inflated in `site/src/playground/share.ts` before the `MAX_CODE = 256 KiB` check, allowing a compact compressed `#code=` hash to trigger large allocations on page load or `hashchange` (`site/src/pages/Playground.tsx:171-197`).
-- **B-02** (MEDIUM, REPRODUCED) and **B-03** (MEDIUM, REPRODUCED): Loop-generated gates/output and multi-shot output amplification can exhaust wasm/browser memory or stall the tab before `TIME_LIMIT_MS = 30,000` terminates the worker.
+- **B-02** (MEDIUM, REPRODUCED) and **B-03** (MEDIUM, REPRODUCED): For **B-02** (loop-generated gates/output), in Node 24 with the playground wasm module (not in a browser), a single run allocated about 3 GiB of wasm memory within 1.4-7.4 s and then trapped (allocation failure under `panic=abort`); the site worker reports the trap and the next run gets a fresh instance. For **B-03** (multi-shot output amplification), in the same Node harness the worker-equivalent process grew to about 949 MB of working set and kept using CPU until it was killed at 30 s (the same `TIME_LIMIT_MS = 30,000` limit the site's worker uses); a frozen tab was not observed or tested.
 - **B-A8** (LOW-MEDIUM, READ, `app-framework` branch): Unbounded `String` growth (`src/lang/interp.rs:691`) will become reachable from the playground once `app-framework` is merged, causing rapid allocation failure and wasm trap.
 - **B-S1** (LOW, READ): `qxide.dev` has no `site/public/_headers` (no CSP, `frame-ancestors`/`X-Frame-Options`, `X-Content-Type-Options`, or `Referrer-Policy`), leaving the playground embeddable in third-party pages (clickjacking/phishing) and without CSP defense in depth.
 
@@ -200,6 +203,7 @@ Covers GitHub index trust, `sha256` verification, extraction path escape, depend
 - **B-P10** (INFO, READ): Unpacked packages are trusted solely by the `.qxide-checksum` marker file (`src/pkg/cache.rs` `installed()`) without re-checking extracted files (outside threat model unless `~/.qxide` is shared; A7).
 - **B-P11** (INFO, SUSPECTED, not tested): The `tar` crate reads GNU long-name and PAX extension headers before per-entry checks in `src/pkg/archive.rs` `unpack`; a `10 MiB` gzip could expand header memory significantly (requires a published malicious package whose `sha256` is in the index).
 - **B-P12** (INFO, SUSPECTED): On Windows, `Command::new("curl")` (and `gh`, `git`) searches the directory of `qxide.exe` before `PATH` (Rust `std` behavior), allowing a planted `curl.exe` in a writable install directory (A7).
+- **B-P13** (INFO, READ): Path dependencies and locked `path+` sources can point anywhere on disk (`src/pkg/resolve.rs:51` `join_rel` keeps absolute paths and leading `..`; `src/pkg/project.rs:56`), so a cloned project can make `qxide run`/`check` read `qxide.toml` and `.qx` files from any readable directory; output reaches only the same user. Registry packages cannot declare path dependencies (their dependencies come from the index line only).
 
 #### Open questions for the reviewer
 

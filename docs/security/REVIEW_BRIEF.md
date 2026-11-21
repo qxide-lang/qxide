@@ -30,6 +30,8 @@ Review exactly these two code baselines:
 - **Branch `main`**, baseline commit `b8c385e` (`qxide` 0.7.0 / tag `v0.7.0`).
 - **Branch `app-framework`**, commit `eea71a6` (unreleased desktop app framework, not merged into `main`). Inspect it using `git show app-framework:<path>` or a separate worktree.
 
+This review may start long after these commits. If `main` or `app-framework` has moved, review the current tips instead, record the commit hashes you reviewed at the top of the report, and re-check every `B-xx` `file:line` reference against them before confirming or refuting it.
+
 This review starts from branch `security-review-prep`. Do not review other branches (`lsp`, `random-default-seed`, or others) unless the maintainer explicitly adds them.
 
 ## In scope
@@ -94,7 +96,7 @@ Run the test suite:
 cargo test -j 4
 ```
 
-Run randomized smoke tests (configurable via `QXIDE_SMOKE_CASES`, `QXIDE_SMOKE_SEED`, and `QXIDE_SMOKE_TIMEOUT_MS`):
+Run randomized smoke tests (configurable via `QXIDE_SMOKE_CASES`, `QXIDE_SMOKE_SEED`, `QXIDE_SMOKE_TIMEOUT_MS`, and `QXIDE_SMOKE_REPLAY`, which runs one file unchanged before the mutants; time-outs from huge loop bounds are expected duplicates of `B-01` until the interpreter has a step limit):
 
 ```bash
 cargo test --release --test smoke_random -- --ignored --nocapture
