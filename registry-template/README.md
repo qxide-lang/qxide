@@ -47,11 +47,14 @@ Each package has an owner file, `owners/<prefix>/<name>`, with one line per GitH
 {"id":295735711,"login":"rigelx2b"}
 ```
 
-CI compares only `id`, the numeric GitHub user id (`gh api users/<login> --jq .id` prints it). `login` is for readers: logins can be renamed and then registered by someone else, so a login grants nothing. A file lists 1 to 32 owners.
+CI compares only `id`, the numeric GitHub user id (`gh api users/<login> --jq .id` prints it). `login` is for readers: logins can be renamed and then registered by someone else, so a login grants nothing. A line with `"pending": true` is an invitation, not an owner. A file has 1 to 32 lines and at least one owner.
 
-- **New package**: the pull request that adds the first version also adds the owner file, listing exactly the account that opened the pull request. `qxide publish` does this for you. Names are first come, first served.
-- **New version**: the pull request must be opened by an account listed in the owner file on `main`.
-- **Adding, removing, or transferring owners**: an owner opens a pull request that edits the owner file (to transfer, replace the lines with the new owner's). The file cannot be emptied or deleted, and owners added in a pull request count only after it is merged.
+- **New package**: the pull request that adds the first version also adds the owner file, listing exactly the account that opened the pull request. Names are first come, first served.
+  - `qxide publish` after 0.7.0 writes this file for you.
+  - With `qxide` 0.7.0 or earlier, add it yourself before opening the pull request: create `owners/<prefix>/<name>` (same `<prefix>` as the index file) containing the single line `{"id":<your id>,"login":"<your login>"}`, where `gh api user --jq .id` prints your id.
+- **New version or yank**: the pull request must be opened by an owner listed in the owner file on `main`.
+- **Adding an owner** takes two pull requests. An owner adds the account as an invitation, `{"id":<id>,"login":"<login>","pending":true}`. Once that is merged, the invited account opens its own pull request that removes `"pending":true` from its line and changes nothing else. Nobody can add an owner without the account's own pull request.
+- **Removing owners or transferring**: an owner can remove owners and withdraw invitations. To transfer a package, invite the new owner, let them accept, then remove the old line. The file cannot be left without an owner or deleted.
 - **Packages without an owner file** (published before owner files existed) are locked until a maintainer adds one.
 - Lost accounts and disputes: open an issue; maintainers change owner files in a commit to `main`.
 
@@ -59,7 +62,7 @@ CI takes the pull request author from the event GitHub sends for the pull reques
 
 ## Yanking a version
 
-Only maintainers yank versions. Owner files do not extend to yanking, so CI rejects any pull request that changes `yanked`, including one from an owner. To have a version yanked, open an issue from an account listed in the package's owner file naming the package and version; a maintainer sets `"yanked": true` on that version's index line in a commit to `main` (with branch protection that requires pull requests, this needs a maintainer allowed to bypass it). Yanked versions are not restored.
+An owner yanks a version with a pull request that changes `"yanked": false` to `"yanked": true` on that version's index line and nothing else in it. CI rejects yanks from other accounts and any pull request that sets `yanked` back to false. Maintainers can also yank in a commit to `main` (for abuse or legal requests, or when the owner's account is lost), and only maintainers restore a yanked version.
 
 - Yanked versions are not selected for new dependency resolutions.
 - Projects whose `qxide.lock` already pins a yanked version continue to work.
@@ -67,7 +70,7 @@ Only maintainers yank versions. Owner files do not extend to yanking, so CI reje
 
 ## Immutability and integrity
 
-- Published archives and index lines are immutable; only maintainers change the `yanked` field.
+- Published archives and index lines are immutable; owners can set `yanked` to true, and only maintainers set it back.
 - `qxide` verifies the sha256 digest of every archive against `qxide.lock` before unpacking and refuses to download if the index checksum differs from the lockfile.
 - The same index and archive files can be served by a dedicated registry server at different URLs in the future; updating `dl` in `config.json` moves archive downloads without rewriting index lines.
 
@@ -133,7 +136,7 @@ Every pull request runs `scripts/validate.py` from the target branch (the workfl
 - Owner files are well formed and belong to a package with an index file
 - Every file added under `packages/` is the archive of a version in the index, and new versions keep their archive at the default `packages/<prefix>/<name>/` path
 - A pull request that changes `index/`, `packages/`, or `owners/` changes no other files
-- Existing published index lines are unchanged, including `yanked`
+- Existing published index lines are unchanged, except that an owner may change `yanked` from false to true
 - No published version or index file is removed
 - Every changed path can be checked out on Windows
 - `description` contains no control characters
@@ -157,7 +160,7 @@ Maintainers review pull requests according to the following rules:
 5. Reject code that is malicious, deceptive, or misrepresents what it does.
 6. Require an OSI-approved or otherwise clearly redistributable license.
 7. Otherwise, package names are granted first-come, first-served.
-8. Maintainers yank versions at the request of a package owner, and may yank versions or change owner files in cases of abuse, lost accounts, or legal requests.
+8. Owners yank their own versions; maintainers may yank or restore versions or change owner files in cases of abuse, lost accounts, or legal requests.
 
 ## License
 

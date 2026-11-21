@@ -212,7 +212,7 @@ The steps of part 1 apply. In addition:
 
 ## Not done here
 
-- Package ownership as a whole: anyone can still open a pull request that publishes a new version of an existing package, and only review prevents it (alternative (b) for B-P5 would cover both). Addressed for publishing in part 3 (owner files); yanking stays maintainer-only.
+- Package ownership as a whole: anyone can still open a pull request that publishes a new version of an existing package, and only review prevents it (alternative (b) for B-P5 would cover both). Addressed in part 3 (owner files): owners publish and yank; only maintainers un-yank.
 - B-P10 costs one archive unpack per package on every `run`, `check`, and `qasm`; the comparison is not cached.
 - Look-alike folding is ASCII only (package names are ASCII) and does not cover every pair a font can confuse (for example `u` and `v`).
 - The baseline's `index/3/c/con` remark for the client: the client still reads such paths; the registry can no longer contain them.
@@ -224,9 +224,9 @@ The steps of part 1 apply. In addition:
 
 - **Date:** 2026-11-21
 - **Branch:** `feat/registry-owners`, created from local `main` at `846d18e` (parts 1 and 2 merged). Not merged or pushed.
-- **Decision:** the user chose alternative (b) of B-P5 for publishing: an owner list per package, created by the first publishing pull request and enforced by CI instead of by review alone.
+- **Decision:** the user chose alternative (b) of B-P5 for publishing: an owner list per package, created by the first publishing pull request and enforced by CI instead of by review alone. Follow-up decisions (2026-11-21 23:01): owners may yank their versions; new owners join by invitation and acceptance; maintainers act only by commits to `main` (no maintainer list in CI); `qxide publish` writes the owner file and the README and pull request template keep manual steps for 0.7.0 users; `bell-utils` starts with `rigelx2b` as owner; the CHANGELOG is updated at the next release.
 - **Scope:** `registry-template/`, `src/pkg/`, their tests, and documentation in this repository. Nothing was sent to `qxide-lang/registry` or any other remote. This record and the commit messages were written by hand; nothing was sent to an external text service.
-- **Commits:** `9ca1222` (validator, workflow, tests), `dbbe8b7` (`qxide publish` writes the owner file), `d224ea6` (documentation and this record), then a follow-up found in review: new versions keep their archive at the default path, and GitHub App authors are accepted.
+- **Commits:** `9ca1222` (validator, workflow, tests), `dbbe8b7` (`qxide publish` writes the owner file), `d224ea6` (documentation and this record), `00c47b2` (follow-up found in review: new versions keep their archive at the default path, and GitHub App authors are accepted), then the commit with owner yanks and invitations.
 
 ## Design
 
@@ -239,12 +239,12 @@ The steps of part 1 apply. In addition:
 | New package | No index file in `git ls-tree <base> -- index/`; the pull request must add the owner file listing exactly its author | First come, first served, as before. Defined by the base listing, which fails closed, rather than by a missing owner file. |
 | Published package without owner file | Locked for pull requests until a maintainer adds the file | Migration-safe: a missing file cannot be claimed by the next pull request. |
 | Missing author | `--base` without a valid `--author-id` and `--author-login` is an error | Fail closed if the workflow is changed or run without the event. |
-| Changes to owners | Only by an author listed on the base branch; the file cannot become empty or be deleted; no confirmation by added accounts | Smallest rule that allows adding, removing, and transferring. |
+| Changes to owners | An owner can invite (`"pending": true`), withdraw invitations, and remove owners; no pull request adds a confirmed owner except the invited account's own, which may only drop `pending` from its own line (and set its current login) and change nothing else; the file keeps at least one confirmed owner and cannot be deleted | Ownership needs the new owner's consent, given by a pull request that GitHub attributes to that account. Invited accounts have no rights until they accept. |
 | Maintainer override | Commit to `main` (admin bypass); the push run checks the format only | No maintainer list inside CI, which would be one more thing to protect. |
 | Files under `packages/` | Every added file must be the archive of a version in the index, and a version added by the pull request keeps its archive at the default path (no relative `dl` elsewhere) | Without this, a non-owner could add `packages/<prefix>/<name>/<name>-<next>.tar.gz`, with no index line or as the `dl` of a package of its own; the owner's publication of that version would then modify an existing archive and be rejected. |
 | Bot authors | `--author-login` also accepts `<name>[bot]`; owner files list users only | A Dependabot pull request that updates workflow actions would otherwise fail; a bot cannot own a package. |
 | Diff parsing | `git diff --name-status -z` | Without `-z`, git quotes paths with unusual characters, and a quoted path does not start with `packages/`. |
-| Yanking | Unchanged: maintainers only (B-P5) | Allowing owners to yank is a separate decision. |
+| Yanking | An owner may change `yanked` from false to true; un-yanking stays with maintainers (commit to `main`) | The ownership check already covers every change to the index file. Restoring a version that was yanked, possibly by an owner whose account was taken over, is left to people. |
 
 `qxide publish` (the `gh` path) now asks `gh api user --jq '.id, .login'` and writes the owner file into the pull request for the first version of a package. Without `gh`, it prints the owner file as a third file to add. A local directory registry gets no owner file.
 
@@ -262,7 +262,11 @@ The steps of part 1 apply. In addition:
 | `test_new_package_needs_an_owner_file` | new package, no owner file | rejected |
 | `test_new_package_owner_file_lists_exactly_the_author` | someone else, author plus another, matching login with another id | rejected |
 | `test_non_owner_cannot_add_themselves` | `mallory` adds its own account (with and without a new version), or replaces the owners | rejected |
-| `test_owner_adds_and_transfers` | `alice` adds `bob`; after merge `bob` publishes and becomes the only owner | passes |
+| `test_owner_invites_and_invitee_accepts` | `alice` invites `bob`; `bob` publishes while invited; `bob` accepts; `bob` publishes and becomes the only owner | passes; rejected; passes; passes |
+| `test_owners_cannot_add_owners_without_acceptance` | `alice` lists `bob` as owner directly; `alice` confirms `bob`'s invitation | rejected |
+| `test_invitee_pull_request_only_accepts` | `bob` (invited) accepts `mallory`'s invitation, both, removes `alice`, adds another owner, accepts and publishes; an account with login `bob` and another id accepts; `bob` accepts under a renamed login | rejected (6 cases); passes |
+| `test_owner_withdraws_an_invitation` | `alice` removes `bob`'s invitation | passes |
+| `test_owner_yanks` | `alice`, invited `bob`, and `mallory` each set `yanked` to true | passes; rejected; rejected |
 | `test_owner_cannot_leave_a_package_without_owners` | empty owner file; deleted owner file | rejected |
 | `test_package_without_owner_file_is_locked` | no owner file on base; `alice` or `mallory` publish and add themselves; then a maintainer adds the file | rejected, then passes |
 | `test_archive_without_index_line_in_another_package` | archive at the path of `evil 1.0.1` with no index line; a non-ASCII file name | rejected (the unquoted path is reported) |
@@ -286,7 +290,7 @@ Run on Windows 11 with Python 3.14.10 and rustc 1.99.1 at the tip of this branch
 
 | Command | Result |
 | --- | --- |
-| `python -m unittest ci.test_registry_scripts` and `python -I ci/test_registry_scripts.py` | 70 tests OK each (1 skipped: `test_windows_device_names_on_disk`, Linux only) |
+| `python -I -m unittest discover -s ci -p test_registry_scripts.py` | 74 tests OK (1 skipped: `test_windows_device_names_on_disk`, Linux only). `python -I -m unittest ci.test_registry_scripts` cannot import the module because `-I` removes the current directory from `sys.path`; without `-I` the same 74 tests pass. |
 | `cargo fmt --check` | clean |
 | `cargo clippy -j 8 --all-targets -- -D warnings` | clean |
 | `cargo test -j 8 --workspace` | all passed (binary unit tests 117) |
@@ -296,15 +300,15 @@ Not run: the workflow on GitHub Actions, so the event values were not observed l
 ## Applying this to `qxide-lang/registry`
 
 1. Make sure parts 1 and 2 are applied first (the live `scripts/validate.py` is older than both).
-2. List the live packages and, for each, the account that opened the pull request that published its first version, with its id (`gh pr list --repo qxide-lang/registry --state merged --json number,author,title`, then `gh api users/<login> --jq .id`). At the time of writing the registry has `bell-utils` 0.1.0, published by `rigelx2b` in pull request #1. The owner's id must be confirmed by the user before it is written.
+2. List the live packages and, for each, the account that opened the pull request that published its first version, with its id (`gh pr list --repo qxide-lang/registry --state merged --json number,author,title`, then `gh api users/<login> --jq .id`). At the time of writing the registry has `bell-utils` 0.1.0, published by `rigelx2b` in pull request #1. Confirmed on 2026-11-21: `gh api users/rigelx2b --jq .id` printed `295735711`, so the file is `owners/be/ll/bell-utils` with the single line `{"id":295735711,"login":"rigelx2b"}`.
 3. In one maintainer commit pushed directly to `main`: the new `scripts/validate.py`, `.github/workflows/validate.yml`, README and pull request template, an `owners/.gitkeep`, and one owner file per package. Run `python -I scripts/validate.py` in the clone before pushing. `pull_request_target` uses the workflow from the default branch, so the rules apply from the next pull request on.
 4. Packages left without an owner file are locked until a maintainer adds one; nothing else breaks.
 5. `qxide` 0.7.0 does not write owner files, so its `qxide publish` opens pull requests for new packages that fail the check until the next release. Until then, publishers add the owner file to their pull request by hand (the README describes it), or maintainers add it.
 
 ## Not done here
 
-- Yanking by owners (B-P5 stays maintainer-only).
-- An added owner is not asked to accept; an owner can add any account.
+- Un-yanking by owners (maintainers only).
+- An invited account cannot decline by pull request; an owner withdraws the invitation instead. Invitations do not expire.
 - No `qxide owner` command; owner files are edited by hand.
 - CI cannot check that a `login` matches its `id` for owners other than the author (no API calls from the check); only `id` is used.
 - An owner who opens a pull request from a branch that others can push to (or that has "Allow edits by maintainers" enabled) accepts their later commits; CI cannot tell who pushed a commit.

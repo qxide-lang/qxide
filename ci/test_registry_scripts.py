@@ -590,16 +590,19 @@ class ValidatePullRequests(unittest.TestCase):
         self.assertIn(f'"yanked": {old}', text)
         index.write_text(text.replace(f'"yanked": {old}', f'"yanked": {new}'), encoding="utf-8", newline="\n")
 
-    def test_yanked_cannot_change_in_a_pull_request(self):
+    def test_only_owners_yank_in_a_pull_request(self):
         # B-P5, the report's input: a pull request that only sets `yanked` to true on a published
-        # line. Yanking is left to maintainers, also for the package's owner (ALICE here).
+        # line. Rejected from anyone but an owner (ALICE owns `evil`).
         self.flip_yanked("false", "true")
-        r = self.commit_and_validate()
+        r = self.commit_and_validate(MALLORY)
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("index/ev/il/evil", r.stdout)
+        r = self.reg.validate_pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_unyanking_in_a_pull_request(self):
-        # B-P5, the other direction: a yanked version made selectable again.
+        # B-P5, the other direction: a yanked version made selectable again, even by its owner;
+        # maintainers restore versions in a commit to main.
         self.reg.git("checkout", "-q", "main")
         self.flip_yanked("false", "true")
         self.reg.git("commit", "-qam", "yank")
@@ -783,18 +786,96 @@ class ValidateOwners(unittest.TestCase):
                     self.reg.add("evil", "1.0.1")
                 self.assert_rejected(self.pr(MALLORY), self.EVIL)
 
-    def test_owner_adds_and_transfers(self):
-        self.reg.write_owners("evil", [ALICE, BOB])
+    def merge(self, branch: str) -> None:
+        """Merges `branch` into main and starts the next pull request branch from it."""
+        self.reg.git("checkout", "-q", "main")
+        self.reg.git("merge", "-q", "--ff-only", branch)
+        self.reg.git("checkout", "-q", "-B", f"after-{branch}", "main")
+
+    def test_owner_invites_and_invitee_accepts(self):
+        invite = dict(BOB, pending=True)
+        self.reg.write_owners("evil", [ALICE, invite])
         r = self.pr(ALICE)
         self.assertEqual(r.returncode, 0, r.stdout)
-        # Merged: BOB can now publish, and take the package over alone.
-        self.reg.git("checkout", "-q", "main")
-        self.reg.git("merge", "-q", "--ff-only", "pr")
-        self.reg.git("checkout", "-q", "-B", "pr2", "main")
+        self.merge("pr")
+        # Invited is not an owner yet.
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(BOB), self.EVIL)
+        self.reg.git("checkout", "-q", "-B", "accept", "main")
+        self.reg.write_owners("evil", [ALICE, BOB])
+        r = self.pr(BOB)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.merge("accept")
+        # Now an owner: BOB publishes and takes the package over alone.
         self.reg.add("evil", "1.0.1")
         self.reg.write_owners("evil", [BOB])
         r = self.pr(BOB)
         self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owners_cannot_add_owners_without_acceptance(self):
+        # ALICE lists BOB directly, or confirms BOB's invitation for him.
+        self.reg.write_owners("evil", [ALICE, BOB])
+        self.assert_rejected(self.pr(ALICE), self.EVIL_OWNERS)
+        self.reg.git("checkout", "-q", "-B", "pr", "main")
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        self.reg.write_owners("evil", [ALICE, BOB])
+        self.assert_rejected(self.pr(ALICE), self.EVIL_OWNERS)
+
+    def test_invitee_pull_request_only_accepts(self):
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True), dict(MALLORY, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        cases = {
+            # Accepting someone else's invitation, or one's own plus someone else's.
+            "other": ([ALICE, dict(BOB, pending=True), MALLORY], self.EVIL_OWNERS),
+            "both": ([ALICE, BOB, MALLORY], self.EVIL_OWNERS),
+            # Removing the inviting owner, or reordering on the way.
+            "remove owner": ([BOB, dict(MALLORY, pending=True)], self.EVIL_OWNERS),
+            "add another": ([ALICE, dict(BOB, pending=True), dict(MALLORY, pending=True), {"id": 7, "login": "x"}], self.EVIL_OWNERS),
+        }
+        for what, (owners, path) in cases.items():
+            with self.subTest(what=what):
+                self.reg.git("checkout", "-q", "-B", f"accept-{what.replace(' ', '-')}", "main")
+                self.reg.write_owners("evil", owners)
+                self.assert_rejected(self.pr(BOB), path)
+        # Accepting and publishing in one pull request.
+        self.reg.git("checkout", "-q", "-B", "accept-publish", "main")
+        self.reg.write_owners("evil", [ALICE, BOB, dict(MALLORY, pending=True)])
+        self.reg.add("evil", "1.0.1")
+        self.assert_rejected(self.pr(BOB), self.EVIL)
+        # Accepting under another account with the same login.
+        self.reg.git("checkout", "-q", "-B", "accept-impostor", "main")
+        self.reg.write_owners("evil", [ALICE, BOB, dict(MALLORY, pending=True)])
+        self.assert_rejected(self.pr({"id": 4242, "login": "bob"}), self.EVIL)
+        # The plain acceptance passes, also when the login was renamed since the invitation.
+        self.reg.git("checkout", "-q", "-B", "accept-renamed", "main")
+        self.reg.write_owners("evil", [ALICE, {"id": BOB["id"], "login": "bobby"}, dict(MALLORY, pending=True)])
+        r = self.pr({"id": BOB["id"], "login": "bobby"})
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owner_withdraws_an_invitation(self):
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        self.reg.write_owners("evil", [ALICE])
+        r = self.pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_owner_yanks(self):
+        # BOB is invited but has not accepted; MALLORY is unrelated.
+        self.reg.write_owners("evil", [ALICE, dict(BOB, pending=True)])
+        self.commit("invite")
+        self.merge("pr")
+        index = self.reg.root / "index" / "ev" / "il" / "evil"
+        index.write_text(index.read_text(encoding="utf-8").replace('"yanked": false', '"yanked": true'), encoding="utf-8", newline="\n")
+        self.commit()
+        r = self.reg.validate_pr(ALICE)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        for author in (BOB, MALLORY):
+            with self.subTest(author=author["login"]):
+                self.assert_rejected(self.reg.validate_pr(author), self.EVIL)
 
     def test_owner_cannot_leave_a_package_without_owners(self):
         self.reg.write_owners("evil", [], raw=b"")
@@ -883,6 +964,10 @@ class ValidateOwners(unittest.TestCase):
             "float id": b'{"id": 1001.0, "login": "alice"}\n',
             "huge id": b'{"id": 99999999999999999999, "login": "alice"}\n',
             "extra key": b'{"id": 1001, "login": "alice", "role": "admin"}\n',
+            "pending false": b'{"id": 1001, "login": "alice"}\n{"id": 1002, "login": "bob", "pending": false}\n',
+            "pending string": b'{"id": 1001, "login": "alice"}\n{"id": 1002, "login": "bob", "pending": "yes"}\n',
+            "pending one": b'{"id": 1001, "login": "alice"}\n{"id": 1002, "login": "bob", "pending": 1}\n',
+            "only invited": b'{"id": 1002, "login": "bob", "pending": true}\n',
             "bad login": b'{"id": 1001, "login": "al ice"}\n',
             "long login": b'{"id": 1001, "login": "' + b"a" * 40 + b'"}\n',
             "duplicate": b'{"id": 1001, "login": "alice"}\n{"id": 1001, "login": "alias"}\n',

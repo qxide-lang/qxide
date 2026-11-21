@@ -63,9 +63,11 @@ LOOK_ALIKE_PAIRS = (("rn", "m"), ("vv", "w"), ("cl", "d"))
 # New names may not pass for official packages: none may start like `qxide` or equal `std`.
 RESERVED_PREFIXES = ("qxide",)
 RESERVED_NAMES = ("std",)
-# Owner files: one `{"id": <GitHub user id>, "login": <login>}` line per owner. The numeric id is
-# what is compared; logins can be renamed and then registered again by someone else.
+# Owner files: one `{"id": <GitHub user id>, "login": <login>}` line per owner, plus
+# `"pending": true` for an invited account that has not accepted yet. The numeric id is what is
+# compared; logins can be renamed and then registered again by someone else.
 OWNER_KEYS = {"id", "login"}
+INVITE_KEYS = OWNER_KEYS | {"pending"}
 MAX_OWNERS = 32
 GITHUB_ID = re.compile(r"[1-9][0-9]{0,18}")
 GITHUB_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
@@ -138,6 +140,15 @@ def owners_path(name: str) -> str:
     return f"owners/{prefix(name)}/{name}"
 
 
+def confirmed(owners: list[dict]) -> set[int]:
+    """Ids of the owners in `owners`; invited accounts (`pending`) are not owners yet."""
+    return {o["id"] for o in owners if "pending" not in o}
+
+
+def invited(owners: list[dict]) -> set[int]:
+    return {o["id"] for o in owners if "pending" in o}
+
+
 def parse_owners(where: str, data: bytes) -> list[dict] | None:
     """Returns the owners listed in an owner file, or `None` after reporting why it is invalid."""
     try:
@@ -155,14 +166,15 @@ def parse_owners(where: str, data: bytes) -> list[dict] | None:
             continue
         if (
             not isinstance(owner, dict)
-            or owner.keys() != OWNER_KEYS
+            or owner.keys() not in (OWNER_KEYS, INVITE_KEYS)
+            or owner.get("pending", True) is not True
             # `True == 1` in Python, so check the type before the value.
             or type(owner["id"]) is not int
             or not GITHUB_ID.fullmatch(str(owner["id"]))
             or not isinstance(owner["login"], str)
             or not GITHUB_LOGIN.fullmatch(owner["login"])
         ):
-            error(f"{where}:{i}", 'an owner line is {"id": <GitHub user id>, "login": "<GitHub login>"}')
+            error(f"{where}:{i}", 'an owner line is {"id": <GitHub user id>, "login": "<GitHub login>"}, with "pending": true for an invitation')
             ok = False
             continue
         if owner["id"] in ids:
@@ -170,8 +182,8 @@ def parse_owners(where: str, data: bytes) -> list[dict] | None:
             ok = False
         ids.add(owner["id"])
         owners.append(owner)
-    if ok and not owners:
-        error(where, "an owner file lists at least one owner")
+    if ok and not confirmed(owners):
+        error(where, "an owner file lists at least one owner who is not only invited")
         ok = False
     if len(owners) > MAX_OWNERS:
         error(where, f"more than {MAX_OWNERS} owners")
@@ -721,25 +733,26 @@ def ls_base(base: str, top: str) -> set[str]:
 
 def check_ownership(base: str, author, diff, names, head_owners, archive_owner) -> None:
     """Allows a pull request to change a package's index file, archives, or owner file only when its
-    author is listed in the package's owner file on the base branch. A new package (no index file on
-    the base branch) must add an owner file that lists exactly its author.
+    author is an owner in the package's owner file on the base branch, or is invited there and the
+    pull request only accepts that invitation. A new package (no index file on the base branch) must
+    add an owner file that lists exactly its author.
     """
     # Ownership comes from the base branch only, never from the pull request; `git` fails closed.
     base_index = ls_base(base, "index/")
     base_owner_files = ls_base(base, "owners/")
-    touched: set[str] = set()
+    touched: dict[str, set[str]] = {}
     for status, *paths in diff:
         for p in paths:
             if p.startswith(("index/", "owners/")):
-                touched.add(p.rsplit("/", 1)[-1])
+                touched.setdefault(p.rsplit("/", 1)[-1], set()).add(p)
             elif p.startswith("packages/"):
                 if p in archive_owner:
-                    touched.add(archive_owner[p])
+                    touched.setdefault(archive_owner[p], set()).add(p)
                 elif status[0] not in "MDR":
                     # A file nobody's index line points to, such as an archive placed ahead of
                     # another package's next version. Changes to published archives are reported above.
                     error(p, "file under packages/ is not the archive of a version in the registry")
-    for name in sorted(touched):
+    for name, paths in sorted(touched.items()):
         rel = f"index/{prefix(name)}/{name}"
         orel = owners_path(name)
         if author is None:
@@ -749,10 +762,28 @@ def check_ownership(base: str, author, diff, names, head_owners, archive_owner) 
                 error(rel, f"`{name}` has no owner file on the base branch; a maintainer must add {orel} first")
                 continue
             current = parse_owners(f"{orel} (base)", git_bytes("show", f"{base}:{orel}"))
-            if current is not None and author["id"] not in {o["id"] for o in current}:
-                error(rel, f"pull request author {author['login']} (id {author['id']}) is not an owner of `{name}`")
-            elif not (ROOT / orel).is_file():
+            if current is None:
+                continue
+            if not (ROOT / orel).is_file():
                 error(orel, "the owner file of a published package cannot be removed")
+                continue
+            head = head_owners.get(name)
+            if author["id"] in confirmed(current):
+                # Owners invite (`"pending": true`) and remove accounts; only the invited account
+                # can turn its own invitation into ownership.
+                added = confirmed(head) - confirmed(current) if head is not None else set()
+                if added:
+                    error(orel, f"ids {sorted(added)} become owners only by accepting an invitation in their own pull request")
+            elif author["id"] in invited(current):
+                # Accepting: the pull request changes only the owner file, and only the author's line,
+                # which loses `pending` and takes the author's current login.
+                accepted = [{"id": author["id"], "login": author["login"]} if o["id"] == author["id"] else o for o in current]
+                if paths != {orel}:
+                    error(rel, f"{author['login']} (id {author['id']}) is invited, not an owner, of `{name}`; accept the invitation first")
+                elif head is not None and head != accepted:
+                    error(orel, "a pull request from an invited account only accepts its own invitation")
+            else:
+                error(rel, f"pull request author {author['login']} (id {author['id']}) is not an owner of `{name}`")
         elif name in names:
             if not (ROOT / orel).is_file():
                 error(rel, f"a new package needs the owner file {orel} listing the pull request author")
@@ -900,8 +931,7 @@ def main() -> int:
             old = [l for l in base_lines(args.base, rel) if l.strip()]
             new = [json.dumps(e, sort_keys=True) for e in entries]
             old_entries = [json.loads(l) for l in old]
-            # Published lines are immutable. `yanked` too: maintainers yank on request (B-P5); owner
-            # files do not extend to yanking yet.
+            # Published lines are immutable, except that an owner may set `yanked` to true (B-P5).
             for i, o in enumerate(old_entries):
                 if i >= len(entries):
                     error(rel, f"version {o.get('vers')} was removed; ask a maintainer to yank it instead")
@@ -909,7 +939,10 @@ def main() -> int:
                 if json.dumps(entries[i], sort_keys=True) == json.dumps(o, sort_keys=True):
                     continue
                 if json.dumps(dict(entries[i], yanked=o.get("yanked")), sort_keys=True) == json.dumps(o, sort_keys=True):
-                    error(rel, f"line {i + 1} changes `yanked`; only maintainers yank versions, not pull requests")
+                    # Owners may yank (`check_ownership` checks the author, as for any change to the
+                    # index file); restoring a yanked version is left to maintainers.
+                    if not (o.get("yanked") is False and entries[i]["yanked"] is True):
+                        error(rel, f"line {i + 1} un-yanks a version; only maintainers do that, in a commit to main")
                 else:
                     error(rel, f"line {i + 1} changed; published versions are immutable")
             for e in entries[len(old_entries):]:
