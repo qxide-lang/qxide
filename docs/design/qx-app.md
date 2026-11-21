@@ -346,6 +346,8 @@ Permissions are stored in the bundle inside the executable and cannot be changed
 ### Resource limits
 
 - Each call (a command, or `std.qxide.run` in Qxide Studio) may simulate at most 24 qubits on the state-vector backend (256 MiB) and a stabilizer tableau of at most 256 MiB, failing with `Q0406` otherwise. With at most four calls running at once, simulation memory stays within 1 GiB in total. Larger programs run with `qxide run`, which keeps the CLI limits.
+- Each call also has its own execution budgets (`Limits::APP`): 2^31 interpreter steps, 2^22 circuit operations, 2^36 units of estimated simulation work, 32 MiB of output, nesting of `if` blocks on measured bits up to 128 levels across calls, and at most 100 diagnostics with source lines echoed in 240-character windows (`Q0413` to `Q0418`). `String` text costs 8 steps per byte. docs/security/EXECUTION_LIMITS_FIXES.md (part 2) records how these values were measured.
+- Calls run on worker threads with the same 256 MiB stack as `qxide run` (`lang::STACK_SIZE`).
 - Shots are capped at `1,000,000` per command call.
 - `std.fs` reads are capped at 16 MiB per read.
 - A call result handed to the page is capped at 32 MiB (`Q0716`), and so is a `std.app.emit` event (`Q0706`).

@@ -127,5 +127,118 @@ The slowest run the playground limits admit took 14.4 s, inside the page's 30 s 
 Decided by the maintainer on 2026-11-21: every state-vector operation, rotations included, keeps a weight of one unit in `shot_work`, and the code is unchanged. A weight of 2 for non-Clifford operations would halve the measured worst cases, but it would also refuse legitimate long simulations that are heavy in rotations at about half the size they are allowed today, and legitimate long runs take priority. The cost of this choice is bounded and known: a run admitted by the defaults takes at most about 3 minutes in the CLI (188.5 s measured) and 14.4 s in the playground, which stays inside the page's 30 s worker limit. Runs at the extreme end are left to a wall-clock limit, planned as separate work.
 - No CLI flag to raise the limits; a legitimate simulation above the estimate (up to about 3 minutes of real time) is now refused with Q0417; the state-vector unit weight could be raised for non-Clifford gates.
 - No wall-clock limit and no wasm maximum memory; the page still renders up to 1 MiB of output and up to 50 diagnostic buttons on its main thread.
-- `app-framework-next` also changes `Limits` (`Limits::APP`, `scope`); merging needs the new fields added to `Limits::APP`.
+- `app-framework-next` also changes `Limits` (`Limits::APP`, `scope`); merging needs the new fields added to `Limits::APP`. (Done on `app-framework-limits`; see part 2.)
 - Step costs are approximate: a step ranges from under 1 ns (a variable compared in a lookup) to about 70 ns (an empty loop iteration).
+
+# Part 2: desktop apps (`Limits::APP`), String and std budgets
+
+- **Date:** 2026-11-21
+- **Branch:** `app-framework-limits`, from `app-framework-next` (`2dc2039`), with `main` (`846d18e`: stack, package client and registry fixes) and then `fix/execution-limits` (`5feb456`) merged in. Neither source branch was changed.
+- **Scope:** the execution budgets of part 1 applied to desktop apps and Qxide Studio, measured values for `Limits::APP`, budgets for the `String` and `std` paths that `app-framework-next` added, and the interpreter stack for app threads. Decisions taken by the maintainer before the work: measure before choosing `Limits::APP`, budget the String and std paths, use `STACK_SIZE` for app threads, keep rotation weight 1.
+
+## Merge
+
+Conflicts were resolved with the integration branch `integration/check-20261121` (`fa61551`) as the reference.
+
+- `src/lang/interp.rs`: the `fa61551` version (stack-split helpers with the limit checks ported) plus the app pieces: the `Host`, `Value::Str`, std calls and `elaborate_call`, which now takes `&Limits`. Cancellation used to be polled every 4096 statements; it is now polled inside `charge` every 4096 budget steps. A loop with an empty body has no statements, so under the old poll it could not be cancelled.
+- `src/lang/mod.rs`: `build_input` takes both the host and the limits. `check_sim_work` runs in the app's `sample`, the B-03 per-record output budget runs in `run_built`, and `qasm` uses the `NoEffects` host together with `check_qasm_size`. `Limits` keeps the app's `scope` field next to the seven new fields; `PLAYGROUND` has scope `Playground`.
+- `crates/qxide-wasm`: `LIMITS = Limits::PLAYGROUND`. `check` and `qasm` go through the new `check_input_with`/`qasm_input_with`, so the playground's std permissions still apply.
+- `src/lang/diag.rs`: taken from `fa61551` (see the provisional items below).
+- `docs/design/qx-language.md`: the app section stays 17 and the limits section becomes 18.
+- Code that broke without a conflict: `command.rs:100` (`CallError::from_diags` rendered without limits; it now uses `render_all` with `Limits::APP` and lists at most `max_diagnostics` structured diagnostics) and `studio.rs:78` (`std.qxide.qasm` now builds under `Limits::APP` and checks the QASM estimate before calling `to_qasm`). `studio.rs:104` (`std.qxide.run`) compiles unchanged but now runs with the budgets of `Limits::APP`.
+
+## `Limits::APP`
+
+Limits apply per call: a command call, or `std.qxide.run`/`check`/`qasm` inside Qxide Studio. The runtime runs at most four calls at once (`MAX_WORKERS`), and the page can cancel a call. Cancellation is polled every 4096 budget steps while the program is elaborated and between shots, but not inside a shot. That is why the time budgets of elaboration are larger than the CLI's, the budget for a single shot stays at the CLI's value, and the memory budgets are per call and sized for four calls at once.
+
+| Field | CLI | `Limits::APP` | Basis |
+| --- | --- | --- | --- |
+| `max_steps` | 2^30 | 2^31 | Cancellable, so twice the CLI. Worst case measured: an empty loop stops after 160.3 s (release build), against 75 s for the CLI at 2^30. String memory is bounded by `max_steps / 8` = 256 MiB per call (see below). |
+| `max_ops` | 2^24 | 2^22 | Memory: the recorded circuit takes about 40 bytes per operation (`gates in a loop` stops at 2^22 with a 166 MiB peak working set, 0.52 s). 2^22 keeps one call near 160 MiB and four calls within the 1 GiB the simulation budget already uses. This is lower than the CLI. |
+| `max_sim_work` | 2^36 | 2^36 | A shot cannot be cancelled, so this stays at the CLI value. Worst case at the app's 24-qubit cap: one shot of 24 qubits x 4,094 operations (mostly `t`) took 179.0 s with a 261 MiB peak working set; one operation more is refused at once with `Q0417`. |
+| `max_output_bytes` | 256 MiB | 32 MiB | A call result above 32 MiB never reaches the page (`MAX_SCRIPT_BYTES`, `Q0716`), so a larger budget would only build text that is then thrown away. Worst case: `println` in a loop stops at 32 MiB with a 46 MiB peak working set in 0.13 s. This is lower than the CLI. |
+| `max_diagnostics` | 50 | 100 | Studio lists diagnostics in a panel rather than a terminal; each one is a short JSON object. |
+| `max_line_chars` | 120 | 240 | Studio's editor is wider than a terminal. The cap only shortens the echoed line and rejects nothing. |
+| `max_cond_depth` | 64 | 128 | Native app threads have the 256 MiB stack, and the QASM estimate (which includes indentation) is still checked against `max_output_bytes`. |
+
+**Normal use, measured headlessly** (`lang::app_limits_tests::app_limits_keep_their_headroom_over_normal_use`, which prints this table and fails if a growing budget keeps less than 10x headroom). The workload: the seven Studio examples (`examples/qx`, the same files as `apps/studio/ui/examples`) built and run as Studio runs them at 1, 1,000 and 1,000,000 shots (the most Studio's shots field accepts); the Studio command module (`run`, `check`, `qasm`, `format`, `save`, `load`, `set_file`) with each example as the editor buffer and the real `std.qxide` implementation; the bell-app commands, including `history` over a 41 KB results file of 1,000 saves; and each example with every `;` removed, for the diagnostics count. The runtime crate also runs bell-app `measure_bell` at 1,000,000 shots through `call_app` with `CALL_LIMITS` (`tests::example_app_runs_at_the_shot_limit`).
+
+| Measure | Highest normal use | `Limits::APP` | Headroom |
+| --- | --- | --- | --- |
+| steps | 344,358 (bell-app `history`: importing 41 KB of text at 8 steps per byte) | 2,147,483,648 | 6,236x |
+| operations | 14 | 4,194,304 | 299,593x |
+| simulation work | 935,000,000 (an example at 1,000,000 shots) | 68,719,476,736 | 73x |
+| output of a run | 216 bytes | 33,554,432 | 155,345x |
+| QASM estimate | 366 bytes | 33,554,432 | 91,679x |
+| diagnostics | 1 | 100 | 100x |
+| longest source line | 96 characters | 240 | 2.5x (the window only cuts the echo) |
+| conditional nesting | 2 | 128 | 64x |
+
+Studio runs whatever program the user types, so the CLI high-water marks of part 1 apply too: steps 600,009 (3,579x below `Limits::APP`), operations 200,000 (21x), output 600,001 bytes (56x), QASM estimate 6,088,986 bytes (5.5x), simulation work 6.6e7 (1,041x), diagnostics 3, nesting 2. The QASM estimate comes from a 200,000-qubit GHZ stress test. The largest program the CLI admits, the QASM of GHZ on 1,048,576 qubits (53 MB), is refused in apps with `Q0415`; at 32 MiB it would have been refused at the page boundary anyway.
+
+**Worst cases at `Limits::APP`** (release build, Windows 11, the same machine as part 1; the `#[ignore]` tests `app_worst_*` in `src/lang/app_limits_tests.rs`, which print the time and the process's peak working set):
+
+| Input | Result | Wall time | Peak working set |
+| --- | --- | --- | --- |
+| empty `for` loop | Q0413 | 160.3 s | 4 MiB |
+| `s = s + s` 60 times | Q0413 | 0.05 s | 166 MiB |
+| `h(q)` in a loop | Q0414 | 0.52 s | 166 MiB |
+| `println` of 40 bytes in a loop | Q0415 | 0.13 s | 46 MiB |
+| 24 qubits x 4,094 operations, 1 shot (just under the work limit) | ok | 179.0 s (not cancellable) | 261 MiB |
+| the same with 4,095 operations | Q0417 | under 0.01 s | - |
+
+## String and std budgets
+
+`app-framework-next` added `String` values and std calls without any budget: concatenation, literals, `==`/`!=`, `len`, and text passed to or returned from std calls all did work and allocated memory in proportion to their length, and every read of a `String` variable copied the text.
+
+- `Value::Str` holds `Rc<str>`, so reading a variable or passing a `String` shares the text, as registers do since B-09.
+- `STR_BYTE_STEPS = 8` steps per byte, charged before the work: building a literal (each time it is evaluated), the result of `+`, the shorter operand of `==`/`!=`, `len` (which counts characters), each `String` argument passed to a std call, and each `String` a std call returns. Every live byte was charged when it was built, so string memory per call is at most `max_steps / 8`: 128 MiB for the CLI, 8 MiB for the playground and 256 MiB per app call (1 GiB for four calls). The weight 8 is a memory weight, not a time weight: copying a byte costs far less than a step.
+- Hosts already cap what they read (16 MiB for `std.fs.read_text` and `std.http.get`), so charging returned text after the call bounds repetition, not one read. `String` arguments of a command call come from the page and are converted before the interpreter starts, so they are not charged (see Remaining). `println` of a `String` copies the text into the output, which `max_output_bytes` already counts.
+- Command calls with several shots add each new record's JSON row to `max_output_bytes`, as `qxide run` does for its table (B-03 on the command path).
+
+## Interpreter stack in apps
+
+`qxide app` validation (`src/app/mod.rs`) and the runtime's worker pool (`crates/qxide-app-runtime/src/main.rs`) spawned 64 MiB threads. Both now use `lang::STACK_SIZE` (256 MiB). The deepest legal program needs about 100 MiB in an unoptimized build and about 45 MiB optimized (part of the stack-overflow fix on `main`). On Windows, Rust reserves thread stacks with `STACK_SIZE_PARAM_IS_A_RESERVATION`, and Linux and macOS map them lazily, so four workers reserve 1 GiB of address space but each commits only what its call uses. The runtime test `workers_have_the_interpreter_stack` runs the deepest chain program on a worker.
+
+## Regression tests
+
+The red runs used this branch before each fix (the String tests against the merged interpreter without the String budgets, the Studio QASM test with the new size check removed).
+
+| Path | Test | Red result |
+| --- | --- | --- |
+| concatenation | `lang::limits_tests::str_doubling_stops_at_the_step_limit` | ran to the end and printed `16777216` |
+| String copy on read | `str_variable_reads_do_not_copy_the_text` | did not finish in 20 s |
+| `len(String)` | `str_len_is_charged_per_byte` | ran to the end |
+| `==` on strings | `str_comparison_is_charged_per_byte` | ran to the end |
+| literals in a loop | `str_literals_are_charged_each_time_they_are_built` | ran to the end |
+| std results (`fs.read_text`) | `std_results_are_charged_per_byte` | ran to the end |
+| std arguments (`fs.write_text`) | `std_arguments_are_charged_per_byte` | ran to the end |
+| multi-shot command result | `lang::app_tests::command_counts_stop_at_the_output_limit` | 7,054,075 bytes of JSON |
+| diagnostics sent to a page | `command_errors_list_at_most_max_diagnostics` | 500 structured diagnostics |
+| Studio `qasm` | `studio_qasm_uses_the_app_output_limit` | 41,777,839 bytes of JSON |
+| cancellation without statements | `cancelling_stops_a_loop_without_statements` | not run red: on `app-framework-next`, a loop with an empty body is never polled and has no step budget |
+| app limit headroom | `lang::app_limits_tests::app_limits_keep_their_headroom_over_normal_use` | guard |
+| worker stack | runtime `tests::workers_have_the_interpreter_stack` | guard; the test profile is optimized, so 64 MiB would also pass |
+| bell-app at the shot cap | runtime `tests::example_app_runs_at_the_shot_limit` | guard |
+
+## Provisional merge decisions (open)
+
+Both are marked `MERGE-PROVISIONAL` in the code and wait for a decision by the maintainer.
+
+1. **`src/lang/diag.rs`: control characters and lines over `max_line_chars`.** The window is cut from the raw characters first and then escaped, so a line full of control characters can echo up to six times `max_line_chars` (each `\u{1b}` takes six characters). Carets are widened by the escapes inside the span. Alternative: escape first and cut the escaped text, which keeps the echo within the cap but may cut an escape sequence in half.
+2. **Depth tests for `bit_if`/`bit_else`.** `max_cond_depth` counts nesting across calls, so the old "deepest legal program" (61 nested `if m` blocks in each of 199 recursive calls) now fails with `Q0416`. The tests in `src/lang/tests.rs` (also compiled by `qxide-wasm`) and `tests/cli.rs` now recurse to the call limit and nest the 61 levels only in the bottom call, which is the deepest program that is still legal. Alternatives: keep the old shape and expect `Q0416` (this tests that nesting is refused, not that the stack holds), or exempt nesting inside a single function from the count.
+
+## Results
+
+- `cargo test --workspace -j 8`: all 13 test binaries pass (qxide bin 184 + 5 ignored, `qxide-wasm` 156 + 5 ignored, cli 25 + 1 ignored, plus the library suites). The ignored tests are the `app_worst_*` measurements and the B-01 CLI test of part 1.
+- `cargo test --manifest-path crates/qxide-app-runtime/Cargo.toml`: 164 pass, 5 ignored (the same `app_worst_*` measurements, which the runtime crate also compiles).
+- `cargo clippy --workspace --all-targets -- -D warnings`, the same for the runtime crate, `cargo clippy -p qxide-wasm --target wasm32-unknown-unknown -- -D warnings`, and `cargo fmt --check` for both: clean.
+- No desktop window was opened; everything above ran headless.
+
+## Remaining
+
+- `max_sim_work` and `max_output_bytes` (and `max_ops`) are not larger than the CLI's: one shot cannot be cancelled, a result over 32 MiB cannot reach the page, and four calls share memory. If longer uncancellable shots are acceptable, raising `max_sim_work` is a one-line change.
+- A shot is still not cancellable, and there is still no wall-clock limit.
+- Text arriving from the page as a command argument is not charged, and the runtime does not cap the size of incoming IPC messages itself (only whatever the webview imposes, which was not measured).
+- Studio's `std.qxide.run` builds the inner program under its own `Limits::APP`, so a Studio call can use the budgets twice: once for the Studio command and once for the user's program.
+- The two provisional merge decisions above.

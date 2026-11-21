@@ -1444,7 +1444,7 @@ Because static checking should catch invalid programs before execution, seeing Q
 
 ## Q0413: execution step limit exceeded
 
-The interpreter counts its work in steps: one for every evaluated expression, loop iteration, and function call, one for every variable it compares while looking up a name, and one per qubit or bit for whole-register work such as `qreg`, `measure` or `discard` on a register, passing a register to a function, or printing one. It reports `Q0413` when a program needs more steps than the limit, which is 1073741824 (2^30) for the `qxide` command and 67108864 (2^26) in the browser playground. The limit stops programs that would otherwise run for hours or forever, such as a loop with a huge bound or a recursion that doubles at every level, while ordinary programs use far fewer steps.
+The interpreter counts its work in steps: one for every evaluated expression, loop iteration, and function call, one for every variable it compares while looking up a name, and one per qubit or bit for whole-register work such as `qreg`, `measure` or `discard` on a register, passing a register to a function, or printing one. It reports `Q0413` when a program needs more steps than the limit, which is 1073741824 (2^30) for the `qxide` command, 67108864 (2^26) in the browser playground, and 2147483648 (2^31) for each call in a desktop app, whose page can cancel a call that runs too long. Building, comparing, measuring, or passing a `String` to or from a standard library call costs 8 steps per byte of text, so the limit also bounds the memory that strings can take. The limit stops programs that would otherwise run for hours or forever, such as a loop with a huge bound or a recursion that doubles at every level, while ordinary programs use far fewer steps.
 
 Erroneous code example:
 
@@ -1469,7 +1469,7 @@ void main() {
 
 ## Q0414: circuit operation limit exceeded
 
-Every gate, measurement, `reset`, and `if` block on a measured bit is recorded as an operation of the circuit the program builds, and the interpreter reports `Q0414` once the circuit would hold more operations than the limit: 16777216 (2^24) for the `qxide` command and 1048576 (2^20) in the browser playground. The recorded circuit is kept in memory, so the limit bounds the memory a program can use before it is simulated or exported.
+Every gate, measurement, `reset`, and `if` block on a measured bit is recorded as an operation of the circuit the program builds, and the interpreter reports `Q0414` once the circuit would hold more operations than the limit: 16777216 (2^24) for the `qxide` command, 1048576 (2^20) in the browser playground, and 4194304 (2^22) for each call in a desktop app, where up to four calls run at once. The recorded circuit is kept in memory, so the limit bounds the memory a program can use before it is simulated or exported.
 
 Erroneous code example:
 
@@ -1497,7 +1497,7 @@ void main() {
 
 ## Q0415: output size limit exceeded
 
-`Q0415` reports output that would grow past the limit of 268435456 bytes (256 MiB) for the `qxide` command or 1048576 bytes (1 MiB) in the browser playground. The limit applies to the text printed with `println`, to the table that `qxide run --shots N` prints (each distinct measurement record prints its own copy of the program output), and to the OpenQASM text of `qxide qasm`, which is checked before it is built. Output is held in memory until the program ends, so the limit bounds that memory.
+`Q0415` reports output that would grow past the limit of 268435456 bytes (256 MiB) for the `qxide` command, 1048576 bytes (1 MiB) in the browser playground, or 33554432 bytes (32 MiB) for each call in a desktop app, the most a call result can carry to the page. The limit applies to the text printed with `println`, to the table that `qxide run --shots N` prints (each distinct measurement record prints its own copy of the program output), and to the OpenQASM text of `qxide qasm`, which is checked before it is built. Output is held in memory until the program ends, so the limit bounds that memory.
 
 Erroneous code example:
 
@@ -1521,7 +1521,7 @@ void main() {
 
 ## Q0416: `if` blocks on measured bits nested too deeply
 
-An `if` on a `Bit` becomes a conditional block of the circuit, and a function called inside such a block can open further blocks, so nesting is counted across function calls. The interpreter reports `Q0416` when blocks would be nested more than 64 levels deep. Every level adds indentation to each line of the OpenQASM output and recursion to the simulators, so deep nesting reached through recursive calls could otherwise produce very large output from a short program. A single function can still nest as deeply as the parser allows.
+An `if` on a `Bit` becomes a conditional block of the circuit, and a function called inside such a block can open further blocks, so nesting is counted across function calls. The interpreter reports `Q0416` when blocks would be nested more than 64 levels deep (128 levels for a call in a desktop app). Every level adds indentation to each line of the OpenQASM output and recursion to the simulators, so deep nesting reached through recursive calls could otherwise produce very large output from a short program. A single function can still nest as deeply as the parser allows.
 
 Erroneous code example:
 
@@ -1570,7 +1570,7 @@ void main() {
 
 ## Q0417: simulation work limit exceeded
 
-Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to at most about three minutes of simulation for the `qxide` command and a few seconds in the browser playground. Branch bodies are counted as if they always run.
+Before simulating, `qxide run` estimates the work of all shots from the number of qubits, the recorded operations, and the backend: a state-vector shot updates every one of the 2^n amplitudes for each operation, and a stabilizer shot updates every row of the tableau for each gate and may combine rows for each measurement, which grows with the cube of the number of qubits. Every shot simulates the whole circuit again, so the estimate is multiplied by the number of shots. `Q0417` reports an estimate above the limit, which corresponds to at most about three minutes of simulation for the `qxide` command and a few seconds in the browser playground. Desktop apps use the same limit as the `qxide` command, because a single shot cannot be cancelled. Branch bodies are counted as if they always run.
 
 Erroneous code example:
 
@@ -1602,7 +1602,7 @@ void main() {
 
 ## Q0418: too many errors to show
 
-`qxide check`, `qxide run`, and `qxide qasm` print at most 50 errors and stop the error report before it passes the output limit of `Q0415`; each echoed source line is also shortened to a window of 120 characters around the error column. When errors are left out, the report ends with `Q0418`, which says how many were not shown. Without these limits, a short file with thousands of errors on one long line produced gigabytes of output, because every error repeated the whole line.
+`qxide check`, `qxide run`, and `qxide qasm` print at most 50 errors and stop the error report before it passes the output limit of `Q0415`; each echoed source line is also shortened to a window of 120 characters around the error column. Desktop apps, including Qxide Studio, show at most 100 errors with windows of 240 characters. When errors are left out, the report ends with `Q0418`, which says how many were not shown. Without these limits, a short file with thousands of errors on one long line produced gigabytes of output, because every error repeated the whole line.
 
 Erroneous code example:
 

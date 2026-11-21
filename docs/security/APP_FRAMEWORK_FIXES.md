@@ -40,6 +40,6 @@ Commit `d8d77ff` on its own fails `cargo clippy` for the runtime crate (`large_e
 
 ## Not addressed here
 
-- The result cap stops oversized results at the boundary to the page, but the result is still built in memory first. The output-amplification findings on `main` (M-01, M-10, B-02, B-03) need their own fixes in the shared interpreter, and Studio inherits those fixes once they land.
+- The result cap stops oversized results at the boundary to the page, but the result is still built in memory first. The output-amplification findings on `main` (M-01, M-10, B-02, B-03) need their own fixes in the shared interpreter, and Studio inherits those fixes once they land. (Update: on branch `app-framework-limits` the execution budgets apply to apps through `Limits::APP`; see part 2 of `EXECUTION_LIMITS_FIXES.md`.)
 - Shots stay capped at 1,000,000 per call, as documented.
 - B-A4 to B-A13 are not part of this change.
