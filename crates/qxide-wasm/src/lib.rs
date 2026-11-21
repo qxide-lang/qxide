@@ -51,14 +51,6 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn ok(stdout: String) -> Self {
-        Outcome {
-            exit: 0,
-            stdout,
-            stderr: String::new(),
-        }
-    }
-
     fn err(exit: u8, stderr: String) -> Self {
         Outcome {
             exit,
@@ -101,10 +93,14 @@ fn too_many_shots(shots: u64) -> String {
 
 /// Runs one `.qx` command like `qxide <cmd> <name> [--shots N] [--seed S]` on the source text `src`.
 /// `name` stands in for the file path in diagnostics (`--> name:line:col`).
+/// `std.log` lines go to stderr, as in the CLI; other standard modules are not offered (Q0702).
 pub fn execute(cmd: Command, name: &str, src: &str, shots: u64, seed: u64) -> Outcome {
+    let mut input = lang::Input::file(name, src);
+    input.perms = lang::stdlib::Permissions::playground();
+    let mut host = lang::stdlib::LogOnly::default();
     let result = match cmd {
-        Command::Check => lang::check(name, src).map(|()| format!("{name}: ok\n")),
-        Command::Qasm => lang::qasm(name, src),
+        Command::Check => lang::check_input(&input).map(|()| format!("{name}: ok\n")),
+        Command::Qasm => lang::qasm_input(&input),
         Command::Run => {
             // Same wording as the CLI's own `--shots` validation.
             if shots == 0 {
@@ -113,12 +109,17 @@ pub fn execute(cmd: Command, name: &str, src: &str, shots: u64, seed: u64) -> Ou
             if shots > MAX_SHOTS {
                 return Outcome::err(2, too_many_shots(shots));
             }
-            lang::run_with(name, src, shots, seed, LIMITS)
+            lang::run_input_with(&input, shots, seed, LIMITS, &mut host)
         }
     };
+    let logs: String = host.lines.iter().map(|l| format!("{l}\n")).collect();
     match result {
-        Ok(out) => Outcome::ok(out),
-        Err(lang::Failure(diags)) => Outcome::err(1, diags),
+        Ok(stdout) => Outcome {
+            exit: 0,
+            stdout,
+            stderr: logs,
+        },
+        Err(lang::Failure(diags)) => Outcome::err(1, logs + &diags),
     }
 }
 

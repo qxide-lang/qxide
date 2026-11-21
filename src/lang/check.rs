@@ -136,7 +136,12 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
             scan_expr(base, out);
             scan_expr(index, out);
         }
-        ExprKind::Method { recv, .. } => scan_expr(recv, out),
+        ExprKind::Method { recv, args, .. } => {
+            scan_expr(recv, out);
+            for a in args {
+                scan_expr(a, out);
+            }
+        }
         ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => scan_expr(expr, out),
         ExprKind::Binary { lhs, rhs, .. } => {
             scan_expr(lhs, out);
@@ -268,7 +273,9 @@ impl Checker {
                 .params
                 .iter()
                 .find(|p| p.ty.is_quantum() && p.consume.is_some());
-            let direct = if let Some(p) = consume {
+            let direct = if f.name.name.starts_with("std.") {
+                Some((f.name.span, Unconditional::Op(f.name.name.clone())))
+            } else if let Some(p) = consume {
                 Some((p.name.span, Unconditional::Consume(p.name.name.clone())))
             } else if f.ret.is_quantum() {
                 Some((f.ret_span, Unconditional::ReturnsQuantum(f.ret)))
@@ -442,7 +449,7 @@ impl Checker {
                 let var_ty = match *ty {
                     // `var` infers classical types only; quantum and per-shot values need a type.
                     None => match found {
-                        Ty::Int | Ty::Double | Ty::Boolean | Ty::Error => found,
+                        Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
                             Ty::Error
@@ -802,9 +809,13 @@ impl Checker {
             ExprKind::Int(_) => Ty::Int,
             ExprKind::Double(_) => Ty::Double,
             ExprKind::Bool(_) => Ty::Boolean,
-            ExprKind::Str(_) => {
-                self.err(Code::StringNotAllowed, e.span, msg::string_not_allowed());
-                Ty::Error
+            // A `String` value; `{}` holes only make sense in `println`'s format string.
+            ExprKind::Str(pieces) => {
+                if pieces.contains(&FmtPiece::Hole) {
+                    self.err(Code::StringNotAllowed, e.span, msg::string_not_allowed());
+                    return Ty::Error;
+                }
+                Ty::String
             }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(id) => {
@@ -839,8 +850,15 @@ impl Checker {
                     }
                 }
             }
-            ExprKind::Method { recv, name } => {
+            ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
+                if !args.is_empty() {
+                    self.err(Code::Arity, e.span, msg::arity(&name.name, 0, args.len()));
+                    for a in args {
+                        self.expr(a);
+                    }
+                    return Ty::Error;
+                }
                 match (t, name.name.as_str()) {
                     (Ty::BitReg, "as_int") => Ty::ShotInt,
                     (Ty::BitReg, "to_binary") => Ty::ShotBinary,
@@ -903,6 +921,18 @@ impl Checker {
                     self.expr(rhs)
                 };
                 use BinOp::*;
+                // `+` with a `String` on either side concatenates any build-time value.
+                if *op == Add && (l == Ty::String || r == Ty::String) {
+                    for (side, t) in [(lhs, l), (rhs, r)] {
+                        if !matches!(
+                            t,
+                            Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Error
+                        ) {
+                            self.expect_ty(side.span, Ty::String, t);
+                        }
+                    }
+                    return Ty::String;
+                }
                 match op {
                     Add | Sub | Mul | Div | Rem | Lt | Le | Gt | Ge => {
                         self.numeric(lhs.span, l);
@@ -921,7 +951,11 @@ impl Checker {
                         Ty::Boolean
                     }
                     Eq | Ne => {
-                        if l == Ty::Boolean {
+                        if matches!(l, Ty::Boolean | Ty::String) {
+                            self.expect_ty(rhs.span, l, r);
+                        } else if r == Ty::String {
+                            self.expect_ty(lhs.span, Ty::String, l);
+                        } else if l == Ty::Boolean {
                             self.expect_ty(rhs.span, Ty::Boolean, r);
                         } else {
                             self.numeric(lhs.span, l);
@@ -1083,7 +1117,7 @@ impl Checker {
                 if self.arity(name, args, 1, span) {
                     let t = self.expr(&args[0]);
                     self.forbid_temp(&args[0], t);
-                    if !matches!(t, Ty::QReg | Ty::BitReg | Ty::Error) {
+                    if !matches!(t, Ty::QReg | Ty::BitReg | Ty::String | Ty::Error) {
                         self.err(
                             Code::TypeMismatch,
                             args[0].span,
@@ -1121,6 +1155,7 @@ impl Checker {
                         Ty::Int
                             | Ty::Double
                             | Ty::Boolean
+                            | Ty::String
                             | Ty::Bit
                             | Ty::BitReg
                             | Ty::ShotInt

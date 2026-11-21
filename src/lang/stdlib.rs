@@ -1,0 +1,585 @@
+// The `.qx` standard library (docs/design/qx-app.md §6): module signatures as `.qx` stubs, the
+// per-host permission sets, the `Host` trait every std call goes through, and `NativeStd`, the
+// shared implementation of `std.log`, `std.time` and `std.fs`.
+//
+// Std functions are build-time effects: the interpreter calls the host while it elaborates, once
+// per run, before any shot is simulated. The stub bodies below are never executed.
+
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use super::msg;
+
+/// Every standard module, with the `.qx` declarations the checker sees.
+pub const MODULES: &[(&str, &str)] = &[
+    (
+        "log",
+        "public void info(String message) {}
+public void warn(String message) {}
+public void error(String message) {}
+",
+    ),
+    (
+        "time",
+        "public int now_millis() { return 0; }
+public String now_iso() { return \"\"; }
+public void sleep_millis(int ms) {}
+",
+    ),
+    (
+        "fs",
+        "public String read_text(String path) { return \"\"; }
+public void write_text(String path, String text) {}
+public void append_text(String path, String text) {}
+public boolean exists(String path) { return false; }
+public void remove(String path) {}
+",
+    ),
+    (
+        "app",
+        "public void set_title(String title) {}
+public void set_size(int width, int height) {}
+public void close() {}
+public void emit(String event, String payload) {}
+",
+    ),
+    (
+        "qxide",
+        "public String check(String source) { return \"\"; }
+public String run(String source, int shots, int seed) { return \"\"; }
+public String qasm(String source) { return \"\"; }
+public String format(String source) { return \"\"; }
+",
+    ),
+];
+
+/// The reserved package name of the standard library.
+pub const PACKAGE: &str = "std";
+
+pub fn module_source(name: &str) -> Option<&'static str> {
+    MODULES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+}
+
+/// Whether code may import a standard module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Allowed,
+    /// Not offered by this host at all (`std.app` in `qxide run`): names the host.
+    Unavailable(&'static str),
+    /// Offered, but not granted: says how to grant it.
+    Denied(&'static str),
+}
+
+/// Which standard modules a host offers and the program was granted.
+#[derive(Debug, Clone)]
+pub struct Permissions {
+    access: Vec<(&'static str, Access)>,
+}
+
+const IN_CLI: &str = "`qxide run`";
+const IN_PLAYGROUND: &str = "the playground";
+const IN_REPL: &str = "the REPL";
+const GRANT_CLI_FS: &str = "`--allow fs`";
+const GRANT_APP: &str = "`[app] permissions` in `qxide.toml`";
+
+impl Permissions {
+    fn with(f: impl Fn(&str) -> Access) -> Self {
+        Permissions {
+            access: MODULES.iter().map(|(m, _)| (*m, f(m))).collect(),
+        }
+    }
+
+    /// `qxide run`/`check`: logging and the clock always, files with `--allow fs`.
+    pub fn cli(allow_fs: bool) -> Self {
+        Self::with(|m| match m {
+            "log" | "time" => Access::Allowed,
+            "fs" if allow_fs => Access::Allowed,
+            "fs" => Access::Denied(GRANT_CLI_FS),
+            _ => Access::Unavailable(IN_CLI),
+        })
+    }
+
+    /// The browser playground: logging only.
+    #[allow(dead_code)]
+    pub fn playground() -> Self {
+        Self::with(|m| match m {
+            "log" => Access::Allowed,
+            _ => Access::Unavailable(IN_PLAYGROUND),
+        })
+    }
+
+    /// The REPL replays the session on every input, so effects other than logging are refused.
+    pub fn repl() -> Self {
+        Self::with(|m| match m {
+            "log" => Access::Allowed,
+            _ => Access::Unavailable(IN_REPL),
+        })
+    }
+
+    /// A desktop app: `std.log` always, every other module only if listed in `[app] permissions`.
+    #[allow(dead_code)]
+    pub fn app(granted: &[String]) -> Self {
+        Self::with(|m| {
+            if m == "log" || granted.iter().any(|g| g == m) {
+                Access::Allowed
+            } else {
+                Access::Denied(GRANT_APP)
+            }
+        })
+    }
+
+    pub fn access(&self, module: &str) -> Option<Access> {
+        self.access
+            .iter()
+            .find(|(m, _)| *m == module)
+            .map(|(_, a)| *a)
+    }
+
+    /// Permission names accepted in `[app] permissions`.
+    #[allow(dead_code)]
+    pub fn known(name: &str) -> bool {
+        module_source(name).is_some()
+    }
+}
+
+/// A build-time value passed to or returned from a std function.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostValue {
+    Unit,
+    Int(i64),
+    Double(f64),
+    Bool(bool),
+    Str(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdErrorKind {
+    /// The module is not offered by this host (Q0702).
+    Unavailable,
+    /// A file operation failed (Q0704).
+    Io,
+    /// A path outside the data folder or otherwise not allowed (Q0705).
+    Path,
+    /// An argument out of range (Q0706).
+    Argument,
+    /// The call was cancelled (Q0713).
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdError {
+    pub kind: StdErrorKind,
+    pub message: String,
+}
+
+impl StdError {
+    pub fn new(kind: StdErrorKind, message: String) -> Self {
+        StdError { kind, message }
+    }
+}
+
+pub type StdResult = Result<HostValue, StdError>;
+
+/// Runs standard-library calls for the interpreter. `module` is `fs` for `std.fs.read_text`.
+pub trait Host {
+    fn call(&mut self, module: &str, function: &str, args: Vec<HostValue>) -> StdResult;
+
+    /// Polled between shots and every few thousand interpreter steps.
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+}
+
+/// `info: message`, the line `std.log` writes in the CLI, the REPL and the playground.
+pub fn log_line(level: LogLevel, message: &str) -> String {
+    format!("{}: {message}", level.as_str())
+}
+
+pub type LogSink = Box<dyn FnMut(LogLevel, &str) + Send>;
+
+/// `std.log`, `std.time` and `std.fs` on the real OS. Other modules are left to the embedder.
+pub struct NativeStd {
+    /// Root of every `std.fs` path.
+    pub data_root: PathBuf,
+    pub log: LogSink,
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+/// Largest file `std.fs.read_text` reads.
+pub const MAX_READ_BYTES: u64 = 16 << 20;
+/// Longest single `std.time.sleep_millis`.
+pub const MAX_SLEEP_MS: i64 = 60_000;
+
+fn str_arg(args: &[HostValue], i: usize) -> &str {
+    match args.get(i) {
+        Some(HostValue::Str(s)) => s,
+        // The checker guarantees argument types; an empty string fails path validation anyway.
+        _ => "",
+    }
+}
+
+fn int_arg(args: &[HostValue], i: usize) -> i64 {
+    match args.get(i) {
+        Some(HostValue::Int(n)) => *n,
+        _ => 0,
+    }
+}
+
+impl NativeStd {
+    pub fn new(data_root: PathBuf, log: LogSink) -> Self {
+        NativeStd {
+            data_root,
+            log,
+            cancel: None,
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    /// Handles `log`, `time` and `fs`; anything else is `Unavailable`.
+    pub fn call(&mut self, module: &str, function: &str, args: &[HostValue]) -> StdResult {
+        match (module, function) {
+            ("log", level) => {
+                let level = match level {
+                    "warn" => LogLevel::Warn,
+                    "error" => LogLevel::Error,
+                    _ => LogLevel::Info,
+                };
+                (self.log)(level, str_arg(args, 0));
+                Ok(HostValue::Unit)
+            }
+            ("time", "now_millis") => Ok(HostValue::Int(now_millis())),
+            ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
+            ("time", "sleep_millis") => self.sleep(int_arg(args, 0)),
+            ("fs", f) => self.fs(f, args),
+            _ => Err(StdError::new(
+                StdErrorKind::Unavailable,
+                msg::std_unavailable(&format!("std.{module}"), "this host"),
+            )),
+        }
+    }
+
+    fn sleep(&self, ms: i64) -> StdResult {
+        if !(0..=MAX_SLEEP_MS).contains(&ms) {
+            return Err(StdError::new(
+                StdErrorKind::Argument,
+                msg::std_sleep_range(ms, MAX_SLEEP_MS),
+            ));
+        }
+        let mut left = Duration::from_millis(ms as u64);
+        let step = Duration::from_millis(20);
+        while !left.is_zero() {
+            if self.is_cancelled() {
+                return Err(StdError::new(StdErrorKind::Cancelled, msg::cancelled()));
+            }
+            let d = left.min(step);
+            std::thread::sleep(d);
+            left -= d;
+        }
+        Ok(HostValue::Unit)
+    }
+
+    fn fs(&self, function: &str, args: &[HostValue]) -> StdResult {
+        let rel = str_arg(args, 0);
+        let path = confine(&self.data_root, rel)?;
+        let io =
+            |e: std::io::Error| StdError::new(StdErrorKind::Io, msg::std_io(rel, &e.to_string()));
+        match function {
+            "read_text" => {
+                let meta = std::fs::metadata(&path).map_err(io)?;
+                if meta.len() > MAX_READ_BYTES {
+                    return Err(StdError::new(
+                        StdErrorKind::Io,
+                        msg::std_file_too_large(rel, MAX_READ_BYTES >> 20),
+                    ));
+                }
+                let bytes = std::fs::read(&path).map_err(io)?;
+                String::from_utf8(bytes)
+                    .map(HostValue::Str)
+                    .map_err(|_| StdError::new(StdErrorKind::Io, msg::std_not_utf8(rel)))
+            }
+            "write_text" | "append_text" => {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir).map_err(io)?;
+                }
+                // Re-check after creating folders: a symlinked folder may point elsewhere.
+                confine(&self.data_root, rel)?;
+                let text = str_arg(args, 1);
+                if function == "write_text" {
+                    std::fs::write(&path, text).map_err(io)?;
+                } else {
+                    use std::io::Write;
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut f| f.write_all(text.as_bytes()))
+                        .map_err(io)?;
+                }
+                Ok(HostValue::Unit)
+            }
+            "exists" => Ok(HostValue::Bool(path.is_file())),
+            "remove" => match std::fs::remove_file(&path) {
+                Ok(()) => Ok(HostValue::Unit),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HostValue::Unit),
+                Err(e) => Err(io(e)),
+            },
+            _ => Err(StdError::new(
+                StdErrorKind::Unavailable,
+                msg::std_unavailable(&format!("std.fs.{function}"), "this host"),
+            )),
+        }
+    }
+}
+
+impl Host for NativeStd {
+    fn call(&mut self, module: &str, function: &str, args: Vec<HostValue>) -> StdResult {
+        NativeStd::call(self, module, function, &args)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.is_cancelled()
+    }
+}
+
+/// A host that refuses every effect: for `qxide qasm` (only `std.time` is read) and as a
+/// fallback. `std.log` is discarded.
+pub struct NoEffects {
+    pub what: &'static str,
+}
+
+impl Host for NoEffects {
+    fn call(&mut self, module: &str, function: &str, _args: Vec<HostValue>) -> StdResult {
+        match (module, function) {
+            ("log", _) => Ok(HostValue::Unit),
+            ("time", "now_millis") => Ok(HostValue::Int(now_millis())),
+            ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
+            ("time", "sleep_millis") => Ok(HostValue::Unit),
+            _ => Err(StdError::new(
+                StdErrorKind::Unavailable,
+                msg::std_unavailable(&format!("std.{module}.{function}"), self.what),
+            )),
+        }
+    }
+}
+
+/// Collects `std.log` lines and refuses everything else: the REPL and the playground.
+#[derive(Default)]
+pub struct LogOnly {
+    pub lines: Vec<String>,
+}
+
+impl Host for LogOnly {
+    fn call(&mut self, module: &str, function: &str, args: Vec<HostValue>) -> StdResult {
+        if module == "log" {
+            let level = match function {
+                "warn" => LogLevel::Warn,
+                "error" => LogLevel::Error,
+                _ => LogLevel::Info,
+            };
+            self.lines.push(log_line(level, str_arg(&args, 0)));
+            return Ok(HostValue::Unit);
+        }
+        Err(StdError::new(
+            StdErrorKind::Unavailable,
+            msg::std_unavailable(&format!("std.{module}"), "this host"),
+        ))
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// `2026-11-21T02:03:04.005Z` for Unix milliseconds (proleptic Gregorian, UTC).
+pub fn iso_utc(ms: i64) -> String {
+    let (secs, milli) = (ms.div_euclid(1000), ms.rem_euclid(1000));
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{milli:03}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+const RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Resolves a `std.fs` path inside `root`. Only plain relative paths are accepted: no absolute
+/// paths, drive letters, UNC prefixes, `..`, reserved device names or empty segments, and no
+/// existing part of the path may lead (through a symlink) outside `root`.
+pub fn confine(root: &Path, rel: &str) -> Result<PathBuf, StdError> {
+    let bad = || StdError::new(StdErrorKind::Path, msg::std_bad_path(rel));
+    if rel.is_empty() || rel.len() > 1024 || rel.contains('\0') || rel.contains(':') {
+        return Err(bad());
+    }
+    let norm = rel.replace('\\', "/");
+    if norm.starts_with('/') {
+        return Err(bad());
+    }
+    let mut out = root.to_path_buf();
+    for seg in norm.split('/') {
+        if seg.is_empty() || seg == "." {
+            if seg.is_empty() {
+                return Err(bad());
+            }
+            continue;
+        }
+        let stem = seg.split('.').next().unwrap_or(seg).to_ascii_uppercase();
+        if seg == ".." || RESERVED.contains(&stem.as_str()) || seg.ends_with(['.', ' ']) {
+            return Err(bad());
+        }
+        out.push(seg);
+    }
+    if !Path::new(&norm)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(bad());
+    }
+    // Symlinks: the deepest existing ancestor must still be inside the canonical root.
+    if let Ok(root_c) = root.canonicalize() {
+        let mut probe = out.clone();
+        loop {
+            if let Ok(c) = probe.canonicalize() {
+                if !c.starts_with(&root_c) {
+                    return Err(bad());
+                }
+                break;
+            }
+            if !probe.pop() || !probe.starts_with(root) {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iso_dates() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(iso_utc(1_795_226_584_005), "2026-11-21T02:03:04.005Z");
+        assert_eq!(iso_utc(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(iso_utc(-1), "1969-12-31T23:59:59.999Z");
+    }
+
+    #[test]
+    fn confine_rejects_escapes() {
+        let root = std::env::temp_dir().join("qxide-confine-test");
+        std::fs::create_dir_all(&root).unwrap();
+        for bad in [
+            "",
+            "/etc/passwd",
+            "\\x",
+            "C:\\x",
+            "c:x",
+            "\\\\server\\share\\x",
+            "../x",
+            "a/../../x",
+            "a//b",
+            "CON",
+            "nul.txt",
+            "a/aux",
+            "x.",
+            "x ",
+            "a\0b",
+        ] {
+            assert!(confine(&root, bad).is_err(), "{bad:?} should be rejected");
+        }
+        for good in ["a.txt", "dir/b.txt", "./c.txt", "dir\\d.txt", ".hidden"] {
+            let p = confine(&root, good).unwrap();
+            assert!(p.starts_with(&root), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn fs_round_trip_and_errors() {
+        let root = std::env::temp_dir().join(format!("qxide-fs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
+        let p = |v: &str| HostValue::Str(v.into());
+        s.call("fs", "write_text", &[p("d/a.txt"), p("one")])
+            .unwrap();
+        s.call("fs", "append_text", &[p("d/a.txt"), p(" two")])
+            .unwrap();
+        assert_eq!(
+            s.call("fs", "read_text", &[p("d/a.txt")]).unwrap(),
+            p("one two")
+        );
+        assert_eq!(
+            s.call("fs", "exists", &[p("d/a.txt")]).unwrap(),
+            HostValue::Bool(true)
+        );
+        s.call("fs", "remove", &[p("d/a.txt")]).unwrap();
+        s.call("fs", "remove", &[p("d/a.txt")]).unwrap();
+        let e = s.call("fs", "read_text", &[p("d/a.txt")]).unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Io);
+        let e = s.call("fs", "read_text", &[p("../a.txt")]).unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Path);
+        let e = s
+            .call("time", "sleep_millis", &[HostValue::Int(60_001)])
+            .unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Argument);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissions_by_host() {
+        let cli = Permissions::cli(false);
+        assert_eq!(cli.access("time"), Some(Access::Allowed));
+        assert!(matches!(cli.access("fs"), Some(Access::Denied(_))));
+        assert!(matches!(cli.access("app"), Some(Access::Unavailable(_))));
+        assert_eq!(Permissions::cli(true).access("fs"), Some(Access::Allowed));
+        let app = Permissions::app(&["fs".into()]);
+        assert_eq!(app.access("log"), Some(Access::Allowed));
+        assert_eq!(app.access("fs"), Some(Access::Allowed));
+        assert!(matches!(app.access("time"), Some(Access::Denied(_))));
+        assert_eq!(app.access("http"), None);
+        assert!(matches!(
+            Permissions::playground().access("time"),
+            Some(Access::Unavailable(_))
+        ));
+    }
+}

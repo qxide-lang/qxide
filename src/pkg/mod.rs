@@ -126,7 +126,9 @@ pub fn sha256_hex(data: &[u8]) -> String {
 /// most 64 characters. `_` is not allowed, so the import name (`-` -> `_`) is unambiguous.
 pub fn valid_name(name: &str) -> bool {
     let b = name.as_bytes();
-    !b.is_empty()
+    // `std` is the built-in standard library (`import std.fs;`), never a package.
+    name != "std"
+        && !b.is_empty()
         && b.len() <= 64
         && b[0].is_ascii_lowercase()
         && b.iter()

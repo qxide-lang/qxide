@@ -573,25 +573,27 @@ void main() {
 }
 ```
 
-## Q0214: string literal used outside `println`
+## Q0214: `{}` placeholder in a string value
 
-A string literal was used outside the first argument of a `println` call. In `.qx`, string literals are only allowed as the format argument to `println` and cannot be assigned to variables or used as general expression values. Restricting string literals to `println` ensures they are only used where the language supports them.
+A string literal used as a `String` value contains a `{}` placeholder. In `.qx`, string literals evaluate to immutable `String` values that are combined with `+`, and only the format string passed as the first argument to `println` may contain `{}` placeholders. Outside of `println`, a placeholder has no argument to fill it and is therefore rejected. To include literal brace characters in a string, write `{{` and `}}`.
 
 Erroneous code example:
 
 ```qx
 void main() {
-    int n = "three";  // error[Q0214]
-    println("{}", n);
+    String name = "Ada";
+    String greeting = "hello {}";  // error[Q0214]
+    println("{}", greeting);
 }
 ```
 
-To fix it, replace the string literal with a value of the expected type and use string literals only as the format argument of `println`. In the corrected program, `n` is initialized with the `int` value `3` instead of a string literal.
+To fix it, build the text with `+` instead of using a `{}` placeholder.
 
 ```qx
 void main() {
-    int n = 3;
-    println("{}", n);
+    String name = "Ada";
+    String greeting = "hello " + name;
+    println("{}", greeting);
 }
 ```
 
@@ -1804,3 +1806,232 @@ Check the reported path and its permissions, or set `QXIDE_HOME` to a writable f
 `qxide remove <package>` was given a package name that is not listed in `[dependencies]` of `qxide.toml`.
 
 Check the spelling against `qxide.toml`. Package names use hyphens, whereas `.qx` imports use underscores (for example, `bell-utils` is imported as `bell_utils`).
+
+## Q0701: unknown standard library module or function
+
+The program imports a `std` module that does not exist or calls a function that the module does not define, such as `fs.read(...)` instead of `fs.read_text(...)`. Qxide validates standard library imports and member calls at compile time so typos and nonexistent APIs fail before execution. The available standard library modules are `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`.
+
+Erroneous code example:
+
+```qx
+import std.net;  // error[Q0701]
+
+void main() {
+    println("hello");
+}
+```
+
+To fix it, import an existing standard library module and call a function it provides.
+
+```qx
+import std.log;
+
+void main() {
+    log.info("hello");
+}
+```
+
+## Q0702: standard module not available here
+
+A standard library module was imported in an execution environment that does not offer it. Specifically, `std.app` and `std.qxide` exist only in desktop apps (`qxide app`), the playground and REPL offer only `std.log`, and `qxide qasm` refuses `std.fs` and `std.app` calls because exporting a circuit must not have side effects. Limiting modules per host keeps each execution target safe and predictable for its environment.
+
+Erroneous code example:
+
+```qx
+import std.app;  // error[Q0702]
+
+void main() {
+    app.set_title("Bell lab");
+}
+```
+
+To fix it, use only the standard modules offered by the current host, or move the code into a desktop app.
+
+```qx
+import std.log;
+
+void main() {
+    log.info("Bell lab");
+}
+```
+
+## Q0703: standard module not permitted
+
+The program imports a standard library module that exists in the current host but has not been granted permission. Under `qxide run`, `std.fs` requires `--allow fs`; in an app, the module name must be listed in `permissions` under the `[app]` section of `qxide.toml`; and packages used as dependencies may only import `std.log`. This rule enforces least privilege so code cannot touch files or host capabilities unless explicitly granted.
+
+Erroneous code example:
+
+```java
+// qxide run note.qx   (no --allow fs)
+import std.fs;  // error[Q0703]
+
+void main() {
+    fs.write_text("note.txt", "hello");
+}
+```
+
+To fix it, grant the required permission via the CLI flag or `qxide.toml` as shown in the comments below.
+
+```java
+// qxide run --allow fs note.qx
+// in an app: [app] permissions = ["fs"] in qxide.toml
+import std.fs;
+
+void main() {
+    fs.write_text("note.txt", "hello");
+}
+```
+
+## Q0704: file operation failed
+
+A `std.fs` call failed at run time because the file does not exist, is larger than 16 MiB, is not valid UTF-8 text, or triggered an operating system I/O error. The diagnostic includes the underlying OS error message to identify the cause. Because `.qx` does not have runtime error handling yet, the program stops immediately rather than continuing with missing or invalid file data.
+
+Erroneous code example:
+
+```java
+// qxide run --allow fs read.qx   (data/missing.txt does not exist)
+String text = fs.read_text("missing.txt");  // error[Q0704]
+```
+
+To fix it, check whether the file exists with `fs.exists` before reading it.
+
+```java
+String text = "";
+if (fs.exists("missing.txt")) {
+    text = fs.read_text("missing.txt");
+}
+```
+
+## Q0705: path not allowed
+
+A path passed to `std.fs` is not a valid relative path inside the sandboxed data folder (`data/` for `qxide run --allow fs`, or the per-user app data folder in an app). Absolute paths, drive letters, UNC paths, `..`, empty segments, Windows device names such as `CON` or `NUL`, and paths that leave the folder through a symlink are all rejected. Restricting paths to the data folder prevents programs from reading or modifying arbitrary files on the host system.
+
+Erroneous code example:
+
+```java
+fs.write_text("../secrets.txt", "x");  // error[Q0705]
+```
+
+To fix it, use a relative path that stays inside the data folder.
+
+```java
+fs.write_text("notes/secrets.txt", "x");
+```
+
+## Q0706: standard function argument out of range
+
+A standard library function received an argument outside its allowed range, such as passing a negative duration or a value greater than 60000 milliseconds to `time.sleep_millis`. Enforcing argument bounds prevents invalid runtime operations and protects execution from unbounded waits or resource exhaustion.
+
+Erroneous code example:
+
+```qx
+import std.time;
+
+void main() {
+    time.sleep_millis(120000);  // error[Q0706]
+}
+```
+
+To fix it, pass a value that falls within the function's allowed range.
+
+```qx
+import std.time;
+
+void main() {
+    time.sleep_millis(10);
+}
+```
+
+## Q0711: unknown app command
+
+The page called `qxide.invoke` with a command name that is not listed in `commands` under the `[app]` section of `qxide.toml`, so the runtime refused the call before running any code. Restricting invocation to explicitly listed functions prevents page code from calling arbitrary internal functions in your Qxide program.
+
+Erroneous code example:
+
+```js
+// [app] commands = ["measure_bell"]
+await qxide.invoke("measure", {});  // rejects with code Q0711
+```
+
+To fix it, call a command that is already listed in `[app]` or add the function to `commands`.
+
+```js
+await qxide.invoke("measure_bell", {});
+```
+
+## Q0712: bad command arguments
+
+The arguments object passed to `qxide.invoke` does not match the command's parameters or shot limits: a parameter is missing, an unexpected key is present, a value has the wrong type (for example, a number for a `String`), or the requested shot count is 0 or above 1,000,000. The runtime validates arguments before executing anything so malformed requests fail cleanly without running invalid or excessive work.
+
+Erroneous code example:
+
+```js
+// public String save_result(String text)
+await qxide.invoke("save_result", { text: 42 });  // rejects with code Q0712
+```
+
+To fix it, pass matching argument keys, value types, and a valid shot count, using `qxide.commands()` to check the expected parameter names and types.
+
+```js
+await qxide.invoke("save_result", { text: "00=493 11=507" });
+```
+
+## Q0713: call cancelled
+
+An in-flight call was cancelled through its `AbortSignal` or because the window closed. The runtime checks for cancellation between shots, inside `time.sleep_millis`, and during elaboration so aborted calls stop promptly rather than continuing to consume resources. Nothing is wrong with the program itself; the runtime is reporting that execution was stopped externally.
+
+Erroneous code example:
+
+```js
+const ctrl = new AbortController();
+const run = qxide.invoke("measure_bell", {}, { shots: 1000000, signal: ctrl.signal });
+ctrl.abort();  // run rejects with code Q0713
+```
+
+To fix it, start the call again without cancelling its `AbortSignal` or allow the call to finish before closing the window.
+
+```js
+const r = await qxide.invoke("measure_bell", {}, { shots: 1000000 });
+```
+
+## Q0714: invalid command signature
+
+A function listed in `[app]` `commands` cannot be called from the page because it is missing, is not declared `public`, or accepts a parameter whose type is not `int`, `double`, `boolean`, or `String`. This error is reported when the app starts or by `qxide app build` because page code can only pass plain values across the boundary and cannot own qubits or measurement results.
+
+Erroneous code example:
+
+```java
+// [app] commands = ["flip"]
+public Bit flip(Qubit q) {  // error[Q0714]
+    h(q);
+    return measure(q);
+}
+```
+
+To fix it, ensure the command exists, make it `public`, accept only `int`, `double`, `boolean`, or `String` parameters, and allocate any qubits inside the command.
+
+```java
+public Bit flip() {
+    Qubit q = qubit();
+    h(q);
+    return measure(q);
+}
+```
+
+## Q0715: invalid `[app]` section
+
+The `[app]` section of `qxide.toml` is malformed, such as when `commands` is missing or empty, a key has the wrong type, `permissions` names an unknown module, or `module` is not a valid module path. Reported by `qxide app dev`, `qxide app build`, and app startup, this validation catches configuration mistakes upfront so the runtime never launches with an inconsistent app manifest.
+
+Erroneous code example:
+
+```toml
+[app]
+commands = []  # error[Q0715]: at least one command is required
+```
+
+To fix it, correct the `[app]` section in `qxide.toml` so that all keys have valid types, `module` is a valid module path, `commands` is non-empty, and every entry in `permissions` names a known module.
+
+```toml
+[app]
+commands = ["measure_bell"]
+```

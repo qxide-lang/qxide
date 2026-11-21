@@ -7,6 +7,8 @@ pub enum Ty {
     Int,
     Double,
     Boolean,
+    // Immutable text; a build-time value like `int`.
+    String,
     Bit,
     BitReg,
     Qubit,
@@ -25,6 +27,7 @@ impl Ty {
             Ty::Int => "int",
             Ty::Double => "double",
             Ty::Boolean => "boolean",
+            Ty::String => "String",
             Ty::Bit => "Bit",
             Ty::BitReg => "BitReg",
             Ty::Qubit => "Qubit",
@@ -42,6 +45,7 @@ impl Ty {
             "int" => Ty::Int,
             "double" => Ty::Double,
             "boolean" => Ty::Boolean,
+            "String" => Ty::String,
             "Bit" => Ty::Bit,
             "BitReg" => Ty::BitReg,
             "Qubit" => Ty::Qubit,
@@ -204,9 +208,12 @@ pub enum ExprKind {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    // `r.as_int()` on a value, or `fs.read_text(p)` on a module alias (rewritten to a `Call`
+    // by the linker).
     Method {
         recv: Box<Expr>,
         name: Ident,
+        args: Vec<Expr>,
     },
     Unary {
         op: UnOp,

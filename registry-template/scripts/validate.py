@@ -21,6 +21,8 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parent.parent
 # Patterns are used with fullmatch (`$` would also accept a trailing newline).
 NAME = re.compile(r"[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,63}")
+# Names the language itself uses (`import std.fs;`), never packages.
+RESERVED = {"std"}
 SHA256 = re.compile(r"[0-9a-f]{64}")
 U64_MAX = (1 << 64) - 1
 MAX_COMPARATORS = 32
@@ -261,6 +263,9 @@ def check_entry(where: str, entry: dict, file_name: str) -> bool:
         ok = False
     if entry["name"] != file_name or not isinstance(entry["name"], str) or not NAME.fullmatch(entry["name"]):
         error(where, f"name `{entry['name']}` does not match the index file `{file_name}`")
+        ok = False
+    elif entry["name"] in RESERVED:
+        error(where, f"name `{entry['name']}` is reserved")
         ok = False
     if not isinstance(entry["vers"], str) or parse_version(entry["vers"]) is None:
         error(where, f"`vers` {entry['vers']!r} is not a semantic version")

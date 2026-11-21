@@ -110,6 +110,17 @@ codes! {
     ImportOutsideProject => "Q0508",
     BadImportPath => "Q0509",
     MisplacedImport => "Q0510",
+    StdUnknown => "Q0701",
+    StdUnavailable => "Q0702",
+    StdDenied => "Q0703",
+    StdIo => "Q0704",
+    StdPath => "Q0705",
+    StdArgument => "Q0706",
+    UnknownCommand => "Q0711",
+    BadArguments => "Q0712",
+    Cancelled => "Q0713",
+    BadCommand => "Q0714",
+    BadAppConfig => "Q0715",
 }
 
 #[derive(Debug, Clone)]

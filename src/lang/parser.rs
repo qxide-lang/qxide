@@ -447,15 +447,16 @@ impl Parser {
                     span,
                 };
             } else if self.eat(&Tok::Dot) {
-                // Methods take no arguments for now: `r.as_int()`, `r.to_binary()`.
+                // `r.as_int()`, or a call through a module alias: `fs.read_text(path)`.
                 let name = self.ident()?;
                 self.expect(Tok::LParen)?;
-                let end = self.expect(Tok::RParen)?;
+                let (args, end) = self.call_args()?;
                 let span = e.span.to(end);
                 e = Expr {
                     kind: ExprKind::Method {
                         recv: Box::new(e),
                         name,
+                        args,
                     },
                     span,
                 };
@@ -513,14 +514,7 @@ impl Parser {
                     });
                 }
                 self.bump();
-                let mut args = Vec::new();
-                while self.peek() != &Tok::RParen {
-                    args.push(self.expr()?);
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                }
-                let end = self.expect(Tok::RParen)?;
+                let (args, end) = self.call_args()?;
                 return Ok(Expr {
                     kind: ExprKind::Call { name, args },
                     span: span.to(end),
@@ -532,6 +526,19 @@ impl Parser {
             kind,
             span: span.to(self.prev_span()),
         })
+    }
+
+    // Comma-separated arguments after `(`, through the closing `)`; returns the `)` span.
+    fn call_args(&mut self) -> PResult<(Vec<Expr>, Span)> {
+        let mut args = Vec::new();
+        while self.peek() != &Tok::RParen {
+            args.push(self.expr()?);
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        let end = self.expect(Tok::RParen)?;
+        Ok((args, end))
     }
 }
 

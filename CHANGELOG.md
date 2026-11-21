@@ -2,6 +2,21 @@
 
 Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` language) are listed here by version; older releases (0.5.0 and earlier) are documented on [GitHub Releases](https://github.com/qxide-lang/qxide/releases) and in `docs/release-notes/`.
 
+## [Unreleased]
+
+### Breaking changes
+
+- **New `.qx` type name (`String`)**: `String` is now a `.qx` type name and can no longer be used as a variable or function name.
+- **Reserved package name `std`**: `std` is reserved for the standard library. `qxide new`, `qxide.toml` validation, and the registry validator reject a package named `std`, and `qxide new std` names the package `std-app`.
+- **String literals as values (`Q0204` / `Q0214`)**: String literals are now values, so `int s = "hi";` reports a type mismatch (`Q0204`) instead of `Q0214`. `Q0214` now reports a `{}` placeholder in a string value, as placeholders are only allowed in `println`'s format string.
+
+### Added
+
+- **`String` type**: Added immutable build-time text supporting `+` concatenation with numbers and booleans, `==` and `!=`, `len(s)`, and printing. `String` is usable in parameters, returns, `final`, and `var`.
+- **Standard library (`std`)**: Added `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`, imported with `import std.fs;` (called as `fs.read_text(...)`), `import std.fs.read_text;`, or `import std.fs.*;`, with new error codes `Q0701`–`Q0706`. Standard library calls run once while the program is elaborated, before any shot. Each host offers modules under permissions: `qxide run` allows `std.log` and `std.time`, and enables `std.fs` only with the new `--allow fs` flag (for files under `data/` next to `qxide.toml`, or `./data`), `qxide qasm` refuses file and window effects, and the REPL and browser playground offer only `std.log`.
+- **Desktop apps**: Added desktop app support (design in `docs/design/qx-app.md`) with `qxide app new <NAME>` (scaffolds an app with `.qx` logic and an HTML/JS interface), `qxide app dev` (runs it in a window reading files from disk), `qxide app build` (writes a portable executable to `target/app/` by attaching a bundle of `.qx` sources, locked packages, and `ui/` files to the prebuilt `qxide-app` runtime without compiling anything), app-level error codes `Q0711`–`Q0715`, and the `examples/apps/bell-app` example (measures a Bell pair and saves results with `std.fs`). The runtime (`crates/qxide-app-runtime`, built on `wry` and `tao`, the OS webview) serves the page with a strict Content-Security-Policy, accepts calls only from the app's own origin and only for functions listed in `[app] commands`, and runs each call on a worker thread with cancellation. The runtime is not yet part of the release archives or PyPI wheels and is built separately (`cargo build --release --manifest-path crates/qxide-app-runtime/Cargo.toml`).
+- **App permission checks in `qxide check`**: Running `qxide check` inside an app project now checks imports against the app's `[app] permissions`.
+
 ## [0.7.0] - 2026-11-21
 
 `qxide v0.7.0` builds on `v0.6.0` by adding modules (`import`, `public`), a package manager (`qxide.toml`, `qxide.lock`, and registry commands `add`, `remove`, `install`, `publish`, `search`), and new CLI commands (`qxide fmt`, `qxide repl`, `qxide explain`, and an updated `qxide new` project layout). This release also fixes seeded sampling so each shot uses an independent seed, tightens linearity soundness checks (`Q0315`), and rejects non-finite rotation angles (`Q0411`). For Rust library users, `qxide::shot_seed` and `Circuit::simulate_shots` are new, `rx`/`ry`/`rz` now panic on non-finite angles, and package manager dependencies are gated behind the default `cli` feature so `default-features = false` keeps the library dependency-free.

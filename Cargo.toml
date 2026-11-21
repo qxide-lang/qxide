@@ -37,6 +37,8 @@ required-features = ["cli"]
 
 [workspace]
 members = ["crates/qxide-wasm"]
+# Built on its own (wry needs WebKitGTK on Linux); see docs/design/qx-app.md.
+exclude = ["crates/qxide-app-runtime"]
 
 [[example]]
 name = "gpu_bench"

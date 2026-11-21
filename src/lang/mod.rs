@@ -3,6 +3,9 @@
 
 mod ast;
 mod check;
+// The desktop runtime (crates/qxide-app-runtime) uses all of it; the CLI only checks commands.
+#[allow(dead_code)]
+pub mod command;
 mod diag;
 mod explain;
 mod fmt;
@@ -12,6 +15,10 @@ mod link;
 mod msg;
 mod parser;
 pub mod repl;
+pub mod stdlib;
+// Used by the desktop runtime for Qxide Studio (`std.qxide`).
+#[allow(dead_code)]
+pub mod studio;
 
 #[cfg(test)]
 mod sampling_tests;
@@ -23,6 +30,9 @@ mod tools_tests;
 #[cfg(test)]
 mod module_tests;
 
+#[cfg(test)]
+mod app_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -30,11 +40,13 @@ use qxide::{Backend, Shot, SimError, DEFAULT_MEMORY_LIMIT};
 
 use diag::{Code, Diagnostic, SourceMap};
 use interp::{BitsFmt, Elaborated, OutPiece};
+use stdlib::{Host, Permissions};
 // The package manager (CLI only) builds `PackageRoot`s; the playground build never does.
 #[allow(unused_imports)]
 pub use link::{PackageRoot, Project, ReadFn};
 
 /// Rendered diagnostics, ready for stderr.
+#[derive(Debug)]
 pub struct Failure(pub String);
 
 /// The entry file of `qxide run`/`check`/`qasm` and the packages its imports may reach.
@@ -44,6 +56,8 @@ pub struct Input<'a> {
     pub project: Option<&'a Project>,
     /// Reads imported module files; `read_file` outside of tests.
     pub read: ReadFn<'a>,
+    /// Standard modules this host offers and the program may import.
+    pub perms: Permissions,
 }
 
 pub fn read_file(path: &Path) -> std::io::Result<String> {
@@ -51,13 +65,15 @@ pub fn read_file(path: &Path) -> std::io::Result<String> {
 }
 
 impl<'a> Input<'a> {
-    /// A lone file: no project, so any `import` is an error.
+    /// A lone file: no project, so any `import` other than `std` is an error. Standard modules
+    /// as in `qxide run` without `--allow`.
     pub fn file(name: &'a str, src: &'a str) -> Self {
         Self {
             name,
             src,
             project: None,
             read: &read_file,
+            perms: Permissions::cli(false),
         }
     }
 
@@ -72,7 +88,7 @@ fn front_input(
     require_main: bool,
 ) -> (SourceMap, Result<ast::Program, Vec<Diagnostic>>) {
     let src = strip_bom(input.src);
-    let (map, linked) = link::link(input.name, src, input.project, input.read);
+    let (map, linked) = link::link(input.name, src, input.project, input.read, &input.perms);
     let checked = linked.and_then(|program| {
         let errors = check::check_with(&program, require_main);
         if errors.is_empty() {
@@ -86,26 +102,37 @@ fn front_input(
 
 fn build_input(
     input: &Input,
+    host: &mut dyn Host,
 ) -> (
     SourceMap,
     Result<(ast::Program, Elaborated), Vec<Diagnostic>>,
 ) {
     let (map, program) = front_input(input, true);
     let built = program.and_then(|program| {
-        let elaborated = interp::elaborate(&program).map_err(|d| vec![d])?;
+        let elaborated = interp::elaborate(&program, host).map_err(|d| vec![d])?;
         Ok((program, elaborated))
     });
     (map, built)
 }
 
-// A lone source without imports, as the REPL and the tests check it.
+// A lone source with REPL permissions (`std.log` only), as the REPL and the tests check it.
 fn front(src: &str) -> Result<ast::Program, Vec<Diagnostic>> {
-    front_input(&Input::file("t.qx", src), true).1
+    let mut input = Input::file("t.qx", src);
+    input.perms = Permissions::repl();
+    front_input(&input, true).1
 }
 
 #[cfg(test)]
 fn build(src: &str) -> Result<(ast::Program, Elaborated), Vec<Diagnostic>> {
-    build_input(&Input::file("t.qx", src)).1
+    build_input(&Input::file("t.qx", src), &mut stdlib::LogOnly::default()).1
+}
+
+/// The `qxide run` host: `std.log` to stderr, `std.fs` under `data_root`.
+pub fn cli_host(data_root: std::path::PathBuf) -> stdlib::NativeStd {
+    stdlib::NativeStd::new(
+        data_root,
+        Box::new(|level, text| eprintln!("{}", stdlib::log_line(level, text))),
+    )
 }
 
 // Tableau size of the library's stabilizer backend: x and z bit rows (2n + 1 of them) plus signs.
@@ -185,14 +212,35 @@ pub fn format(name: &str, src: &str) -> Result<String, Failure> {
     Ok(out)
 }
 
+/// `std.X is not available in HOST` (Q0702), for hosts outside this module.
+#[allow(dead_code)]
+pub fn std_unavailable(what: &str, host: &str) -> String {
+    msg::std_unavailable(what, host)
+}
+
+/// `set_size` outside 200..=8192 pixels (Q0706), for the app runtime.
+#[allow(dead_code)]
+pub fn std_size_range(width: i64, height: i64) -> String {
+    msg::std_size_range(width, height)
+}
+
+/// `invalid [app] section in qxide.toml: {reason}` (Q0715), for `qxide app`.
+pub fn bad_app_config(reason: &str) -> String {
+    msg::bad_app_config(reason)
+}
+
 /// `qxide explain`: the catalog entry for an error code such as `Q0302` (case-insensitive).
 pub fn explain(arg: &str) -> Option<String> {
     explain::explain(&explain::normalize(arg)?)
 }
 
-/// `qxide qasm`: elaborate once and print the OpenQASM 3 of the resulting circuit.
+/// `qxide qasm`: elaborate once and print the OpenQASM 3 of the resulting circuit. Effects are
+/// refused (`std.log` is dropped), so exporting a circuit never writes files.
 pub fn qasm_input(input: &Input) -> Result<String, Failure> {
-    let (map, built) = build_input(input);
+    let mut host = stdlib::NoEffects {
+        what: "`qxide qasm`",
+    };
+    let (map, built) = build_input(input, &mut host);
     let (_, e) = built.map_err(|e| render(&map, &e))?;
     Ok(e.circuit.to_qasm())
 }
@@ -273,7 +321,8 @@ impl Limits {
 // The playground binding calls `run_with`; the CLI calls `run_input`.
 #[allow(dead_code)]
 pub fn run(name: &str, src: &str, shots: u64, seed: u64) -> Result<String, Failure> {
-    run_with(name, src, shots, seed, Limits::CLI)
+    let mut host = cli_host("data".into());
+    run_input_with(&Input::file(name, src), shots, seed, Limits::CLI, &mut host)
 }
 
 /// `run` of a lone file with explicit resource limits.
@@ -285,18 +334,66 @@ pub fn run_with(
     seed: u64,
     limits: Limits,
 ) -> Result<String, Failure> {
-    run_input_with(&Input::file(name, src), shots, seed, limits)
+    let mut host = cli_host("data".into());
+    run_input_with(&Input::file(name, src), shots, seed, limits, &mut host)
 }
 
-/// `qxide run` of an entry file and its imports; see `run`.
+/// `qxide run` of an entry file and its imports; see `run`. Std calls go to `host`.
 #[allow(dead_code)]
-pub fn run_input(input: &Input, shots: u64, seed: u64) -> Result<String, Failure> {
-    run_input_with(input, shots, seed, Limits::CLI)
+pub fn run_input(
+    input: &Input,
+    shots: u64,
+    seed: u64,
+    host: &mut dyn Host,
+) -> Result<String, Failure> {
+    run_input_with(input, shots, seed, Limits::CLI, host)
 }
 
-fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Result<String, Failure> {
-    let (map, built) = build_input(input);
-    let (program, e) = built.map_err(|e| render(&map, &e))?;
+/// `run_input` with explicit resource limits (the playground passes tighter ones).
+#[allow(dead_code)]
+pub fn run_input_with(
+    input: &Input,
+    shots: u64,
+    seed: u64,
+    limits: Limits,
+    host: &mut dyn Host,
+) -> Result<String, Failure> {
+    let (map, run) = run_diag(input, shots, seed, limits, host);
+    run.map(|r| r.text).map_err(|e| render(&map, &e))
+}
+
+/// A finished `run`: the CLI's stdout, plus the table rows (measurement record, count) when
+/// several shots were simulated.
+pub struct RunOut {
+    pub text: String,
+    pub rows: Vec<(Vec<bool>, u64)>,
+}
+
+/// `run_input_with` with unrendered diagnostics, for editors.
+fn run_diag(
+    input: &Input,
+    shots: u64,
+    seed: u64,
+    limits: Limits,
+    host: &mut dyn Host,
+) -> (SourceMap, Result<RunOut, Vec<Diagnostic>>) {
+    let (map, built) = build_input(input, host);
+    let run = built.and_then(|(program, e)| run_built(&program, &e, shots, seed, limits, host));
+    (map, run)
+}
+
+fn run_built(
+    program: &ast::Program,
+    e: &Elaborated,
+    shots: u64,
+    seed: u64,
+    limits: Limits,
+    host: &mut dyn Host,
+) -> Result<RunOut, Vec<Diagnostic>> {
+    let done = |text: String| RunOut {
+        text,
+        rows: Vec::new(),
+    };
     let prints_bits = e
         .output
         .iter()
@@ -308,48 +405,23 @@ fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Resul
     };
     if !needs_sim {
         // Nothing observable depends on the shot.
-        return Ok(render_output(&e.output, None));
+        return Ok(done(render_output(&e.output, None)));
     }
     let main_span = program
         .fns
         .iter()
         .find(|f| f.name.name == "main")
         .map_or(diag::Span::default(), |f| f.name.span);
-    let backend = e.circuit.select_backend();
-    if let Some(limit) = limits.max_state_vector_qubits {
-        if backend == Backend::StateVector && e.slots > limit {
-            let reason = msg::playground_qubit_limit(e.slots, limit);
-            return Err(render(
-                &map,
-                &[
-                    Diagnostic::new(Code::Simulation, main_span, msg::simulation_failed(&reason))
-                        .with_help(msg::help_playground_qubit_limit()),
-                ],
-            ));
+    let sims = sample(e, main_span, shots, seed, limits).map_err(|d| vec![d])?;
+    let mut sims = sims.map(|r| {
+        if host.cancelled() {
+            return Err(vec![cancelled(main_span)]);
         }
-    }
-    // The stabilizer backend has no memory limit of its own; huge tableaus would abort on allocation.
-    let tableau = stabilizer_bytes(e.slots);
-    if backend == Backend::Stabilizer && tableau > u128::from(limits.stabilizer_bytes) {
-        let reason =
-            msg::stabilizer_too_large(e.slots, &gib(tableau), &gib(limits.stabilizer_bytes.into()));
-        return Err(render(
-            &map,
-            &[
-                Diagnostic::new(Code::Simulation, main_span, msg::simulation_failed(&reason))
-                    .with_help(msg::help_too_large()),
-            ],
-        ));
-    }
-    // Every shot gets its own seed derived from `seed` (see `qxide::shot_seed`), shared with the
-    // library and the playground, so runs with nearby seeds do not reuse each other's shots.
-    let mut sims = e
-        .circuit
-        .simulate_shots(Backend::Auto, seed, shots)
-        .map(|r| r.map_err(|err| render(&map, &[sim_error(err, main_span)])));
+        r.map_err(|d| vec![d])
+    });
     if shots == 1 {
         let shot = sims.next().expect("one shot")?;
-        return Ok(render_output(&e.output, Some(&shot)));
+        return Ok(done(render_output(&e.output, Some(&shot))));
     }
     // The printed output depends only on the measured bits, so it is rendered once per record.
     let mut groups: HashMap<Vec<bool>, (u64, String)> = HashMap::new();
@@ -361,10 +433,9 @@ fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Resul
             .or_insert_with(|| (0, render_output(&e.output, Some(&shot))))
             .0 += 1;
     }
-    let mut rows: Vec<(Vec<bool>, (u64, String))> = groups.into_iter().collect();
-    rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then_with(|| a.0.cmp(&b.0)));
     let mut s = String::new();
-    for (bits, (count, text)) in rows {
+    let mut rows = Vec::new();
+    for (bits, (count, text)) in sorted_groups(groups) {
         s.push_str(&table_row(&bits, count));
         s.push('\n');
         for line in text.lines() {
@@ -372,6 +443,53 @@ fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Resul
             s.push_str(line);
             s.push('\n');
         }
+        rows.push((bits, count));
     }
-    Ok(s)
+    Ok(RunOut { text: s, rows })
+}
+
+fn cancelled(at: diag::Span) -> Diagnostic {
+    Diagnostic::new(Code::Cancelled, at, msg::cancelled())
+}
+
+/// Most frequent first, ties in bit order: the order of the `--shots` table.
+fn sorted_groups<T>(groups: HashMap<Vec<bool>, (u64, T)>) -> Vec<(Vec<bool>, (u64, T))> {
+    let mut rows: Vec<(Vec<bool>, (u64, T))> = groups.into_iter().collect();
+    rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
+/// Checks the resource limits for simulating `e`, then yields its shots. Every shot gets its own
+/// seed derived from `seed` (see `qxide::shot_seed`), shared with the library and the
+/// playground, so runs with nearby seeds do not reuse each other's shots.
+fn sample(
+    e: &Elaborated,
+    at: diag::Span,
+    shots: u64,
+    seed: u64,
+    limits: Limits,
+) -> Result<impl Iterator<Item = Result<Shot, Diagnostic>> + '_, Diagnostic> {
+    let backend = e.circuit.select_backend();
+    if let Some(limit) = limits.max_state_vector_qubits {
+        if backend == Backend::StateVector && e.slots > limit {
+            let reason = msg::playground_qubit_limit(e.slots, limit);
+            return Err(
+                Diagnostic::new(Code::Simulation, at, msg::simulation_failed(&reason))
+                    .with_help(msg::help_playground_qubit_limit()),
+            );
+        }
+    }
+    // The stabilizer backend has no memory limit of its own; huge tableaus would abort on allocation.
+    let tableau = stabilizer_bytes(e.slots);
+    if backend == Backend::Stabilizer && tableau > u128::from(limits.stabilizer_bytes) {
+        let reason =
+            msg::stabilizer_too_large(e.slots, &gib(tableau), &gib(limits.stabilizer_bytes.into()));
+        return Err(
+            Diagnostic::new(Code::Simulation, at, msg::simulation_failed(&reason))
+                .with_help(msg::help_too_large()),
+        );
+    }
+    Ok(e.circuit
+        .simulate_shots(Backend::Auto, seed, shots)
+        .map(move |r| r.map_err(|err| sim_error(err, at))))
 }

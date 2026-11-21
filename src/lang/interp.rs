@@ -9,10 +9,13 @@ use qxide::{Bit, Circuit, Qubit};
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::msg;
+use super::stdlib::{Host, HostValue, StdErrorKind};
 
 pub const MAX_CALL_DEPTH: usize = 200;
 // Caps allocations so a huge `qreg(n)` fails with a diagnostic instead of aborting on OOM.
 pub const MAX_QUBITS: usize = 1 << 20;
+// How often (in statements) elaboration asks the host whether the call was cancelled.
+const CANCEL_POLL: u64 = 4096;
 
 // How a `BitReg` is printed: `{}` gives an array, `.to_binary()` and `.as_int()` give numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +42,11 @@ pub struct Elaborated {
 }
 
 #[derive(Debug, Clone)]
-enum Value {
+pub enum Value {
     Int(i64),
     Double(f64),
     Bool(bool),
+    Str(String),
     Bit(Bit),
     Bits(Vec<Bit>),
     ShotView(Vec<Bit>, BitsFmt),
@@ -103,8 +107,10 @@ impl Frame {
     }
 }
 
-struct Interp<'p> {
+struct Interp<'p, 'h> {
     fns: HashMap<&'p str, &'p FnDecl>,
+    host: &'h mut dyn Host,
+    steps: u64,
     pool: Vec<Option<Qubit>>,
     output: Vec<OutPiece>,
     measured: Vec<Bit>,
@@ -114,9 +120,23 @@ struct Interp<'p> {
     free_slots: usize,
 }
 
-pub fn elaborate(p: &Program) -> R<Elaborated> {
+/// Runs `main` once, recording its circuit. Std calls go to `host`.
+pub fn elaborate(p: &Program, host: &mut dyn Host) -> R<Elaborated> {
+    elaborate_call(p, "main", Vec::new(), host).map(|(e, _)| e)
+}
+
+/// Runs the function `name` once with `args` and returns its circuit and return value, whose
+/// `Bit`s refer to the circuit's measurements.
+pub fn elaborate_call(
+    p: &Program,
+    name: &str,
+    args: Vec<Value>,
+    host: &mut dyn Host,
+) -> R<(Elaborated, Value)> {
     let mut it = Interp {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
+        host,
+        steps: 0,
         pool: Vec::new(),
         output: Vec::new(),
         measured: Vec::new(),
@@ -124,18 +144,18 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
         slots: 0,
         free_slots: 0,
     };
-    let main = *it
-        .fns
-        .get("main")
-        .ok_or_else(|| internal(Span::default()))?;
+    let f = *it.fns.get(name).ok_or_else(|| internal(Span::default()))?;
     let mut c = Circuit::new();
-    it.call_fn(&mut c, main, Vec::new(), main.name.span)?;
-    Ok(Elaborated {
-        circuit: c,
-        output: it.output,
-        measured: it.measured,
-        slots: it.slots,
-    })
+    let ret = it.call_fn(&mut c, f, args, f.name.span)?;
+    Ok((
+        Elaborated {
+            circuit: c,
+            output: it.output,
+            measured: it.measured,
+            slots: it.slots,
+        },
+        ret,
+    ))
 }
 
 fn internal(at: Span) -> Diagnostic {
@@ -143,7 +163,7 @@ fn internal(at: Span) -> Diagnostic {
     Diagnostic::new(Code::Internal, at, msg::internal_error())
 }
 
-impl<'p> Interp<'p> {
+impl<'p> Interp<'p, '_> {
     fn call_fn(&mut self, c: &mut Circuit, f: &'p FnDecl, args: Vec<Value>, at: Span) -> R<Value> {
         if self.depth >= MAX_CALL_DEPTH {
             return Err(Diagnostic::new(
@@ -191,6 +211,15 @@ impl<'p> Interp<'p> {
     }
 
     fn stmt(&mut self, c: &mut Circuit, f: &mut Frame, s: &'p Stmt) -> R<Flow> {
+        self.steps += 1;
+        if self.steps.is_multiple_of(CANCEL_POLL) && self.host.cancelled() {
+            let at = match s {
+                Stmt::Return { span, .. } => *span,
+                Stmt::Decl { name, .. } | Stmt::Assign { name, .. } => name.span,
+                _ => Span::default(),
+            };
+            return Err(Diagnostic::new(Code::Cancelled, at, msg::cancelled()));
+        }
         match s {
             Stmt::Decl { name, init, ty, .. } => {
                 let v = self.expr(c, f, init)?;
@@ -198,6 +227,7 @@ impl<'p> Interp<'p> {
                 let ty = ty.unwrap_or(match v {
                     Value::Double(_) => Ty::Double,
                     Value::Bool(_) => Ty::Boolean,
+                    Value::Str(_) => Ty::String,
                     _ => Ty::Int,
                 });
                 f.bind(&name.name, v, ty);
@@ -280,7 +310,16 @@ impl<'p> Interp<'p> {
             ExprKind::Int(n) => Value::Int(*n),
             ExprKind::Double(v) => Value::Double(*v),
             ExprKind::Bool(b) => Value::Bool(*b),
-            ExprKind::Str(_) => return Err(internal(e.span)),
+            ExprKind::Str(pieces) => {
+                let mut text = String::new();
+                for p in pieces {
+                    match p {
+                        FmtPiece::Lit(t) => text.push_str(t),
+                        FmtPiece::Hole => return Err(internal(e.span)),
+                    }
+                }
+                Value::Str(text)
+            }
             ExprKind::Var(name) => match super::check::constant(name) {
                 Some(v) => Value::Double(v),
                 None => f.get(name, e.span)?,
@@ -295,7 +334,7 @@ impl<'p> Interp<'p> {
                     _ => return Err(internal(e.span)),
                 }
             }
-            ExprKind::Method { recv, name } => {
+            ExprKind::Method { recv, name, .. } => {
                 let Value::Bits(v) = self.expr(c, f, recv)? else {
                     return Err(internal(e.span));
                 };
@@ -414,6 +453,7 @@ impl<'p> Interp<'p> {
                 Ok(Value::Unit)
             }
             "len" => match self.expr(c, f, &args[0])? {
+                Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
                 Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
                 Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
                 _ => Err(internal(span)),
@@ -434,6 +474,7 @@ impl<'p> Interp<'p> {
                             Some(Value::Int(n)) => self.text(&n.to_string()),
                             Some(Value::Double(v)) => self.text(&format!("{v:?}")),
                             Some(Value::Bool(b)) => self.text(&b.to_string()),
+                            Some(Value::Str(s)) => self.text(&s),
                             Some(Value::Bit(b)) => self.output.push(OutPiece::Bit(b)),
                             Some(Value::Bits(v)) => {
                                 self.output.push(OutPiece::Bits(v, BitsFmt::Array))
@@ -484,6 +525,7 @@ impl<'p> Interp<'p> {
                 }
                 Ok(Value::Unit)
             }
+            _ if n.starts_with("std.") => self.std_call(c, f, n, args, span),
             _ => {
                 let func = *self.fns.get(n).ok_or_else(|| {
                     Diagnostic::new(Code::UnknownFn, name.span, msg::unknown_fn(n))
@@ -510,6 +552,46 @@ impl<'p> Interp<'p> {
                     ));
                 }
                 self.call_fn(c, func, vals, span)
+            }
+        }
+    }
+
+    // `std.fs.read_text(p)`: evaluates the arguments and lets the host run the effect.
+    fn std_call(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        n: &str,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(match self.expr(c, f, a)? {
+                Value::Int(n) => HostValue::Int(n),
+                Value::Double(v) => HostValue::Double(v),
+                Value::Bool(b) => HostValue::Bool(b),
+                Value::Str(s) => HostValue::Str(s),
+                _ => return Err(internal(a.span)),
+            });
+        }
+        let rest = &n["std.".len()..];
+        let (module, function) = rest.split_once('.').ok_or_else(|| internal(span))?;
+        match self.host.call(module, function, vals) {
+            Ok(HostValue::Unit) => Ok(Value::Unit),
+            Ok(HostValue::Int(n)) => Ok(Value::Int(n)),
+            Ok(HostValue::Double(v)) => Ok(Value::Double(v)),
+            Ok(HostValue::Bool(b)) => Ok(Value::Bool(b)),
+            Ok(HostValue::Str(s)) => Ok(Value::Str(s)),
+            Err(e) => {
+                let code = match e.kind {
+                    StdErrorKind::Unavailable => Code::StdUnavailable,
+                    StdErrorKind::Io => Code::StdIo,
+                    StdErrorKind::Path => Code::StdPath,
+                    StdErrorKind::Argument => Code::StdArgument,
+                    StdErrorKind::Cancelled => Code::Cancelled,
+                };
+                Err(Diagnostic::new(code, span, e.message))
             }
         }
     }
@@ -606,6 +688,13 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
         (Value::Double(a), Value::Int(b)) => double_op(op, a, b as f64, at)?,
         (Value::Int(a), Value::Double(b)) => double_op(op, a as f64, b, at)?,
         (Value::Double(a), Value::Double(b)) => double_op(op, a, b, at)?,
+        (Value::Str(a), b) if op == Add => Value::Str(a + &concat_text(b, at)?),
+        (a, Value::Str(b)) if op == Add => Value::Str(concat_text(a, at)? + &b),
+        (Value::Str(a), Value::Str(b)) => match op {
+            Eq => Value::Bool(a == b),
+            Ne => Value::Bool(a != b),
+            _ => return Err(internal(at)),
+        },
         (Value::Bool(a), Value::Bool(b)) => match op {
             And => Value::Bool(a && b),
             Or => Value::Bool(a || b),
@@ -613,6 +702,17 @@ fn binary(op: BinOp, l: Value, r: Value, at: Span) -> R<Value> {
             Ne => Value::Bool(a != b),
             _ => return Err(internal(at)),
         },
+        _ => return Err(internal(at)),
+    })
+}
+
+// The text of a build-time value in `String` concatenation, spelled like `println` prints it.
+fn concat_text(v: Value, at: Span) -> R<String> {
+    Ok(match v {
+        Value::Int(n) => n.to_string(),
+        Value::Double(v) => format!("{v:?}"),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => s,
         _ => return Err(internal(at)),
     })
 }

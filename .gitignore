@@ -1,3 +1,5 @@
 /target
 qasm-out/
 examples/packages/*/target/
+examples/apps/*/target/
+crates/qxide-app-runtime/target/
