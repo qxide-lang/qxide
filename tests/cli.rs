@@ -217,8 +217,10 @@ fn deepest_nesting_of_the_costliest_kinds_runs_in_any_build() {
     let int_fn = |body: String| {
         format!("int g(int x) {{\n    return x;\n}}\n\nint f(int k) {{\n    if k > 0 {{\n        {body}\n    }}\n    return 0;\n}}\n\nvoid main() {{\n    println(\"{{}}\", f(198));\n}}\n")
     };
+    // Nested `if m` blocks count across calls (`max_cond_depth`, Q0416), so the bit program
+    // nests only in the bottom call (see `deepest_programs` in src/lang/tests.rs).
     let bit_fn = |body: String| {
-        format!("void f(int k, Bit m) {{\n    if k > 0 {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(198, m);\n}}\n")
+        format!("void g(int k, Bit m) {{\n}}\n\nvoid f(int k, Bit m) {{\n    if k > 0 {{\n        f(k - 1, m);\n    }} else {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(197, m);\n}}\n")
     };
     let nest = |n: usize, open: &str, inner: &str, close: &str| {
         format!("{}{inner}{}", open.repeat(n), close.repeat(n))
@@ -230,7 +232,7 @@ fn deepest_nesting_of_the_costliest_kinds_runs_in_any_build() {
             format!("for i{i} in 0..1 {{ {s} }}")
         }))
     };
-    let bit_ifs = |n: usize| bit_fn(nest(n, "if m { ", "f(k - 1, m);", " }"));
+    let bit_ifs = |n: usize| bit_fn(nest(n, "if m { ", "g(k - 1, m);", " }"));
     let builtins = |n: usize| {
         int_fn(format!(
             "return {};",
@@ -468,6 +470,66 @@ fn explain_prints_the_catalog_entry() {
     );
     assert_eq!(qxide(&["explain", "Q9999"]).status.code(), Some(2));
     assert_eq!(qxide(&["explain"]).status.code(), Some(2));
+}
+
+fn scratch_file(name: &str, src: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("qxide-cli-limits-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, src).unwrap();
+    path
+}
+
+// M-01: 2000 errors on one 4 kB line printed about 12 MB (16000 errors, 771 MB) before the cap.
+#[test]
+fn check_of_one_line_with_many_errors_prints_a_bounded_report() {
+    let src = format!("void main(){{{}}}\n", "a;".repeat(2000));
+    let path = scratch_file("oneline_2000.qx", &src);
+    let out = qxide(&["check", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(err.matches("error[Q0201]").count(), 50);
+    assert!(
+        err.contains("error[Q0418]"),
+        "{}",
+        &err[err.len().saturating_sub(400)..]
+    );
+    assert!(err.len() < 64 << 10, "{} bytes", err.len());
+}
+
+// M-10: this 610-byte program made `qasm` print 297 MB before conditional nesting was limited.
+#[test]
+fn qasm_refuses_conditionals_nested_too_deeply_across_calls() {
+    let src = format!(
+        "void f(Qubit q, Bit b, int n){{{}if(n>0){{f(q,b,n-1);}}x(q);{}}}\nvoid main(){{\n Qubit a=qubit(); h(a); Bit b=measure(a);\n Qubit q=qubit();\n f(q,b,198);\n Bit r=measure(q);\n println(\"{{}}\", r);\n}}\n",
+        "if(b){".repeat(61),
+        "}".repeat(61)
+    );
+    let path = scratch_file("nest_198_61.qx", &src);
+    let out = qxide(&["qasm", path.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{} bytes of stdout",
+        out.stdout.len()
+    );
+    assert!(out.stdout.is_empty());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("error[Q0416]"), "{err}");
+}
+
+// B-01 at the CLI's default budget; slow (about a minute), so run it with `--ignored`.
+#[test]
+#[ignore]
+fn endless_loop_stops_at_the_default_step_limit() {
+    let path = scratch_file(
+        "loop.qx",
+        "void main() {\n    for i in 0..9223372036854775807 {\n    }\n}\n",
+    );
+    let out = qxide(&["run", path.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("error[Q0413]"), "{err}");
 }
 
 fn repl_with(input: &str) -> std::process::Output {

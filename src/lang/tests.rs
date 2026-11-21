@@ -1073,7 +1073,9 @@ fn short_circuit_right_operand_cannot_consume() {
 }
 
 // Programs at the nesting limit (n levels; n + 1 is Q0106) whose recursive call sits at the
-// innermost level, so 199 calls each hold the full nesting on the interpreter's stack.
+// innermost level, so 199 calls each hold the full nesting on the interpreter's stack. The bit
+// kinds are the exception: nested `if m` blocks count across calls toward `max_cond_depth` (64,
+// Q0416), so they recurse to the call limit first and nest only in the bottom call.
 type Deepest = (&'static str, usize, fn(usize) -> String);
 
 fn deepest_programs() -> Vec<Deepest> {
@@ -1084,7 +1086,7 @@ fn deepest_programs() -> Vec<Deepest> {
     }
     fn bits(body: String) -> String {
         format!(
-            "void f(int k, Bit m) {{\n    if k > 0 {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(198, m);\n}}\n"
+            "void g(int k, Bit m) {{\n}}\n\nvoid f(int k, Bit m) {{\n    if k > 0 {{\n        f(k - 1, m);\n    }} else {{\n        {body}\n    }}\n}}\n\nvoid main() {{\n    Qubit q = qubit();\n    Bit m = measure(q);\n    f(197, m);\n}}\n"
         )
     }
     fn nest(n: usize, open: &str, inner: &str, close: &str) -> String {
@@ -1132,10 +1134,10 @@ fn deepest_programs() -> Vec<Deepest> {
             ))
         }),
         ("bit_if", 61, |n| {
-            bits(nest(n, "if m { ", "f(k - 1, m);", " }"))
+            bits(nest(n, "if m { ", "g(k - 1, m);", " }"))
         }),
         ("bit_else", 61, |n| {
-            bits(nest(n, "if m { } else { ", "f(k - 1, m);", " }"))
+            bits(nest(n, "if m { } else { ", "g(k - 1, m);", " }"))
         }),
     ]
 }

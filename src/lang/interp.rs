@@ -3,12 +3,13 @@
 // diagnostic here instead of panicking.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use qxide::{Bit, Circuit, Qubit};
 
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
-use super::msg;
+use super::{msg, Limits};
 
 pub const MAX_CALL_DEPTH: usize = 200;
 // Caps allocations so a huge `qreg(n)` fails with a diagnostic instead of aborting on OOM.
@@ -26,7 +27,39 @@ pub enum BitsFmt {
 pub enum OutPiece {
     Text(String),
     Bit(Bit),
-    Bits(Vec<Bit>, BitsFmt),
+    Bits(Rc<[Bit]>, BitsFmt),
+}
+
+/// Bytes `piece` prints in any shot (bits print as single digits).
+pub fn piece_bytes(piece: &OutPiece) -> u64 {
+    match piece {
+        OutPiece::Text(t) => t.len() as u64,
+        OutPiece::Bit(_) => 1,
+        OutPiece::Bits(v, fmt) => bits_bytes(v.len(), *fmt),
+    }
+}
+
+fn bits_bytes(n: usize, fmt: BitsFmt) -> u64 {
+    let n = n as u64;
+    match fmt {
+        // `[0, 1, 1]`
+        BitsFmt::Array => (3 * n).max(2),
+        // `0b110`
+        BitsFmt::Binary => n.max(1) + 2,
+        // Registers wider than 64 bits are rejected, so at most 20 digits.
+        BitsFmt::Int => 20,
+    }
+}
+
+/// Operation counts of the recorded circuit, for the simulation-work estimate in `sim_work`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpCounts {
+    // Gates, measurements and resets (what a state-vector shot applies to every amplitude).
+    pub sim_ops: u64,
+    // Column passes over the stabilizer tableau: one per Clifford gate, three per `sdg`, one per reset.
+    pub row_passes: u64,
+    // Measurements and resets (row reductions on the tableau).
+    pub measures: u64,
 }
 
 pub struct Elaborated {
@@ -36,18 +69,22 @@ pub struct Elaborated {
     pub measured: Vec<Bit>,
     // Physical qubit slots of `circuit` (the library reuses slots freed by `measure`).
     pub slots: usize,
+    pub counts: OpCounts,
+    // Upper bound of the length of `circuit.to_qasm()`, so `qxide qasm` can refuse before building it.
+    pub qasm_bytes: u64,
 }
 
+// Registers share their storage, so reading a variable or indexing `r[i]` copies no qubit list (B-09).
 #[derive(Debug, Clone)]
 enum Value {
     Int(i64),
     Double(f64),
     Bool(bool),
     Bit(Bit),
-    Bits(Vec<Bit>),
-    ShotView(Vec<Bit>, BitsFmt),
+    Bits(Rc<[Bit]>),
+    ShotView(Rc<[Bit]>, BitsFmt),
     Qubit(usize),
-    QReg(Vec<usize>),
+    QReg(Rc<[usize]>),
     Unit,
 }
 
@@ -66,40 +103,51 @@ fn coerce(v: Value, ty: Ty) -> Value {
     }
 }
 
-struct Frame {
+// Names borrow from the AST, so binding a variable or starting a loop iteration allocates nothing.
+struct Frame<'p> {
     // (name, value, declared type)
-    scopes: Vec<Vec<(String, Value, Ty)>>,
+    scopes: Vec<Vec<(&'p str, Value, Ty)>>,
 }
 
-impl Frame {
-    fn get(&self, name: &str, at: Span) -> R<Value> {
-        self.scopes
-            .iter()
-            .rev()
-            .flat_map(|s| s.iter().rev())
-            .find(|(n, _, _)| n == name)
-            .map(|(_, v, _)| v.clone())
-            .ok_or_else(|| Diagnostic::new(Code::UnknownVar, at, msg::unknown_var(name)))
+impl<'p> Frame<'p> {
+    // Also returns how many variables were compared, which the step budget charges.
+    fn get(&self, name: &str, at: Span) -> R<(Value, u64)> {
+        let mut scanned = 0;
+        for (n, v, _) in self.scopes.iter().rev().flat_map(|s| s.iter().rev()) {
+            scanned += 1;
+            if *n == name {
+                return Ok((v.clone(), scanned));
+            }
+        }
+        Err(Diagnostic::new(
+            Code::UnknownVar,
+            at,
+            msg::unknown_var(name),
+        ))
     }
 
-    fn set(&mut self, name: &str, value: Value) {
-        if let Some(slot) = self
+    fn set(&mut self, name: &str, value: Value) -> u64 {
+        let mut scanned = 0;
+        for slot in self
             .scopes
             .iter_mut()
             .rev()
             .flat_map(|s| s.iter_mut().rev())
-            .find(|(n, _, _)| n == name)
         {
-            slot.1 = coerce(value, slot.2);
+            scanned += 1;
+            if slot.0 == name {
+                slot.1 = coerce(value, slot.2);
+                break;
+            }
         }
+        scanned
     }
 
-    fn bind(&mut self, name: &str, value: Value, ty: Ty) {
-        self.scopes.last_mut().expect("frame has a scope").push((
-            name.to_string(),
-            coerce(value, ty),
-            ty,
-        ));
+    fn bind(&mut self, name: &'p str, value: Value, ty: Ty) {
+        self.scopes
+            .last_mut()
+            .expect("frame has a scope")
+            .push((name, coerce(value, ty), ty));
     }
 }
 
@@ -112,9 +160,21 @@ struct Interp<'p> {
     // Mirrors Circuit's slot reuse: `measure` frees a slot, the next `qubit()` takes it.
     slots: usize,
     free_slots: usize,
+    limits: Limits,
+    // Work done so far, checked against `limits` (B-01, B-02, M-10).
+    steps: u64,
+    ops: u64,
+    out_bytes: u64,
+    qasm_bytes: u64,
+    counts: OpCounts,
+    // `if` blocks on measured bits that enclose the operations being recorded, across calls.
+    cond_depth: usize,
 }
 
-pub fn elaborate(p: &Program) -> R<Elaborated> {
+// `OPENQASM 3.0;`, `include`, `qubit[n] q;` and `bit[n] c;` lines.
+const QASM_HEADER_BYTES: u64 = 96;
+
+pub fn elaborate(p: &Program, limits: &Limits) -> R<Elaborated> {
     let mut it = Interp {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
         pool: Vec::new(),
@@ -123,6 +183,13 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
         depth: 0,
         slots: 0,
         free_slots: 0,
+        limits: *limits,
+        steps: 0,
+        ops: 0,
+        out_bytes: 0,
+        qasm_bytes: QASM_HEADER_BYTES,
+        counts: OpCounts::default(),
+        cond_depth: 0,
     };
     let main = *it
         .fns
@@ -135,7 +202,39 @@ pub fn elaborate(p: &Program) -> R<Elaborated> {
         output: it.output,
         measured: it.measured,
         slots: it.slots,
+        counts: it.counts,
+        qasm_bytes: it.qasm_bytes,
     })
+}
+
+// What a recorded operation is, for the operation budget, the QASM size and the work estimate.
+#[derive(Clone, Copy)]
+enum Rec {
+    // A gate of `rows` tableau passes printed as `name q[i];` with an argument text of `arg` bytes.
+    Gate { name: usize, arg: usize, rows: u64 },
+    Cx,
+    Ccx,
+    Measure,
+    Reset,
+    If,
+}
+
+fn digits(n: usize) -> u64 {
+    n.checked_ilog10().map_or(1, |d| u64::from(d) + 1)
+}
+
+// Length of `{v:?}` for an `f64`, as `Gate::qasm` prints rotation angles.
+fn debug_len(v: f64) -> usize {
+    struct Count(usize);
+    impl std::fmt::Write for Count {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0 += s.len();
+            Ok(())
+        }
+    }
+    let mut n = Count(0);
+    let _ = std::fmt::write(&mut n, format_args!("{v:?}"));
+    n.0
 }
 
 fn internal(at: Span) -> Diagnostic {
@@ -144,7 +243,90 @@ fn internal(at: Span) -> Diagnostic {
 }
 
 impl<'p> Interp<'p> {
+    fn charge(&mut self, steps: u64, at: Span) -> R<()> {
+        self.steps = self.steps.saturating_add(steps);
+        if self.steps > self.limits.max_steps {
+            return Err(Diagnostic::new(
+                Code::StepLimit,
+                at,
+                msg::step_limit(self.limits.max_steps),
+            ));
+        }
+        Ok(())
+    }
+
+    // Counts one circuit operation before it is recorded, with an upper bound of its QASM line.
+    fn record(&mut self, op: Rec, at: Span) -> R<()> {
+        self.ops += 1;
+        if self.ops > self.limits.max_ops {
+            return Err(Diagnostic::new(
+                Code::OpLimit,
+                at,
+                msg::op_limit(self.limits.max_ops),
+            ));
+        }
+        // Physical indices are below `slots`; the next classical bit is `c[measured.len()]`.
+        let q = digits(self.slots);
+        let b = digits(self.measured.len());
+        let pad = 2 * self.cond_depth as u64;
+        let line = match op {
+            Rec::Gate { name, arg, rows } => {
+                self.counts.sim_ops += 1;
+                self.counts.row_passes += rows;
+                // `rx(0.5) q[3];` is name + `(arg)` + ` q[` + index + `];` + newline.
+                name as u64 + if arg > 0 { arg as u64 + 2 } else { 0 } + 6 + q
+            }
+            Rec::Cx => {
+                self.counts.sim_ops += 1;
+                self.counts.row_passes += 1;
+                13 + 2 * q
+            }
+            Rec::Ccx => {
+                self.counts.sim_ops += 1;
+                19 + 3 * q
+            }
+            Rec::Measure => {
+                self.counts.sim_ops += 1;
+                self.counts.measures += 1;
+                19 + b + q
+            }
+            Rec::Reset => {
+                self.counts.sim_ops += 1;
+                self.counts.measures += 1;
+                self.counts.row_passes += 1;
+                11 + q
+            }
+            // `if (c[i] == false) {` plus the closing `}` line at the same indentation.
+            Rec::If => 23 + b + pad,
+        };
+        self.qasm_bytes = self.qasm_bytes.saturating_add(line + pad);
+        Ok(())
+    }
+
+    // Counts bytes of `println` output as they are produced (B-02).
+    fn out(&mut self, bytes: u64, at: Span) -> R<()> {
+        self.out_bytes = self.out_bytes.saturating_add(bytes);
+        if self.out_bytes > self.limits.max_output_bytes {
+            return Err(Diagnostic::new(
+                Code::OutputLimit,
+                at,
+                msg::output_limit(self.limits.max_output_bytes),
+            ));
+        }
+        Ok(())
+    }
+
+    fn var(&mut self, f: &Frame<'p>, name: &str, at: Span) -> R<Value> {
+        if let Some(v) = super::check::constant(name) {
+            return Ok(Value::Double(v));
+        }
+        let (v, scanned) = f.get(name, at)?;
+        self.charge(scanned, at)?;
+        Ok(v)
+    }
+
     fn call_fn(&mut self, c: &mut Circuit, f: &'p FnDecl, args: Vec<Value>, at: Span) -> R<Value> {
+        self.charge(1, at)?;
         if self.depth >= MAX_CALL_DEPTH {
             return Err(Diagnostic::new(
                 Code::RecursionLimit,
@@ -158,7 +340,7 @@ impl<'p> Interp<'p> {
                 .params
                 .iter()
                 .zip(args)
-                .map(|(p, v)| (p.name.name.clone(), coerce(v, p.ty), p.ty))
+                .map(|(p, v)| (p.name.name.as_str(), coerce(v, p.ty), p.ty))
                 .collect()],
         };
         let flow = self.block(c, &mut frame, &f.body);
@@ -174,14 +356,14 @@ impl<'p> Interp<'p> {
         }
     }
 
-    fn block(&mut self, c: &mut Circuit, f: &mut Frame, b: &'p Block) -> R<Flow> {
+    fn block(&mut self, c: &mut Circuit, f: &mut Frame<'p>, b: &'p Block) -> R<Flow> {
         f.scopes.push(Vec::new());
         let r = self.block_inner(c, f, b);
         f.scopes.pop();
         r
     }
 
-    fn block_inner(&mut self, c: &mut Circuit, f: &mut Frame, b: &'p Block) -> R<Flow> {
+    fn block_inner(&mut self, c: &mut Circuit, f: &mut Frame<'p>, b: &'p Block) -> R<Flow> {
         for s in &b.stmts {
             if let Flow::Return(v) = self.stmt(c, f, s)? {
                 return Ok(Flow::Return(v));
@@ -191,7 +373,7 @@ impl<'p> Interp<'p> {
     }
 
     // Stack: a dispatcher like `expr`, so nested blocks only pay for the statement kind they use.
-    fn stmt(&mut self, c: &mut Circuit, f: &mut Frame, s: &'p Stmt) -> R<Flow> {
+    fn stmt(&mut self, c: &mut Circuit, f: &mut Frame<'p>, s: &'p Stmt) -> R<Flow> {
         match s {
             Stmt::Decl { name, init, ty, .. } => self.decl(c, f, name, init, *ty),
             Stmt::Assign { name, value } => self.assign(c, f, name, value),
@@ -210,7 +392,7 @@ impl<'p> Interp<'p> {
     fn decl(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         name: &'p Ident,
         init: &'p Expr,
         ty: Option<Ty>,
@@ -229,19 +411,20 @@ impl<'p> Interp<'p> {
     fn assign(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         name: &'p Ident,
         value: &'p Expr,
     ) -> R<Flow> {
         let v = self.expr(c, f, value)?;
-        f.set(&name.name, v);
+        let scanned = f.set(&name.name, v);
+        self.charge(scanned, name.span)?;
         Ok(Flow::Next)
     }
 
     fn for_stmt(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         var: &'p Ident,
         start: &'p Expr,
         end: &'p Expr,
@@ -250,8 +433,10 @@ impl<'p> Interp<'p> {
         let a = self.int(c, f, start)?;
         let b = self.int(c, f, end)?;
         for k in a..b {
+            // An empty body still costs a step per iteration (B-01).
+            self.charge(1, var.span)?;
             f.scopes
-                .push(vec![(var.name.clone(), Value::Int(k), Ty::Int)]);
+                .push(vec![(var.name.as_str(), Value::Int(k), Ty::Int)]);
             let r = self.block(c, f, body);
             f.scopes.pop();
             if let Flow::Return(v) = r? {
@@ -261,14 +446,19 @@ impl<'p> Interp<'p> {
         Ok(Flow::Next)
     }
 
-    fn return_stmt(&mut self, c: &mut Circuit, f: &mut Frame, value: Option<&'p Expr>) -> R<Flow> {
+    fn return_stmt(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        value: Option<&'p Expr>,
+    ) -> R<Flow> {
         match value {
             Some(e) => self.expr(c, f, e).map(Flow::Return),
             None => Ok(Flow::Return(Value::Unit)),
         }
     }
 
-    fn if_stmt(&mut self, c: &mut Circuit, f: &mut Frame, i: &'p IfStmt) -> R<Flow> {
+    fn if_stmt(&mut self, c: &mut Circuit, f: &mut Frame<'p>, i: &'p IfStmt) -> R<Flow> {
         match self.expr(c, f, &i.cond)? {
             Value::Bool(true) => self.block(c, f, &i.then),
             Value::Bool(false) => match &i.els {
@@ -281,12 +471,25 @@ impl<'p> Interp<'p> {
         }
     }
 
-    fn if_bit(&mut self, c: &mut Circuit, f: &mut Frame, i: &'p IfStmt, bit: Bit) -> R<Flow> {
+    fn if_bit(&mut self, c: &mut Circuit, f: &mut Frame<'p>, i: &'p IfStmt, bit: Bit) -> R<Flow> {
+        // Bodies of calls made inside count too: the circuit nests them all (M-10).
+        if self.cond_depth >= self.limits.max_cond_depth {
+            return Err(Diagnostic::new(
+                Code::CondDepth,
+                i.cond.span,
+                msg::cond_depth_limit(self.limits.max_cond_depth),
+            ));
+        }
         // Checker forbids `return` here, so the bodies always fall through.
+        self.record(Rec::If, i.cond.span)?;
+        self.cond_depth += 1;
         let mut res = Ok(Flow::Next);
         c.if_one(bit, |c| res = self.block(c, f, &i.then));
+        self.cond_depth -= 1;
         res?;
         if let Some(els) = &i.els {
+            self.record(Rec::If, i.cond.span)?;
+            self.cond_depth += 1;
             let mut res = Ok(Flow::Next);
             c.if_zero(bit, |c| {
                 res = match els {
@@ -294,27 +497,30 @@ impl<'p> Interp<'p> {
                     Else::If(inner) => self.if_stmt(c, f, inner),
                 }
             });
+            self.cond_depth -= 1;
             res?;
         }
         Ok(Flow::Next)
     }
 
-    fn int(&mut self, c: &mut Circuit, f: &mut Frame, e: &'p Expr) -> R<i64> {
+    fn int(&mut self, c: &mut Circuit, f: &mut Frame<'p>, e: &'p Expr) -> R<i64> {
         match self.expr(c, f, e)? {
             Value::Int(n) => Ok(n),
             _ => Err(internal(e.span)),
         }
     }
 
-    // Stack: one small frame per nesting level (arms live in helpers) so 200 x 128 levels fit in
-    // `STACK_SIZE` even unoptimized; an inline match here cost ~7 KiB per level at opt-level 0.
-    fn expr(&mut self, c: &mut Circuit, f: &mut Frame, e: &'p Expr) -> R<Value> {
+    // Stack: one small frame per nesting level (arms live in helpers) so 200 calls x 128 levels
+    // fit in `STACK_SIZE` even unoptimized; an inline match here cost ~7 KiB per level at
+    // opt-level 0.
+    fn expr(&mut self, c: &mut Circuit, f: &mut Frame<'p>, e: &'p Expr) -> R<Value> {
+        self.charge(1, e.span)?;
         match &e.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Double(v) => Ok(Value::Double(*v)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::Str(_) => Err(internal(e.span)),
-            ExprKind::Var(name) => var(f, name, e.span),
+            ExprKind::Var(name) => self.var(f, name, e.span),
             ExprKind::Call { name, args } => self.call(c, f, name, args, e.span),
             ExprKind::Index { base, index } => self.index(c, f, base, index, e.span),
             ExprKind::Method { recv, name } => self.method(c, f, recv, name, e.span),
@@ -327,7 +533,7 @@ impl<'p> Interp<'p> {
     fn index(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         base: &'p Expr,
         index: &'p Expr,
         span: Span,
@@ -344,7 +550,7 @@ impl<'p> Interp<'p> {
     fn method(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         recv: &'p Expr,
         name: &'p Ident,
         span: Span,
@@ -368,7 +574,7 @@ impl<'p> Interp<'p> {
     fn cast(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         ty: &Ty,
         expr: &'p Expr,
         span: Span,
@@ -386,7 +592,7 @@ impl<'p> Interp<'p> {
     fn unary(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         op: &UnOp,
         expr: &'p Expr,
         span: Span,
@@ -405,7 +611,7 @@ impl<'p> Interp<'p> {
     fn binary_expr(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         op: &BinOp,
         lhs: &'p Expr,
         rhs: &'p Expr,
@@ -425,7 +631,7 @@ impl<'p> Interp<'p> {
     fn call(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         name: &'p Ident,
         args: &'p [Expr],
         span: Span,
@@ -446,7 +652,7 @@ impl<'p> Interp<'p> {
             .ok_or_else(|| Diagnostic::new(Code::UnknownFn, name.span, msg::unknown_fn(n)))
     }
 
-    fn args(&mut self, c: &mut Circuit, f: &mut Frame, args: &'p [Expr]) -> R<Vec<Value>> {
+    fn args(&mut self, c: &mut Circuit, f: &mut Frame<'p>, args: &'p [Expr]) -> R<Vec<Value>> {
         let mut vals = Vec::with_capacity(args.len());
         for a in args {
             vals.push(self.expr(c, f, a)?);
@@ -467,7 +673,11 @@ impl<'p> Interp<'p> {
         for v in &vals {
             match v {
                 Value::Qubit(i) => qubits.push(*i),
-                Value::QReg(r) => qubits.extend_from_slice(r),
+                Value::QReg(r) => {
+                    // Collecting and sorting the register is work proportional to its size.
+                    self.charge(r.len() as u64, span)?;
+                    qubits.extend_from_slice(r);
+                }
                 _ => {}
             }
         }
@@ -488,7 +698,7 @@ impl<'p> Interp<'p> {
     fn builtin(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         name: &'p Ident,
         args: &'p [Expr],
         span: Span,
@@ -510,7 +720,7 @@ impl<'p> Interp<'p> {
         v.map(Some)
     }
 
-    fn qreg(&mut self, c: &mut Circuit, f: &mut Frame, size: &'p Expr, span: Span) -> R<Value> {
+    fn qreg(&mut self, c: &mut Circuit, f: &mut Frame<'p>, size: &'p Expr, span: Span) -> R<Value> {
         let k = self.int(c, f, size)?;
         if k < 0 {
             return Err(Diagnostic::new(
@@ -521,61 +731,86 @@ impl<'p> Interp<'p> {
         }
         // `as usize` would wrap sizes of 2^32 and above on 32-bit targets (wasm).
         let n = usize::try_from(k).unwrap_or(usize::MAX);
-        Ok(Value::QReg(self.alloc(c, n, span)?))
+        Ok(Value::QReg(self.alloc(c, n, span)?.into()))
     }
 
-    fn cx(&mut self, c: &mut Circuit, f: &mut Frame, args: &'p [Expr], span: Span) -> R<Value> {
+    fn cx(&mut self, c: &mut Circuit, f: &mut Frame<'p>, args: &'p [Expr], span: Span) -> R<Value> {
         let [a, b] = [self.place(c, f, &args[0])?, self.place(c, f, &args[1])?];
+        self.record(Rec::Cx, span)?;
         let [a, b] = self.qubits([a, b], span, "cx")?;
         c.cx(a, b);
         Ok(Value::Unit)
     }
 
-    fn ccx(&mut self, c: &mut Circuit, f: &mut Frame, args: &'p [Expr], span: Span) -> R<Value> {
+    fn ccx(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
         let idx = [
             self.place(c, f, &args[0])?,
             self.place(c, f, &args[1])?,
             self.place(c, f, &args[2])?,
         ];
+        self.record(Rec::Ccx, span)?;
         let [a, b, t] = self.qubits(idx, span, "ccx")?;
         c.ccx(a, b, t);
         Ok(Value::Unit)
     }
 
-    fn measure(&mut self, c: &mut Circuit, f: &mut Frame, arg: &'p Expr, span: Span) -> R<Value> {
+    fn measure(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        arg: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
         match self.expr(c, f, arg)? {
             Value::Qubit(i) => {
+                self.record(Rec::Measure, span)?;
                 self.free_slots += 1;
                 let b = c.measure(self.take(i, span)?);
                 self.measured.push(b);
                 Ok(Value::Bit(b))
             }
             Value::QReg(v) => {
+                self.charge(v.len() as u64, span)?;
                 let mut bits = Vec::with_capacity(v.len());
-                for i in v {
+                for &i in v.iter() {
+                    self.record(Rec::Measure, span)?;
                     self.free_slots += 1;
-                    bits.push(c.measure(self.take(i, span)?));
+                    let b = c.measure(self.take(i, span)?);
+                    self.measured.push(b);
+                    bits.push(b);
                 }
-                self.measured.extend_from_slice(&bits);
-                Ok(Value::Bits(bits))
+                Ok(Value::Bits(bits.into()))
             }
             _ => Err(internal(span)),
         }
     }
 
-    fn discard(&mut self, c: &mut Circuit, f: &mut Frame, arg: &'p Expr, span: Span) -> R<Value> {
+    fn discard(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        arg: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
         let idx = match self.expr(c, f, arg)? {
-            Value::Qubit(i) => vec![i],
+            Value::Qubit(i) => Rc::from([i]),
             Value::QReg(v) => v,
             _ => return Err(internal(span)),
         };
-        for i in idx {
+        self.charge(idx.len() as u64, span)?;
+        for &i in idx.iter() {
             self.take(i, span)?;
         }
         Ok(Value::Unit)
     }
 
-    fn len(&mut self, c: &mut Circuit, f: &mut Frame, arg: &'p Expr, span: Span) -> R<Value> {
+    fn len(&mut self, c: &mut Circuit, f: &mut Frame<'p>, arg: &'p Expr, span: Span) -> R<Value> {
         match self.expr(c, f, arg)? {
             Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
             Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
@@ -586,7 +821,7 @@ impl<'p> Interp<'p> {
     fn println(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         args: &'p [Expr],
         span: Span,
     ) -> R<Value> {
@@ -600,27 +835,28 @@ impl<'p> Interp<'p> {
     fn print(&mut self, pieces: &[FmtPiece], values: Vec<Value>, span: Span) -> R<Value> {
         let mut values = values.into_iter();
         for p in pieces {
-            match p {
-                FmtPiece::Lit(s) => self.text(s),
+            let piece = match p {
+                FmtPiece::Lit(s) => OutPiece::Text(s.clone()),
                 FmtPiece::Hole => match values.next() {
-                    Some(Value::Int(n)) => self.text(&n.to_string()),
-                    Some(Value::Double(v)) => self.text(&format!("{v:?}")),
-                    Some(Value::Bool(b)) => self.text(&b.to_string()),
-                    Some(Value::Bit(b)) => self.output.push(OutPiece::Bit(b)),
-                    Some(Value::Bits(v)) => self.output.push(OutPiece::Bits(v, BitsFmt::Array)),
-                    Some(Value::ShotView(v, fmt)) => self.output.push(OutPiece::Bits(v, fmt)),
+                    Some(Value::Int(n)) => OutPiece::Text(n.to_string()),
+                    Some(Value::Double(v)) => OutPiece::Text(format!("{v:?}")),
+                    Some(Value::Bool(b)) => OutPiece::Text(b.to_string()),
+                    Some(Value::Bit(b)) => OutPiece::Bit(b),
+                    Some(Value::Bits(v)) => OutPiece::Bits(v, BitsFmt::Array),
+                    Some(Value::ShotView(v, fmt)) => OutPiece::Bits(v, fmt),
                     _ => return Err(internal(span)),
                 },
-            }
+            };
+            self.emit(piece, span)?;
         }
-        self.text("\n");
+        self.emit(OutPiece::Text("\n".into()), span)?;
         Ok(Value::Unit)
     }
 
     fn rotation(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         n: &str,
         args: &'p [Expr],
         span: Span,
@@ -637,6 +873,13 @@ impl<'p> Interp<'p> {
                 msg::non_finite_angle(n, theta),
             ));
         }
+        // Rotations never run on the tableau, so they need no row passes.
+        let op = Rec::Gate {
+            name: n.len(),
+            arg: debug_len(theta),
+            rows: 0,
+        };
+        self.record(op, span)?;
         let [q] = self.qubits([i], span, n)?;
         match n {
             "rx" => c.rx(q, theta),
@@ -649,12 +892,27 @@ impl<'p> Interp<'p> {
     fn one_qubit(
         &mut self,
         c: &mut Circuit,
-        f: &mut Frame,
+        f: &mut Frame<'p>,
         n: &str,
         args: &'p [Expr],
         span: Span,
     ) -> R<Value> {
         let i = self.place(c, f, &args[0])?;
+        let op = match n {
+            "reset" => Rec::Reset,
+            // S† runs as S three times on the tableau.
+            "sdg" => Rec::Gate {
+                name: 3,
+                arg: 0,
+                rows: 3,
+            },
+            _ => Rec::Gate {
+                name: n.len(),
+                arg: 0,
+                rows: 1,
+            },
+        };
+        self.record(op, span)?;
         let [q] = self.qubits([i], span, n)?;
         match n {
             "h" => c.h(q),
@@ -669,12 +927,17 @@ impl<'p> Interp<'p> {
         Ok(Value::Unit)
     }
 
-    fn text(&mut self, s: &str) {
-        if let Some(OutPiece::Text(t)) = self.output.last_mut() {
-            t.push_str(s);
-        } else {
-            self.output.push(OutPiece::Text(s.to_string()));
+    fn emit(&mut self, piece: OutPiece, at: Span) -> R<()> {
+        self.out(piece_bytes(&piece), at)?;
+        if let OutPiece::Bits(v, _) = &piece {
+            // Printing a register formats every bit in each shot.
+            self.charge(v.len() as u64, at)?;
         }
+        match (piece, self.output.last_mut()) {
+            (OutPiece::Text(s), Some(OutPiece::Text(t))) => t.push_str(&s),
+            (piece, _) => self.output.push(piece),
+        }
+        Ok(())
     }
 
     fn alloc(&mut self, c: &mut Circuit, n: usize, at: Span) -> R<Vec<usize>> {
@@ -685,6 +948,7 @@ impl<'p> Interp<'p> {
                 msg::too_many_qubits(MAX_QUBITS),
             ));
         }
+        self.charge(n as u64, at)?;
         Ok((0..n)
             .map(|_| {
                 if self.free_slots > 0 {
@@ -698,7 +962,7 @@ impl<'p> Interp<'p> {
             .collect())
     }
 
-    fn place(&mut self, c: &mut Circuit, f: &mut Frame, e: &'p Expr) -> R<usize> {
+    fn place(&mut self, c: &mut Circuit, f: &mut Frame<'p>, e: &'p Expr) -> R<usize> {
         match self.expr(c, f, e)? {
             Value::Qubit(i) => Ok(i),
             _ => Err(internal(e.span)),
@@ -727,13 +991,6 @@ impl<'p> Interp<'p> {
             out.push(s.as_mut().ok_or_else(|| internal(at))?);
         }
         out.try_into().map_err(|_| internal(at))
-    }
-}
-
-fn var(f: &Frame, name: &str, at: Span) -> R<Value> {
-    match super::check::constant(name) {
-        Some(v) => Ok(Value::Double(v)),
-        None => f.get(name, at),
     }
 }
 

@@ -101,6 +101,12 @@ codes! {
     AsIntTooWide => "Q0410",
     NonFiniteAngle => "Q0411",
     Internal => "Q0412",
+    StepLimit => "Q0413",
+    OpLimit => "Q0414",
+    OutputLimit => "Q0415",
+    CondDepth => "Q0416",
+    SimWorkLimit => "Q0417",
+    TooManyDiagnostics => "Q0418",
     UnknownPackage => "Q0501",
     ModuleNotFound => "Q0502",
     UnknownImport => "Q0503",
@@ -219,44 +225,98 @@ impl SourceMap {
         f.text[start..end].trim_end_matches('\r')
     }
 
-    fn snippet(&self, out: &mut String, span: Span) {
+    // `max_chars` caps the echoed line: a longer line is shown as a window around `col` with `...`
+    // on the cut sides, so one diagnostic never repeats a whole huge line (M-01).
+    fn snippet(&self, out: &mut String, span: Span, max_chars: usize) {
         let f = self.file(span.start);
         let (line, col) = self.line_col(span.start);
         let text = Self::line_text(f, line);
+        let len = text.chars().count();
         // Carets stop at the end of the first line for multi-line spans.
         let (end_line, end_col) = self.line_col(span.end.max(span.start));
         let width = if end_line == line && span.end <= f.base + f.text.len() {
             end_col.saturating_sub(col).max(1)
         } else {
-            (text.chars().count() + 1).saturating_sub(col).max(1)
+            (len + 1).saturating_sub(col).max(1)
         };
-        // Carets line up with the escaped line: widen by the escapes before and inside the span.
-        let before: String = text.chars().take(col - 1).collect();
-        let under: String = text.chars().skip(col - 1).take(width).collect();
-        let width = width + printable(&under).chars().count() - under.chars().count();
+        // Escape first, then window: positions count displayed characters, an escaped control
+        // character counts as its whole `\u{..}` escape, and the window never splits an escape.
+        let shown_width = |c: char| {
+            if hidden(c) {
+                c.escape_unicode().len()
+            } else {
+                1
+            }
+        };
+        // Displayed width of the first `chars` characters; columns past the end count one each.
+        let display = |chars: usize| -> usize {
+            text.chars().take(chars).map(shown_width).sum::<usize>() + chars.saturating_sub(len)
+        };
+        let max = max_chars.max(1);
+        let total = display(len);
+        let start = display(col - 1);
+        let end = display(col - 1 + width);
+        // Characters `skip..skip + take` of the line are shown; `from` is where they start on screen.
+        let (skip, take, from) = if total <= max {
+            (0, len, 0)
+        } else {
+            let target = start.saturating_sub(max / 2).min(total - max);
+            let (mut skip, mut from) = (0, 0);
+            for w in text.chars().map(shown_width) {
+                if from >= target {
+                    break;
+                }
+                from += w;
+                skip += 1;
+            }
+            let (mut take, mut used) = (0, 0);
+            for w in text.chars().skip(skip).map(shown_width) {
+                if used + w > max {
+                    break;
+                }
+                used += w;
+                take += 1;
+            }
+            (skip, take, from)
+        };
+        let before = if skip > 0 { "..." } else { "" };
+        let after = if skip + take < len { "..." } else { "" };
+        let raw: String = text.chars().skip(skip).take(take).collect();
+        let shown = printable(&raw);
+        let shown_len = shown.chars().count();
+        // The caret column is at most one past the window (a span at the end of the line).
+        let at = start.saturating_sub(from).min(shown_len);
+        let width = end
+            .saturating_sub(start)
+            .max(1)
+            .min((shown_len + 1).saturating_sub(at))
+            .max(1);
         let line = f.labels.as_ref().map_or(line, |l| l[line - 1]);
         let gutter = line.to_string().len();
         let pad = " ".repeat(gutter);
         let _ = writeln!(out, "{pad}--> {}:{line}:{col}", f.name);
         let _ = writeln!(out, "{pad} |");
-        let _ = writeln!(out, "{line} | {}", printable(text));
-        let lead: String = printable(&before)
-            .chars()
-            .map(|c| if c == '\t' { '\t' } else { ' ' })
-            .collect();
+        let _ = writeln!(out, "{line} | {before}{shown}{after}");
+        let lead: String = " ".repeat(before.len())
+            + &shown
+                .chars()
+                .take(at)
+                .map(|c| if c == '\t' { '\t' } else { ' ' })
+                .collect::<String>();
         let _ = writeln!(out, "{pad} | {lead}{}", "^".repeat(width));
     }
 
-    pub fn render(&self, d: &Diagnostic) -> String {
+    pub fn render(&self, d: &Diagnostic, limits: &super::Limits) -> String {
+        let max_chars = limits.max_line_chars;
         let mut out = String::new();
         let _ = writeln!(out, "error[{}]: {}", d.code.as_str(), printable(&d.message));
         if !d.no_snippet {
-            self.snippet(&mut out, d.span);
+            self.snippet(&mut out, d.span, max_chars);
         }
         for n in &d.notes {
             let _ = writeln!(out, "note: {}", printable(&n.message));
             if let Some(s) = n.span {
-                self.snippet(&mut out, s);
+                self.snippet(&mut out, s, max_chars);
             }
         }
         if let Some(h) = &d.help {
@@ -270,7 +330,6 @@ impl SourceMap {
 /// `\u{..}` escape, so text from a source file, an archive, or a registry cannot drive the
 /// terminal. Used for everything printed that did not come from this binary.
 pub fn printable(s: &str) -> Cow<'_, str> {
-    let hidden = |c: char| c.is_control() && c != '\t';
     if !s.chars().any(hidden) {
         return Cow::Borrowed(s);
     }
@@ -283,6 +342,60 @@ pub fn printable(s: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(out)
+}
+
+/// Control characters other than tab, which `printable` shows as escapes.
+fn hidden(c: char) -> bool {
+    c.is_control() && c != '\t'
+}
+
+/// Renders `errors` one after another, separated by blank lines. At most `max_diagnostics` are
+/// rendered and the report stops before it would pass `max_output_bytes`; a closing `Q0418`
+/// diagnostic then says how many were left out (M-01).
+pub fn render_all(
+    errors: &[Diagnostic],
+    limits: &super::Limits,
+    render: impl Fn(&Diagnostic) -> String,
+) -> String {
+    let max_bytes = usize::try_from(limits.max_output_bytes).unwrap_or(usize::MAX);
+    let mut out = String::new();
+    let (mut shown, mut cut) = (0, false);
+    for d in errors.iter().take(limits.max_diagnostics) {
+        let text = render(d);
+        let sep = usize::from(shown > 0);
+        if out.len() + sep + text.len() > max_bytes {
+            // Keep the start of a first diagnostic that alone is too long, so the report says something.
+            if shown == 0 {
+                let mut end = max_bytes.min(text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push_str(&text[..end]);
+                out.push('\n');
+                shown = 1;
+            }
+            cut = true;
+            break;
+        }
+        if sep == 1 {
+            out.push('\n');
+        }
+        out.push_str(&text);
+        shown += 1;
+    }
+    let omitted = errors.len() - shown;
+    if cut || omitted > 0 {
+        let message = if cut {
+            super::msg::diagnostics_too_long(omitted, limits.max_output_bytes)
+        } else {
+            super::msg::too_many_diagnostics(omitted, limits.max_diagnostics)
+        };
+        let mut summary = Diagnostic::new(Code::TooManyDiagnostics, Span::default(), message);
+        summary.no_snippet = true;
+        out.push('\n');
+        out.push_str(&render(&summary));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -322,7 +435,7 @@ mod tests {
             Span::new(y, y + 1),
             "m\u{1b}]0;t\u{7}".into(),
         );
-        let out = map.render(&d);
+        let out = map.render(&d, &crate::lang::Limits::CLI);
         assert!(
             !out.chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t'),
@@ -331,5 +444,39 @@ mod tests {
         let echoed = out.lines().find(|l| l.starts_with("1 | ")).unwrap();
         let carets = out.lines().find(|l| l.contains('^')).unwrap();
         assert_eq!(echoed.find('y'), carets.find('^'), "{out}");
+    }
+
+    // A long line is escaped first and then windowed: the echoed text stays within
+    // `max_line_chars` displayed characters and never ends inside a `\u{..}` escape.
+    #[test]
+    fn long_lines_are_windowed_after_escaping() {
+        let limits = crate::lang::Limits {
+            max_line_chars: 20,
+            ..crate::lang::Limits::CLI
+        };
+        for gap in 0..12 {
+            let src = format!(
+                "{}{}y{}\n",
+                "\u{1b}".repeat(30),
+                "a".repeat(gap),
+                "\u{9b}".repeat(30)
+            );
+            let map = SourceMap::new("t.qx", &src);
+            let y = src.find('y').unwrap();
+            let d = Diagnostic::new(Code::UnknownVar, Span::new(y, y + 1), "m".into());
+            let out = map.render(&d, &limits);
+            let echoed = out.lines().find(|l| l.starts_with("1 | ")).unwrap();
+            let body = echoed["1 | ".len()..]
+                .trim_start_matches("...")
+                .trim_end_matches("...");
+            assert!(body.chars().count() <= 20, "{out}");
+            assert!(body.contains('y'), "{out}");
+            // Every escape is whole: the text splits into complete escapes, `a`s, and `y`.
+            let rest = body.replace("\\u{1b}", "").replace("\\u{9b}", "");
+            assert!(rest.chars().all(|c| c == 'a' || c == 'y'), "{out}");
+            let carets = out.lines().find(|l| l.contains('^')).unwrap();
+            assert_eq!(echoed.find('y'), carets.find('^'), "{out}");
+            assert_eq!(carets.matches('^').count(), 1, "{out}");
+        }
     }
 }
