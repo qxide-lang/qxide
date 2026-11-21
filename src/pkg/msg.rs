@@ -167,6 +167,10 @@ pub fn invalid_config(err: &str) -> String {
     format!("failed to parse registry JSON: {err}")
 }
 
+pub fn invalid_dl(name: &str, version: &str, url: &str) -> String {
+    format!("invalid download location `{url}` for `{name} {version}` (expected an `https://` URL or a relative path inside the registry)")
+}
+
 pub fn archive_missing(name: &str, version: &str, url: &str) -> String {
     format!("archive for `{name} {version}` not found at `{url}`")
 }

@@ -2,6 +2,7 @@
 // Assertions use error codes, never message text.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use semver::{Version, VersionReq};
@@ -723,6 +724,187 @@ fn installs_verify_the_checksum_first() {
     assert!(path.join("src/sub/x.qx").is_file());
     assert_eq!(home.installed("r", "demo", &v, &cksum), Some(path));
     assert!(home.cached_archive("r", "demo", &v, &cksum).is_some());
+}
+
+// M-02 in docs/security/PKG_CLIENT_FIXES.md: tar entries whose data the `tar` crate would read
+// whole before `unpack` can check anything.
+
+const GIB: u64 = 1 << 30;
+
+fn tar_header(name: &str, size: u64, kind: tar::EntryType) -> Vec<u8> {
+    let mut h = tar::Header::new_gnu();
+    h.as_old_mut().name[..name.len()].copy_from_slice(name.as_bytes());
+    h.set_mode(0o644);
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_mtime(0);
+    h.set_size(size);
+    h.set_entry_type(kind);
+    h.set_cksum();
+    h.as_bytes().to_vec()
+}
+
+fn write_repeated(w: &mut impl std::io::Write, byte: u8, mut n: u64) {
+    let chunk = vec![byte; 1 << 20];
+    while n > 0 {
+        let k = n.min(chunk.len() as u64) as usize;
+        w.write_all(&chunk[..k]).unwrap();
+        n -= k as u64;
+    }
+}
+
+// Streams `parts` through gzip at the best level, as the review's generator did.
+fn gzip_stream(parts: impl FnOnce(&mut flate2::write::GzEncoder<Vec<u8>>)) -> Vec<u8> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    parts(&mut gz);
+    gz.finish().unwrap()
+}
+
+// A regular `demo-1.0.0/qxide.toml` holding `evil`, then the end-of-archive blocks.
+fn manifest_and_end(w: &mut impl std::io::Write) {
+    w.write_all(&tar_header(
+        "demo-1.0.0/qxide.toml",
+        4,
+        tar::EntryType::Regular,
+    ))
+    .unwrap();
+    w.write_all(b"evil").unwrap();
+    w.write_all(&[0; 508 + 1024]).unwrap();
+}
+
+// The M-02 reproduction input: a GNU long-name entry declaring 1 GiB of zero bytes, then one
+// empty regular entry.
+#[test]
+fn long_name_entries_are_not_read_whole() {
+    let bytes = gzip_stream(|w| {
+        w.write_all(&tar_header(
+            "././@LongLink",
+            GIB,
+            tar::EntryType::GNULongName,
+        ))
+        .unwrap();
+        write_repeated(w, 0, GIB);
+        w.write_all(&tar_header("x", 0, tar::EntryType::Regular))
+            .unwrap();
+        w.write_all(&[0; 1024]).unwrap();
+    });
+    assert!(bytes.len() as u64 <= archive::MAX_ARCHIVE);
+    let dir = tmp_dir("longname");
+    let err = archive::unpack(&bytes, "longname-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+    // Before the fix the 1 GiB name was read into memory and quoted in this message.
+    let shown = err.render();
+    assert!(shown.len() < 4096, "{} bytes", shown.len());
+}
+
+// The same read for a PAX extended header: one 1 GiB `comment` record the crate would parse and
+// ignore, followed by a valid manifest.
+#[test]
+fn pax_headers_are_rejected_unread() {
+    let bytes = gzip_stream(|w| {
+        let record = format!("{GIB} comment=");
+        w.write_all(&tar_header(
+            "demo-1.0.0/qxide.toml",
+            GIB,
+            tar::EntryType::XHeader,
+        ))
+        .unwrap();
+        w.write_all(record.as_bytes()).unwrap();
+        write_repeated(w, b'a', GIB - record.len() as u64 - 1);
+        w.write_all(b"\n").unwrap();
+        manifest_and_end(w);
+    });
+    let dir = tmp_dir("pax");
+    let err = archive::unpack(&bytes, "demo-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+}
+
+// Data the client never keeps (here a directory entry's) still counts toward the decompressed
+// limit, so a small archive cannot make the client inflate gigabytes.
+#[test]
+fn decompressed_size_is_capped() {
+    let bytes = gzip_stream(|w| {
+        w.write_all(&tar_header("demo-1.0.0/d/", GIB, tar::EntryType::Directory))
+            .unwrap();
+        write_repeated(w, 0, GIB);
+        manifest_and_end(w);
+    });
+    let dir = tmp_dir("inflate");
+    let err = archive::unpack(&bytes, "demo-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+}
+
+// `pack` stores paths over 100 bytes with a GNU long-name entry, which must still unpack.
+#[test]
+fn long_package_paths_round_trip() {
+    let dir = tmp_dir("longpath");
+    let m = write_package(&dir.join("pkg"));
+    let deep = format!("src/{}/{}.qx", "d".repeat(60), "f".repeat(60));
+    std::fs::create_dir_all(m.dir.join(&deep).parent().unwrap()).unwrap();
+    std::fs::write(m.dir.join(&deep), "public void h() {}\n").unwrap();
+    let (bytes, _) = archive::pack(&m).unwrap();
+    let mut tar_bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut flate2::read::GzDecoder::new(&bytes[..]),
+        &mut tar_bytes,
+    )
+    .unwrap();
+    assert!(tar_bytes.windows(13).any(|w| w == b"././@LongLink"));
+    let out = dir.join("out");
+    archive::unpack(&bytes, "demo-1.2.3", &out).unwrap();
+    assert!(out.join(&deep).is_file());
+}
+
+// M-03: the client accepts the download locations `validate.py` accepts, and nothing else.
+#[test]
+fn download_locations_follow_the_registry_checker() {
+    for ok in [
+        "packages/ab/cd/abcd/abcd-1.0.0.tar.gz",
+        "https://github.com/o/r/releases/download/v1.0.0/a-1.0.0.tar.gz",
+        "https://example.com:8443/a+b/c~d%20e.tar.gz",
+        "https://example.com",
+    ] {
+        assert!(index::valid_dl(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "http://example.com/a.tar.gz",
+        "file:///C:/Windows/win.ini",
+        "file:////localhost/C$/Windows/win.ini",
+        "//host/share/a.tar.gz",
+        "\\\\host\\share\\a.tar.gz",
+        "/srv/a.tar.gz",
+        "C:/a.tar.gz",
+        "packages/../a.tar.gz",
+        "packages/./a.tar.gz",
+        "packages//a.tar.gz",
+        "packages\\a.tar.gz",
+        "packages/con/a.tar.gz",
+        "packages/a b.tar.gz",
+        "https://",
+        "https://user@example.com/a.tar.gz",
+        "https://example.com:123456/a.tar.gz",
+        "https://example.com/a b.tar.gz",
+    ] {
+        assert!(!index::valid_dl(bad), "{bad}");
+    }
+}
+
+// M-04: text from an archive or a registry is printed without terminal control characters.
+#[test]
+fn package_errors_do_not_echo_terminal_escapes() {
+    let raw = |s: &str| s.chars().any(|c| c.is_control() && c != '\n' && c != '\t');
+    // The archive entry of the M-04 reproduction.
+    let bytes =
+        raw_archive(&["escpath-1.0.0/src/a\u{1b}]0;TITLE-SET-BY-REGISTRY\u{7}\u{1b}[2K.qx"]);
+    let dir = tmp_dir("escpath");
+    let err = archive::unpack(&bytes, "escpath-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+    assert!(!raw(&err.render()), "{:?}", err.render());
+    // C1 controls such as CSI (U+009B) too, in notes and help as well as the message.
+    let mut err = Error::new(Code::InvalidIndex, "a\u{9b}2Kb\r".into()).note("\u{1b}[1A".into());
+    err.help = Some("\u{7}".into());
+    assert!(!raw(&err.render()), "{:?}", err.render());
 }
 
 // Shared with ci/test_registry_scripts.py, so the registry checker accepts exactly what we parse.
