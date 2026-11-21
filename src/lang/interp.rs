@@ -482,7 +482,8 @@ impl<'p> Interp<'p> {
         self.call_fn(c, func, vals, span)
     }
 
-    // Stack: kept out of line so its large frame is not part of every user-function call level.
+    // Stack: a dispatcher like `expr`; builtins nest (`len(measure(qreg(..)))`), so each one's
+    // temporaries live in its own helper instead of one large frame per nesting level.
     #[inline(never)]
     fn builtin(
         &mut self,
@@ -494,139 +495,178 @@ impl<'p> Interp<'p> {
     ) -> R<Option<Value>> {
         let n = name.name.as_str();
         let v = match n {
-            "qubit" => Ok(Value::Qubit(self.alloc(c, 1, span)?[0])),
-            "qreg" => {
-                let k = self.int(c, f, &args[0])?;
-                if k < 0 {
-                    return Err(Diagnostic::new(
-                        Code::NegativeSize,
-                        args[0].span,
-                        msg::negative_size(k),
-                    ));
-                }
-                // `as usize` would wrap sizes of 2^32 and above on 32-bit targets (wasm).
-                let n = usize::try_from(k).unwrap_or(usize::MAX);
-                Ok(Value::QReg(self.alloc(c, n, span)?))
-            }
-            "cx" => {
-                let [a, b] = [self.place(c, f, &args[0])?, self.place(c, f, &args[1])?];
-                let [a, b] = self.qubits([a, b], span, n)?;
-                c.cx(a, b);
-                Ok(Value::Unit)
-            }
-            "ccx" => {
-                let idx = [
-                    self.place(c, f, &args[0])?,
-                    self.place(c, f, &args[1])?,
-                    self.place(c, f, &args[2])?,
-                ];
-                let [a, b, t] = self.qubits(idx, span, n)?;
-                c.ccx(a, b, t);
-                Ok(Value::Unit)
-            }
-            "measure" => match self.expr(c, f, &args[0])? {
-                Value::Qubit(i) => {
-                    self.free_slots += 1;
-                    let b = c.measure(self.take(i, span)?);
-                    self.measured.push(b);
-                    Ok(Value::Bit(b))
-                }
-                Value::QReg(v) => {
-                    let mut bits = Vec::with_capacity(v.len());
-                    for i in v {
-                        self.free_slots += 1;
-                        bits.push(c.measure(self.take(i, span)?));
-                    }
-                    self.measured.extend_from_slice(&bits);
-                    Ok(Value::Bits(bits))
-                }
-                _ => Err(internal(span)),
-            },
-            "discard" => {
-                let idx = match self.expr(c, f, &args[0])? {
-                    Value::Qubit(i) => vec![i],
-                    Value::QReg(v) => v,
-                    _ => return Err(internal(span)),
-                };
-                for i in idx {
-                    self.take(i, span)?;
-                }
-                Ok(Value::Unit)
-            }
-            "len" => match self.expr(c, f, &args[0])? {
-                Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
-                Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
-                _ => Err(internal(span)),
-            },
-            "println" => {
-                let ExprKind::Str(pieces) = &args[0].kind else {
-                    return Err(internal(span));
-                };
-                let mut values = Vec::with_capacity(args.len() - 1);
-                for a in &args[1..] {
-                    values.push(self.expr(c, f, a)?);
-                }
-                let mut values = values.into_iter();
-                for p in pieces {
-                    match p {
-                        FmtPiece::Lit(s) => self.text(s),
-                        FmtPiece::Hole => match values.next() {
-                            Some(Value::Int(n)) => self.text(&n.to_string()),
-                            Some(Value::Double(v)) => self.text(&format!("{v:?}")),
-                            Some(Value::Bool(b)) => self.text(&b.to_string()),
-                            Some(Value::Bit(b)) => self.output.push(OutPiece::Bit(b)),
-                            Some(Value::Bits(v)) => {
-                                self.output.push(OutPiece::Bits(v, BitsFmt::Array))
-                            }
-                            Some(Value::ShotView(v, fmt)) => {
-                                self.output.push(OutPiece::Bits(v, fmt))
-                            }
-                            _ => return Err(internal(span)),
-                        },
-                    }
-                }
-                self.text("\n");
-                Ok(Value::Unit)
-            }
-            _ if super::check::ROTATIONS.contains(&n) => {
-                let i = self.place(c, f, &args[0])?;
-                let theta = match coerce(self.expr(c, f, &args[1])?, Ty::Double) {
-                    Value::Double(v) => v,
-                    _ => return Err(internal(args[1].span)),
-                };
-                if !theta.is_finite() {
-                    return Err(Diagnostic::new(
-                        Code::NonFiniteAngle,
-                        args[1].span,
-                        msg::non_finite_angle(n, theta),
-                    ));
-                }
-                let [q] = self.qubits([i], span, n)?;
-                match n {
-                    "rx" => c.rx(q, theta),
-                    "ry" => c.ry(q, theta),
-                    _ => c.rz(q, theta),
-                }
-                Ok(Value::Unit)
-            }
-            _ if super::check::ONE_QUBIT_OPS.contains(&n) => {
-                let i = self.place(c, f, &args[0])?;
-                let [q] = self.qubits([i], span, n)?;
-                match n {
-                    "h" => c.h(q),
-                    "x" => c.x(q),
-                    "z" => c.z(q),
-                    "s" => c.s(q),
-                    "sdg" => c.sdg(q),
-                    "t" => c.t(q),
-                    "tdg" => c.tdg(q),
-                    _ => c.reset(q),
-                }
-                Ok(Value::Unit)
-            }
+            "qubit" => self.alloc(c, 1, span).map(|q| Value::Qubit(q[0])),
+            "qreg" => self.qreg(c, f, &args[0], span),
+            "cx" => self.cx(c, f, args, span),
+            "ccx" => self.ccx(c, f, args, span),
+            "measure" => self.measure(c, f, &args[0], span),
+            "discard" => self.discard(c, f, &args[0], span),
+            "len" => self.len(c, f, &args[0], span),
+            "println" => self.println(c, f, args, span),
+            _ if super::check::ROTATIONS.contains(&n) => self.rotation(c, f, n, args, span),
+            _ if super::check::ONE_QUBIT_OPS.contains(&n) => self.one_qubit(c, f, n, args, span),
             _ => return Ok(None),
         };
         v.map(Some)
+    }
+
+    fn qreg(&mut self, c: &mut Circuit, f: &mut Frame, size: &'p Expr, span: Span) -> R<Value> {
+        let k = self.int(c, f, size)?;
+        if k < 0 {
+            return Err(Diagnostic::new(
+                Code::NegativeSize,
+                size.span,
+                msg::negative_size(k),
+            ));
+        }
+        // `as usize` would wrap sizes of 2^32 and above on 32-bit targets (wasm).
+        let n = usize::try_from(k).unwrap_or(usize::MAX);
+        Ok(Value::QReg(self.alloc(c, n, span)?))
+    }
+
+    fn cx(&mut self, c: &mut Circuit, f: &mut Frame, args: &'p [Expr], span: Span) -> R<Value> {
+        let [a, b] = [self.place(c, f, &args[0])?, self.place(c, f, &args[1])?];
+        let [a, b] = self.qubits([a, b], span, "cx")?;
+        c.cx(a, b);
+        Ok(Value::Unit)
+    }
+
+    fn ccx(&mut self, c: &mut Circuit, f: &mut Frame, args: &'p [Expr], span: Span) -> R<Value> {
+        let idx = [
+            self.place(c, f, &args[0])?,
+            self.place(c, f, &args[1])?,
+            self.place(c, f, &args[2])?,
+        ];
+        let [a, b, t] = self.qubits(idx, span, "ccx")?;
+        c.ccx(a, b, t);
+        Ok(Value::Unit)
+    }
+
+    fn measure(&mut self, c: &mut Circuit, f: &mut Frame, arg: &'p Expr, span: Span) -> R<Value> {
+        match self.expr(c, f, arg)? {
+            Value::Qubit(i) => {
+                self.free_slots += 1;
+                let b = c.measure(self.take(i, span)?);
+                self.measured.push(b);
+                Ok(Value::Bit(b))
+            }
+            Value::QReg(v) => {
+                let mut bits = Vec::with_capacity(v.len());
+                for i in v {
+                    self.free_slots += 1;
+                    bits.push(c.measure(self.take(i, span)?));
+                }
+                self.measured.extend_from_slice(&bits);
+                Ok(Value::Bits(bits))
+            }
+            _ => Err(internal(span)),
+        }
+    }
+
+    fn discard(&mut self, c: &mut Circuit, f: &mut Frame, arg: &'p Expr, span: Span) -> R<Value> {
+        let idx = match self.expr(c, f, arg)? {
+            Value::Qubit(i) => vec![i],
+            Value::QReg(v) => v,
+            _ => return Err(internal(span)),
+        };
+        for i in idx {
+            self.take(i, span)?;
+        }
+        Ok(Value::Unit)
+    }
+
+    fn len(&mut self, c: &mut Circuit, f: &mut Frame, arg: &'p Expr, span: Span) -> R<Value> {
+        match self.expr(c, f, arg)? {
+            Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
+            Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
+            _ => Err(internal(span)),
+        }
+    }
+
+    fn println(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let ExprKind::Str(pieces) = &args[0].kind else {
+            return Err(internal(span));
+        };
+        let values = self.args(c, f, &args[1..])?;
+        self.print(pieces, values, span)
+    }
+
+    fn print(&mut self, pieces: &[FmtPiece], values: Vec<Value>, span: Span) -> R<Value> {
+        let mut values = values.into_iter();
+        for p in pieces {
+            match p {
+                FmtPiece::Lit(s) => self.text(s),
+                FmtPiece::Hole => match values.next() {
+                    Some(Value::Int(n)) => self.text(&n.to_string()),
+                    Some(Value::Double(v)) => self.text(&format!("{v:?}")),
+                    Some(Value::Bool(b)) => self.text(&b.to_string()),
+                    Some(Value::Bit(b)) => self.output.push(OutPiece::Bit(b)),
+                    Some(Value::Bits(v)) => self.output.push(OutPiece::Bits(v, BitsFmt::Array)),
+                    Some(Value::ShotView(v, fmt)) => self.output.push(OutPiece::Bits(v, fmt)),
+                    _ => return Err(internal(span)),
+                },
+            }
+        }
+        self.text("\n");
+        Ok(Value::Unit)
+    }
+
+    fn rotation(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        n: &str,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let i = self.place(c, f, &args[0])?;
+        let theta = match coerce(self.expr(c, f, &args[1])?, Ty::Double) {
+            Value::Double(v) => v,
+            _ => return Err(internal(args[1].span)),
+        };
+        if !theta.is_finite() {
+            return Err(Diagnostic::new(
+                Code::NonFiniteAngle,
+                args[1].span,
+                msg::non_finite_angle(n, theta),
+            ));
+        }
+        let [q] = self.qubits([i], span, n)?;
+        match n {
+            "rx" => c.rx(q, theta),
+            "ry" => c.ry(q, theta),
+            _ => c.rz(q, theta),
+        }
+        Ok(Value::Unit)
+    }
+
+    fn one_qubit(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame,
+        n: &str,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let i = self.place(c, f, &args[0])?;
+        let [q] = self.qubits([i], span, n)?;
+        match n {
+            "h" => c.h(q),
+            "x" => c.x(q),
+            "z" => c.z(q),
+            "s" => c.s(q),
+            "sdg" => c.sdg(q),
+            "t" => c.t(q),
+            "tdg" => c.tdg(q),
+            _ => c.reset(q),
+        }
+        Ok(Value::Unit)
     }
 
     fn text(&mut self, s: &str) {

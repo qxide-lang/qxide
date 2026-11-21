@@ -1110,6 +1110,13 @@ fn deepest_programs() -> Vec<Deepest> {
         ("builtin_arg", 123, |n| {
             wrap(format!("println(\"{{}}\", f(k - 1){});", " + 0".repeat(n)))
         }),
+        // n triples, so 3n nested builtin calls.
+        ("builtins", 40, |n| {
+            wrap(format!(
+                "return {};",
+                nest(n, "len(measure(qreg(", "f(k - 1)", ")))")
+            ))
+        }),
         ("for", 122, |n| {
             wrap((0..n).fold("return f(k - 1);".to_string(), |s, i| {
                 format!("for i{i} in 0..1 {{ {s} }}")
@@ -1134,7 +1141,7 @@ fn deepest_programs() -> Vec<Deepest> {
 }
 
 // Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`
-// (measured worst case: ~76 MiB unoptimized, ~30 MiB optimized). The parser and checker also
+// (measured worst case: ~100 MiB unoptimized, ~45 MiB optimized). The parser and checker also
 // run on that thread, as in the CLI: unoptimized they need more than a test thread's 2 MiB.
 #[test]
 fn deepest_legal_programs_fit_in_half_the_interpreter_stack() {

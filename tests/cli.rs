@@ -215,12 +215,19 @@ fn deepest_nesting_of_the_costliest_kinds_runs_in_any_build() {
         }))
     };
     let bit_ifs = |n: usize| bit_fn(nest(n, "if m { ", "f(k - 1, m);", " }"));
+    let builtins = |n: usize| {
+        int_fn(format!(
+            "return {};",
+            nest(n, "len(measure(qreg(", "f(k - 1)", ")))")
+        ))
+    };
     // (kind, deepest accepted program, the same one level deeper)
     let kinds = [
         ("chain", chain(124), chain(125)),
         ("call_args", call_args(122), call_args(123)),
         ("for", fors(122), fors(123)),
         ("bit_if", bit_ifs(61), bit_ifs(62)),
+        ("builtins", builtins(40), builtins(41)),
     ];
     for (kind, deepest, over) in kinds {
         let over = tmp_qx(&format!("deepest_{kind}_over.qx"), &over);
