@@ -1,0 +1,95 @@
+[package]
+name = "qxide-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Built by `cargo fuzz` (nightly). On stable, `--no-default-features` builds only the harness
+# library and its seed-replay test (see README.md).
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+default = ["libfuzzer"]
+libfuzzer = ["dep:libfuzzer-sys"]
+
+# The included modules' own unit tests run in the root crate, not here.
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", optional = true }
+qxide = { path = "..", default-features = false }
+qxide-wasm = { path = "../crates/qxide-wasm" }
+# Same versions as the `cli` feature of the root crate; src/pkg is compiled into this crate.
+flate2 = "1.1"
+semver = "1.0"
+serde_json = "1.0"
+sha2 = "0.11"
+tar = { version = "0.4", default-features = false }
+toml_edit = "0.25"
+
+# Keep this crate out of the root workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "check"
+path = "fuzz_targets/check.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "fmt"
+path = "fuzz_targets/fmt.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "run_limits"
+path = "fuzz_targets/run_limits.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "index_line"
+path = "fuzz_targets/index_line.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
