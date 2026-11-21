@@ -17,13 +17,23 @@ include = ["/src/**", "/tests/**", "/examples/**", "/README.md", "/README.ko.md"
 default = ["cli"]
 # The `qxide` command-line tool, including its package manager. Library users can opt out with
 # `default-features = false`; the library itself has no required dependencies.
-cli = ["dep:semver", "dep:toml_edit", "dep:serde_json", "dep:sha2", "dep:tar", "dep:flate2"]
+cli = [
+    "dep:semver",
+    "dep:toml_edit",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:tar",
+    "dep:flate2",
+    "dep:lsp-server",
+]
 # GPU state-vector backend (prototype). Pulls in CubeCL + wgpu, so it is off by default.
 gpu = ["dep:cubecl"]
 
 [dependencies]
 cubecl = { version = "=0.11.4", default-features = false, features = ["wgpu"], optional = true }
 flate2 = { version = "1.1", optional = true }
+# `qxide lsp`: JSON-RPC framing and the initialize/shutdown handshake only (see docs/design/lsp.md).
+lsp-server = { version = "0.10", optional = true }
 semver = { version = "1.0", optional = true }
 serde_json = { version = "1.0", optional = true }
 sha2 = { version = "0.11", optional = true }

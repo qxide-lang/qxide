@@ -203,6 +203,14 @@ impl SourceMap {
         &self.file(offset).name
     }
 
+    /// Name, text and base offset of the file holding `offset` (editor support maps spans back
+    /// to file-local positions with these).
+    #[allow(dead_code)]
+    pub fn file_at(&self, offset: usize) -> (&str, &str, usize) {
+        let f = self.file(offset);
+        (&f.name, &f.text, f.base)
+    }
+
     /// 1-based line and column within the file holding `offset`; columns count chars, not bytes.
     pub fn line_col(&self, offset: usize) -> (usize, usize) {
         let f = self.file(offset);

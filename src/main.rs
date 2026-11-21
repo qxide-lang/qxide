@@ -4,6 +4,7 @@
 //! can be installed as a standalone tool (cargo-dist installers, PyPI wheel).
 
 mod lang;
+mod lsp;
 mod pkg;
 
 use qxide::{Backend, Circuit};
@@ -29,14 +30,18 @@ Commands:
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
   new <NAME>                         Create a new project folder with main.qx and README.md
   bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
+  lsp                                {}
 {}
 Options:
   -V, --version                      Print version
   -h, --help                         Print help
 ",
+        LSP_HELP,
         pkg::cli::usage()
     )
 }
+
+const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
 
 fn bell(shots: u64) {
     let mut c = Circuit::new();
@@ -367,6 +372,12 @@ fn main() -> ExitCode {
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),
         Some("repl") => return repl_command(&args[1..]),
+        // Language clients may pass `--stdio`; stdio is the only transport anyway.
+        Some("lsp") if args.len() > 1 && !(args.len() == 2 && args[1] == "--stdio") => {
+            eprintln!("qxide: unexpected argument `{}` for `lsp`", args[1]);
+            return ExitCode::from(2);
+        }
+        Some("lsp") => return lsp::main(LANG_STACK),
         Some(cmd) if pkg::cli::COMMANDS.contains(&cmd) => return pkg::cli::main(cmd, &args[1..]),
         Some("bell") if args.len() > 2 => {
             eprintln!("qxide: unexpected argument `{}` for `bell`", args[2]);
