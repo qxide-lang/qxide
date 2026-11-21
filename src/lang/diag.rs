@@ -1,5 +1,6 @@
 // Diagnostics: stable codes, byte spans, rustc-style rendering with line/column.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 /// Byte range in the source text.
@@ -229,15 +230,18 @@ impl SourceMap {
         } else {
             (text.chars().count() + 1).saturating_sub(col).max(1)
         };
+        // Carets line up with the escaped line: widen by the escapes before and inside the span.
+        let before: String = text.chars().take(col - 1).collect();
+        let under: String = text.chars().skip(col - 1).take(width).collect();
+        let width = width + printable(&under).chars().count() - under.chars().count();
         let line = f.labels.as_ref().map_or(line, |l| l[line - 1]);
         let gutter = line.to_string().len();
         let pad = " ".repeat(gutter);
         let _ = writeln!(out, "{pad}--> {}:{line}:{col}", f.name);
         let _ = writeln!(out, "{pad} |");
-        let _ = writeln!(out, "{line} | {text}");
-        let lead: String = text
+        let _ = writeln!(out, "{line} | {}", printable(text));
+        let lead: String = printable(&before)
             .chars()
-            .take(col - 1)
             .map(|c| if c == '\t' { '\t' } else { ' ' })
             .collect();
         let _ = writeln!(out, "{pad} | {lead}{}", "^".repeat(width));
@@ -245,21 +249,40 @@ impl SourceMap {
 
     pub fn render(&self, d: &Diagnostic) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "error[{}]: {}", d.code.as_str(), d.message);
+        let _ = writeln!(out, "error[{}]: {}", d.code.as_str(), printable(&d.message));
         if !d.no_snippet {
             self.snippet(&mut out, d.span);
         }
         for n in &d.notes {
-            let _ = writeln!(out, "note: {}", n.message);
+            let _ = writeln!(out, "note: {}", printable(&n.message));
             if let Some(s) = n.span {
                 self.snippet(&mut out, s);
             }
         }
         if let Some(h) = &d.help {
-            let _ = writeln!(out, "help: {h}");
+            let _ = writeln!(out, "help: {}", printable(h));
         }
         out
     }
+}
+
+/// `s` with every control character except tab (C0, DEL, and C1 such as CSI) shown as a
+/// `\u{..}` escape, so text from a source file, an archive, or a registry cannot drive the
+/// terminal. Used for everything printed that did not come from this binary.
+pub fn printable(s: &str) -> Cow<'_, str> {
+    let hidden = |c: char| c.is_control() && c != '\t';
+    if !s.chars().any(hidden) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if hidden(c) {
+            let _ = write!(out, "{}", c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
 }
 
 #[cfg(test)]
@@ -285,5 +308,28 @@ mod tests {
         assert_eq!(map.line_col(base + 2), (2, 1));
         assert_eq!(map.file_name(base), "b.qx");
         assert_eq!(map.file_name(5), "a.qx");
+    }
+
+    // M-04 in docs/security/PKG_CLIENT_FIXES.md: control characters from a source file are shown
+    // escaped, and the carets stay under the span.
+    #[test]
+    fn rendered_diagnostics_hide_terminal_escapes() {
+        let src = "x\u{1b}[2K\u{7}\u{9b}1A\ty;\n";
+        let map = SourceMap::new("t.qx", src);
+        let y = src.find('y').unwrap();
+        let d = Diagnostic::new(
+            Code::UnknownVar,
+            Span::new(y, y + 1),
+            "m\u{1b}]0;t\u{7}".into(),
+        );
+        let out = map.render(&d);
+        assert!(
+            !out.chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{out:?}"
+        );
+        let echoed = out.lines().find(|l| l.starts_with("1 | ")).unwrap();
+        let carets = out.lines().find(|l| l.contains('^')).unwrap();
+        assert_eq!(echoed.find('y'), carets.find('^'), "{out}");
     }
 }

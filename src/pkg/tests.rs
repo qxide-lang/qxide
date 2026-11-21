@@ -890,7 +890,24 @@ fn download_locations_follow_the_registry_checker() {
     }
 }
 
-/// Shared with ci/test_registry_scripts.py, so the registry checker accepts exactly what we parse.
+// M-04: text from an archive or a registry is printed without terminal control characters.
+#[test]
+fn package_errors_do_not_echo_terminal_escapes() {
+    let raw = |s: &str| s.chars().any(|c| c.is_control() && c != '\n' && c != '\t');
+    // The archive entry of the M-04 reproduction.
+    let bytes =
+        raw_archive(&["escpath-1.0.0/src/a\u{1b}]0;TITLE-SET-BY-REGISTRY\u{7}\u{1b}[2K.qx"]);
+    let dir = tmp_dir("escpath");
+    let err = archive::unpack(&bytes, "escpath-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+    assert!(!raw(&err.render()), "{:?}", err.render());
+    // C1 controls such as CSI (U+009B) too, in notes and help as well as the message.
+    let mut err = Error::new(Code::InvalidIndex, "a\u{9b}2Kb\r".into()).note("\u{1b}[1A".into());
+    err.help = Some("\u{7}".into());
+    assert!(!raw(&err.render()), "{:?}", err.render());
+}
+
+// Shared with ci/test_registry_scripts.py, so the registry checker accepts exactly what we parse.
 const SEMVER_CASES: &str = include_str!("../../tests/data/semver_cases.json");
 
 #[test]

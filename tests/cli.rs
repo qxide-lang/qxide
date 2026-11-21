@@ -40,6 +40,22 @@ fn tmp_qx(name: &str, src: &str) -> String {
     path.to_string_lossy().into_owned()
 }
 
+// M-04 reproduction (docs/security/PKG_CLIENT_FIXES.md): the echoed source line keeps no raw
+// ESC or BEL bytes.
+#[test]
+fn diagnostics_do_not_echo_terminal_escapes() {
+    let path = tmp_qx(
+        "esc.qx",
+        "void main() {\n    undefined_name; // \u{1b}]0;TITLE-SET-BY-QX-FILE\u{7}\u{1b}[2K\u{1b}[1A\u{1b}[2K\n}\n",
+    );
+    let out = qxide(&["check", &path]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!out.stderr.iter().any(|&b| b == 0x1b || b == 0x07));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("error[Q0201]"), "{err}");
+    assert!(err.contains("  |     ^^^^^^^^^^^^^^\n"), "{err}");
+}
+
 #[test]
 fn run_bell_example_gives_correlated_bits() {
     let out = qxide(&["run", &example("bell.qx"), "--shots", "100", "--seed", "7"]);

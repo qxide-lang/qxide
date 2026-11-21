@@ -722,3 +722,45 @@ fn download_locations_stay_inside_the_registry() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// M-04 reproduction: `ESC ]0;TITLE-SET-BY-REGISTRY BEL ESC [2K` as JSON escapes.
+const INJECTED: &str = "\\u001b]0;TITLE-SET-BY-REGISTRY\\u0007\\u001b[2K";
+
+fn has_raw_escapes(bytes: &[u8]) -> bool {
+    bytes.iter().any(|&b| b == 0x1b || b == 0x07)
+}
+
+#[test]
+fn registry_text_is_printed_without_terminal_escapes() {
+    let env = Env::new("escapes");
+    std::fs::write(
+        env.registry.join("search.json"),
+        format!(
+            "{{\"version\": 1, \"packages\": [{{\"name\": \"good{INJECTED}\", \
+             \"version\": \"1.0.0{INJECTED}\", \"description\": \"plain {INJECTED}\"}}]}}"
+        ),
+    )
+    .unwrap();
+    let out = env.qx(&env.root, &["search", "good"]);
+    assert!(out.status.success());
+    assert!(!has_raw_escapes(&out.stdout) && !has_raw_escapes(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("good"));
+
+    let index = env.registry.join("index/ba/dl/badline");
+    std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+    std::fs::write(
+        &index,
+        format!(
+            "{{\"name\": \"x{INJECTED}\", \"vers\": \"1.0.0\", \"deps\": [], \"cksum\": \"{}\", \
+             \"yanked\": false, \"v\": 1}}\n",
+            "0".repeat(64)
+        ),
+    )
+    .unwrap();
+    let app = env.app("demo", PLAIN_MAIN);
+    let out = env.qx(&app, &["add", "badline"]);
+    assert!(!has_raw_escapes(&out.stderr));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[Q0609]"), "{err}");
+}

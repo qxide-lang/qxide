@@ -260,26 +260,29 @@ fn install(o: &Opts) -> Result<()> {
 fn search(o: &Opts) -> Result<()> {
     let registry = open_registry(o)?;
     let word = o.args[0].to_lowercase();
+    // `search.json` text is printed escaped (see `lang::printable`).
+    let shown = |s: &str| crate::lang::printable(s).into_owned();
     let rows: Vec<_> = registry
         .search_rows()?
         .into_iter()
         .filter(|r| r.name.contains(&word) || r.description.to_lowercase().contains(&word))
+        .map(|r| (shown(&r.name), shown(&r.version), shown(&r.description)))
         .collect();
     if rows.is_empty() {
         eprintln!("{}", msg::no_search_results(&o.args[0]));
     }
     let width = rows
         .iter()
-        .map(|r| r.name.len() + r.version.len())
+        .map(|(name, version, _)| name.len() + version.len())
         .max()
         .unwrap_or(0)
         + 5;
-    for r in rows {
-        let left = format!("{} = \"{}\"", r.name, r.version);
-        if r.description.is_empty() {
+    for (name, version, description) in rows {
+        let left = format!("{name} = \"{version}\"");
+        if description.is_empty() {
             println!("{left}");
         } else {
-            println!("{left:<width$} # {}", r.description);
+            println!("{left:<width$} # {description}");
         }
     }
     Ok(())

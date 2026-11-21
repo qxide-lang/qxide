@@ -98,14 +98,21 @@ impl Error {
         )
     }
 
+    /// Messages quote registry, archive, and file text, so control characters are escaped.
     pub fn render(&self) -> String {
+        use crate::lang::printable;
         let mut out = String::new();
-        let _ = writeln!(out, "error[{}]: {}", self.code.as_str(), self.message);
+        let _ = writeln!(
+            out,
+            "error[{}]: {}",
+            self.code.as_str(),
+            printable(&self.message)
+        );
         for n in &self.notes {
-            let _ = writeln!(out, "note: {n}");
+            let _ = writeln!(out, "note: {}", printable(n));
         }
         if let Some(h) = &self.help {
-            let _ = writeln!(out, "help: {h}");
+            let _ = writeln!(out, "help: {}", printable(h));
         }
         out
     }
