@@ -393,7 +393,7 @@ fn publish(o: &Opts) -> Result<()> {
     }
     let registry = open_registry(o)?;
     if let Some(dir) = registry.local_dir() {
-        let written = write_into_registry(dir, &entry, &bytes)?;
+        let written = write_into_registry(dir, &entry, &bytes, None)?;
         status(
             msg::verb_published(),
             &msg::published_local(&m.name, &m.version.to_string(), &dir.display().to_string()),
@@ -421,11 +421,58 @@ fn publish(o: &Opts) -> Result<()> {
             .replace("{version}", &m.version.to_string()),
         out.display()
     );
+    eprintln!(
+        "  {}  <- {}",
+        index::owners_path(&m.name),
+        msg::manual_owner_line()
+    );
     Ok(())
 }
 
-/// Adds the index line and the archive to a registry checkout; returns the files written.
-pub fn write_into_registry(dir: &Path, entry: &Entry, bytes: &[u8]) -> Result<Vec<PathBuf>> {
+/// A GitHub account listed in a package's owner file; registry CI compares the numeric `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owner {
+    pub id: u64,
+    pub login: String,
+}
+
+impl Owner {
+    /// Parses the two lines `gh api user --jq '.id, .login'` prints.
+    pub fn from_gh(out: &str) -> Option<Owner> {
+        let mut lines = out.lines().map(str::trim);
+        let id = lines.next()?;
+        let login = lines.next()?;
+        let id_ok =
+            !id.is_empty() && !id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit());
+        let login_ok = (1..=39).contains(&login.len())
+            && !login.starts_with('-')
+            && login
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        if !id_ok || !login_ok || lines.next().is_some() {
+            return None;
+        }
+        Some(Owner {
+            id: id.parse().ok()?,
+            login: login.to_string(),
+        })
+    }
+
+    /// The owner file line, keys sorted like index lines.
+    pub fn to_json(&self) -> String {
+        format!("{{\"id\":{},\"login\":\"{}\"}}", self.id, self.login)
+    }
+}
+
+/// Adds the index line and the archive to a registry checkout; returns the files written. For the
+/// first version of a package, `owner` (the account opening the pull request) is written to the
+/// package's owner file, which registry CI requires.
+pub fn write_into_registry(
+    dir: &Path,
+    entry: &Entry,
+    bytes: &[u8],
+    owner: Option<&Owner>,
+) -> Result<Vec<PathBuf>> {
     let index_file = dir.join(index::index_path(&entry.name));
     let existing = match std::fs::read_to_string(&index_file) {
         Ok(s) => s,
@@ -456,6 +503,14 @@ pub fn write_into_registry(dir: &Path, entry: &Entry, bytes: &[u8]) -> Result<Ve
         let archive_file = dir.join(&rel);
         super::cache::write_atomic(&archive_file, bytes)?;
         written.push(archive_file);
+    }
+    if let Some(owner) = owner.filter(|_| existing.trim().is_empty()) {
+        let owners_file = dir.join(index::owners_path(&entry.name));
+        // An owner file without an index file is not ours to replace; registry CI reports it.
+        if !owners_file.exists() {
+            super::cache::write_atomic(&owners_file, format!("{}\n", owner.to_json()).as_bytes())?;
+            written.push(owners_file);
+        }
     }
     let mut text = existing;
     if !text.is_empty() && !text.ends_with('\n') {
@@ -507,7 +562,15 @@ fn run(cmd: &mut Command) -> Result<String> {
 fn open_pull_request(entry: &Entry, bytes: &[u8]) -> Result<()> {
     let version = entry.vers.to_string();
     let branch = format!("publish/{}-{version}", entry.name);
-    let user = run(tool("gh")?.args(["api", "user", "--jq", ".login"]))?;
+    let shown = "gh api user --jq '.id, .login'";
+    let who = run(tool("gh")?.args(["api", "user", "--jq", ".id, .login"]))?;
+    let owner = Owner::from_gh(&who).ok_or_else(|| {
+        Error::new(
+            Code::RegistryUnavailable,
+            msg::command_failed(shown, &msg::unexpected_output(&who)),
+        )
+    })?;
+    let user = owner.login.clone();
     status(msg::verb_forking(), REGISTRY_REPO);
     run(tool("gh")?.args(["repo", "fork", REGISTRY_REPO, "--clone=false"]))?;
     let work = std::env::temp_dir().join(format!(
@@ -535,7 +598,7 @@ fn open_pull_request(entry: &Entry, bytes: &[u8]) -> Result<()> {
     ])?;
     git(&["fetch", "--depth", "1", "upstream", "main"])?;
     git(&["checkout", "-b", &branch, "upstream/main"])?;
-    write_into_registry(&work, entry, bytes)?;
+    write_into_registry(&work, entry, bytes, Some(&owner))?;
     git(&["add", "-A"])?;
     git(&["commit", "-m", &msg::pr_title(&entry.name, &version)])?;
     git(&["push", "-u", "origin", &branch])?;

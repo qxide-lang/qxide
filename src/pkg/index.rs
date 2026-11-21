@@ -150,6 +150,11 @@ pub fn index_path(name: &str) -> String {
     format!("index/{}/{name}", prefix(name))
 }
 
+/// Owner file of a package in the GitHub registry (checked by registry CI, not read by the client).
+pub fn owners_path(name: &str) -> String {
+    format!("owners/{}/{name}", prefix(name))
+}
+
 #[derive(Debug, Clone)]
 enum Location {
     Dir(PathBuf),

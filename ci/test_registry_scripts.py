@@ -753,6 +753,13 @@ class ValidateOwners(unittest.TestCase):
         self.reg.validate("--base", "main", *args, "--summary", str(summary))
         self.assertIn(f"`mallory` (id {MALLORY['id']})", summary.read_text(encoding="utf-8"))
 
+    def test_owner_line_written_by_qxide_publish(self):
+        # `Owner::to_json` in src/pkg/cli.rs (see `publishing_a_new_package_writes_its_owner_file`).
+        self.reg.add("mallory-tools", "1.0.0", owner=None)
+        self.reg.write_owners("mallory-tools", [], raw=b'{"id":666,"login":"mallory"}\n')
+        r = self.pr(MALLORY)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
     def test_new_package_needs_an_owner_file(self):
         self.reg.add("mallory-tools", "1.0.0", owner=None)
         self.assert_rejected(self.pr(MALLORY), "index/ma/ll/mallory-tools")
