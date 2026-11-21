@@ -4,13 +4,48 @@ Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` languag
 
 ## [Unreleased]
 
-### Fixed
+### Breaking changes
 
-- **Biased and under-dispersed sampling across shots**: Shot `k` of `--seed S` previously used seed `S + k`, causing runs with nearby seeds to reuse nearly all of the same shots (over 200 seeds of 1,000-shot Bell runs, `00` counts had a standard deviation of 2.94 instead of ~15.8 for a binomial distribution). Each shot now receives an independent seed mixed from `(S, k)` via `qxide::shot_seed` and `Circuit::simulate_shots`, bringing the 200-seed Bell standard deviation to 16.7 (mean 497.6 vs. 506.1 before). Outputs remain reproducible for any given `--seed`, though counts and single-shot results differ from 0.6.0 across `qxide run`, `qxide bell`, `qxide repl`, and the browser playground.
+- **New `.qx` keywords (`import`, `public`)**: `import` and `public` are now keywords in `.qx` and can no longer be used as identifiers.
+- **Non-finite rotation angles in the Rust library**: `Circuit::rx`, `Circuit::ry`, and `Circuit::rz` now panic when the angle is `NaN` or infinite. Previously the state vector silently became `NaN`, every measurement returned `0`, and `to_qasm` printed `rx(NaN)`, which OpenQASM parsers reject.
+- **Stricter `.qx` linearity checks**: Programs that consume a qubit in the right operand of `&&` or `||`, or that consume an operand borrowed by the same call or gate (for example `rx(q, eat(q))`), are now rejected at check time with `Q0315` and `Q0301`. Previously these programs passed `check` and then failed at run time or leaked a qubit.
+- **Nesting limit on `.qx` operator and index/method chains**: Operator chains (`a + b + ...`) and index/method chains (`r[0][0]...`) now count toward the 128-level nesting limit (`Q0106`), so chains longer than about 120 operators are rejected.
+- **Package project layout in `qxide new`**: `qxide new` now creates a package project (`qxide.toml`, `src/main.qx`, `README.md`, and `.gitignore`) instead of `main.qx` and `README.md`. Arguments starting with `-` are rejected as a usage error.
+- **Strict CLI argument checks**: `qxide bell`, `--version`, and `--help` now reject extra arguments with exit code 2.
 
 ### Added
 
-- Added `qxide::shot_seed(seed, shot)` to derive an independent seed for each shot and `Circuit::simulate_shots(backend, seed, shots)` to iterate over `Result<Shot, SimError>` using `shot_seed`. `Circuit::simulate` and `Circuit::simulate_with` are unchanged and continue to execute a single shot with the exact seed provided.
+- **Per-shot seeding API**: Added `qxide::shot_seed(seed, shot)` to derive an independent seed for each shot and `Circuit::simulate_shots(backend, seed, shots)` to iterate over `Result<Shot, SimError>` using `shot_seed`. `Circuit::simulate` and `Circuit::simulate_with` are unchanged and continue to execute a single shot with the exact seed provided.
+- **Modules and imports**: Every `.qx` file is now a module supporting `public` functions, Java-style `import pkg.module.function;` and `import pkg.module.*;` declarations, and import errors `Q0501`–`Q0510`. Inside a project, `qxide run`, `qxide check`, and `qxide qasm` without a file argument use `src/main.qx`.
+- **Package manager**: Added a package manager (`docs/design/qx-packages.md`) with `qxide.toml` manifests, `qxide.lock`, a GitHub-hosted index registry (template in `registry-template/`), commands `qxide add`, `remove`, `install`, `publish`, and `search`, `--offline`/`QXIDE_OFFLINE=1`, `--registry`/`QXIDE_REGISTRY`, cache storage in `QXIDE_HOME` (default `~/.qxide`), and package errors `Q0601`–`Q0617`. The package manager is gated behind the default `cli` feature used by the binary, so the library (`--no-default-features --lib`) still has no dependencies.
+- **New CLI commands**: Added `qxide new <NAME>` (project scaffold with the package name derived from the folder name), `qxide fmt <FILE> [--check]`, `qxide repl [--seed S]`, and `qxide explain <CODE>` (prints the entry from `docs/error-codes.md`, including `Q05xx` and `Q06xx` package errors).
+- **New error codes**: Added `Q0315` (qubit consumed in the right operand of `&&` or `||`), `Q0411` (non-finite rotation angle), and `Q0412` (internal error when the checker and the interpreter disagree; replaces a misleading `Q0311`).
+- **Browser playground**: The `.qx` front end and simulator compile to WebAssembly (`crates/qxide-wasm`, not published) for the playground at `qxide.dev`, and CI checks that it prints exactly what the CLI prints.
+
+### Fixed
+
+- **Biased and under-dispersed sampling across shots**: Shot `k` of `--seed S` previously used seed `S + k`, causing runs with nearby seeds to reuse nearly all of the same shots (over 200 seeds of 1,000-shot Bell runs, `00` counts had a standard deviation of 2.94 instead of ~15.8 for a binomial distribution). Each shot now receives an independent seed mixed from `(S, k)` via `qxide::shot_seed` and `Circuit::simulate_shots`, bringing the 200-seed Bell standard deviation to 16.7 (mean 497.6 vs. 506.1 before). Outputs remain reproducible for any given `--seed`, though counts and single-shot results differ from 0.6.0 across `qxide run`, `qxide bell`, `qxide repl`, and the browser playground.
+- **Non-finite rotation angles**: Non-finite rotation angles are now rejected instead of silently corrupting the state vector or producing invalid OpenQASM, with `.qx` reporting `Q0411` at the angle (see Breaking changes).
+- **Linearity soundness holes**: Fixed check-time gaps that allowed consuming a qubit in the right operand of `&&`/`||` or consuming an operand borrowed by the same call or gate, now caught with `Q0315` and `Q0301` (see Breaking changes).
+- **Stack overflows on long expression chains**: Fixed stack overflows where a 4 KB program with a long `+` chain inside recursion passed `check` but crashed `run`/`qasm`, and where chains of 200,000 terms crashed `check`.
+- **Register size overflow on wasm32**: `qreg(4294967297)` in the browser playground no longer wraps to a 1-qubit register and now fails with `Q0409` like the CLI.
+- **Remainder of `int.MIN % -1`**: `int.MIN % -1` now yields `0` as in Java instead of reporting overflow `Q0401`.
+- **Bare qubit statements**: A statement that only names an existing qubit (`q;`) is now a no-op like `x;` instead of reporting `Q0312`.
+- **CRLF string literals in `qxide fmt`**: `qxide fmt` no longer refuses a valid CRLF file containing a line break inside a string literal.
+- **Nested `return` in `qxide repl`**: A `return` nested in `if` or `for` is now rejected like a top-level `return` instead of silently ending the session.
+- **Trailing line comments in `qxide repl`**: A trailing `//` comment on a REPL expression no longer fails with `Q0105` at `<repl>:0:1`.
+- **Unmatched closing brackets in `qxide repl`**: Input closing a bracket it did not open (for example `}`) is now rejected instead of closing `main` and breaking the session.
+- **UTF-8 BOM in piped REPL input**: A UTF-8 byte order mark at the start of piped input is now ignored.
+- **REPL diagnostic snippets**: REPL diagnostics now show the typed input instead of the internal `println("{}", …)` wrapper.
+- **Flag ordering in `qxide run`**: `qxide run` now accepts flags before or after the file path (for example `qxide run --shots 2 file.qx`).
+- **Failed scaffold cleanup in `qxide new`**: `qxide new` no longer leaves an empty folder behind when writing a file fails.
+- **Package archive path hardening**: Archive entries with trailing dots or spaces, Windows device names (`CON`, `NUL`, …), Windows-invalid characters, or case-only duplicates could overwrite a reviewed file on Windows or macOS; they are now rejected before anything is unpacked (`Q0610`) and refused by `qxide publish` (`Q0614`) and registry CI. `qxide publish` also skips symlinked `README*`/`LICENSE*` files.
+- **Semver build metadata in package resolution**: Versions with build metadata (`1.0.0+x`) could take over an exact `=1.0.0` pin; they are never selected or published, and registry CI rejects same-precedence duplicates.
+- **Registry index validation and parsing**: Registry CI (`validate.py`) now matches the client's parser exactly across semver limits, requirements, field types, line splitting, and strict JSON. An index line the client cannot use is skipped instead of breaking every version of the package, reporting `Q0609` only when no usable line remains.
+- **Registry download failures and temp-file safety**: Any non-zero `curl` exit (including a transfer cut off after HTTP 200) is now reported as `Q0608` instead of being accepted and cached. Downloads pass `--globoff` to prevent `{}`/`[]` expansion in URLs and write to an exclusively created file under `$QXIDE_HOME/registry/tmp` instead of a predictable name in the shared temp directory.
+- **Whole-graph lockfile freshness**: Lock freshness now checks the whole graph (transitive requirements, path manifests on disk, sources, and unreachable entries), returning `Q0612` for a stale lock in `qxide run` and `qxide install --locked`.
+- **Lockfile package name validation**: Package names in `qxide.lock` are validated (`Q0603`), preventing a crafted name from pointing cache paths outside `QXIDE_HOME`.
+- **Registry graph and CI checks**: Self-dependencies of registry packages are rejected (`Q0606`), `build_search.py` orders pre-releases by semver precedence, and `validate.py` rejects `"v": true` and changes to `config.json` in package PRs.
 
 ## [0.6.0] - 2026-11-20
 
