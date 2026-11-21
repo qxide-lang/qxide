@@ -4,6 +4,11 @@ pub fn usage() -> String {
     "invalid arguments; usage: `qxide-app` (run the attached app) or `qxide-app --dev <dev.json>` (used by `qxide app dev`)".into()
 }
 
+pub fn dev_refused() -> String {
+    "`--dev` is only accepted by the bare runtime that `qxide app dev` starts, not by a built app"
+        .into()
+}
+
 pub fn no_bundle() -> String {
     "no Qxide app attached to this executable; build one with `qxide app build` or run a project with `qxide app dev`".into()
 }

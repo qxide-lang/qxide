@@ -145,11 +145,15 @@ impl App {
         })
     }
 
-    /// The app attached to this executable.
-    pub fn from_exe() -> Result<App, String> {
+    /// The bytes of this executable, where `qxide app build` attaches the bundle.
+    pub fn exe_bytes() -> Result<Vec<u8>, String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let bytes = std::fs::read(&exe).map_err(|e| e.to_string())?;
-        let files = match bundle::read(&bytes) {
+        std::fs::read(&exe).map_err(|e| e.to_string())
+    }
+
+    /// The app attached to an executable whose bytes are `bytes`.
+    pub fn from_exe(bytes: &[u8]) -> Result<App, String> {
+        let files = match bundle::read(bytes) {
             Ok(f) => f,
             Err(bundle::BundleError::Missing) => return Err(msg::no_bundle()),
             Err(bundle::BundleError::Format(n)) => return Err(msg::bundle_format(n)),

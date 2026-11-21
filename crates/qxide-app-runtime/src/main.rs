@@ -371,19 +371,36 @@ fn run_call(
     })
 }
 
+/// What the command line asks for.
+enum Start {
+    Version,
+    App(App),
+}
+
+/// Decides what to run from the arguments and the bytes of this executable.
+fn start(args: &[String], exe: impl FnOnce() -> Result<Vec<u8>, String>) -> Result<Start, String> {
+    match args {
+        [] => App::from_exe(&exe()?).map(Start::App),
+        [flag, path] if flag == "--dev" => {
+            // Security: only the bare runtime started by `qxide app dev` takes `--dev` (B-A3).
+            if bundle::read(&exe()?) != Err(bundle::BundleError::Missing) {
+                return Err(msg::dev_refused());
+            }
+            App::from_dev(std::path::Path::new(path)).map(Start::App)
+        }
+        [v] if v == "--version" => Ok(Start::Version),
+        _ => Err(msg::usage()),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let loaded = match args.as_slice() {
-        [] => App::from_exe(),
-        [flag, path] if flag == "--dev" => App::from_dev(std::path::Path::new(path)),
-        [v] if v == "--version" => {
+    let app = match start(&args, App::exe_bytes) {
+        Ok(Start::Version) => {
             println!("qxide-app {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        _ => Err(msg::usage()),
-    };
-    let app = match loaded {
-        Ok(a) => a,
+        Ok(Start::App(a)) => a,
         Err(e) => {
             eprintln!("qxide-app: {e}");
             return ExitCode::from(1);
@@ -556,6 +573,46 @@ mod tests {
         let e = call(&bundled(lib)).unwrap_err();
         assert!(e.contains("\"code\":\"Q0703\""), "{e}");
         assert!(e.contains("bell_utils") && e.contains("lib.qx"), "{e}");
+    }
+
+    // B-A3: a built app (an executable with a bundle attached) must not accept `--dev <json>`,
+    // which would run any `.qx`/UI with any permissions, data folder and devtools.
+    #[test]
+    fn built_apps_refuse_dev_mode() {
+        let dir = std::env::temp_dir().join(format!("qxide-ba3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dev_json = dir.join("dev.json");
+        let manifest = serde_json::json!({
+            "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": true,
+            "title": "evil", "identifier": "x", "module": "app",
+            "commands": ["f"], "permissions": ["fs", "app", "qxide"],
+            "width": 400, "height": 300, "resizable": true,
+            "packages": [{"name": "x", "src": dir.display().to_string(), "deps": []}],
+            "entry": dir.join("app.qx").display().to_string(), "ui": dir.display().to_string(),
+            "data": "C:\\"
+        });
+        std::fs::write(&dev_json, manifest.to_string()).unwrap();
+        let args = ["--dev".to_string(), dev_json.display().to_string()];
+
+        // The bare runtime (no bundle) is what `qxide app dev` starts: `--dev` works there.
+        let bare = || Ok(b"MZ runtime".to_vec());
+        assert!(matches!(start(&args, bare), Ok(Start::App(a)) if a.dev));
+
+        // With any bundle attached, including a damaged or foreign-format one, it is refused.
+        let mut built = b"MZ runtime".to_vec();
+        let mut files = BTreeMap::new();
+        files.insert(bundle::MANIFEST.to_string(), b"{}".to_vec());
+        bundle::write(&mut built, &files);
+        let mut corrupt = built.clone();
+        let n = corrupt.len();
+        corrupt[n - 24..n - 16].copy_from_slice(&u64::MAX.to_le_bytes());
+        let mut other = built.clone();
+        other[n - 12..n - 8].copy_from_slice(&9u32.to_le_bytes());
+        for exe in [built, corrupt, other] {
+            let r = start(&args, move || Ok(exe));
+            assert!(r.is_err(), "--dev accepted by a built app");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
