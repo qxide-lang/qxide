@@ -123,6 +123,103 @@ fn deep_recursion_is_a_diagnostic_not_a_crash() {
         .contains("error[Q0405]"));
 }
 
+// The seed from a stderr that is exactly `seed: S (pass --seed S to reproduce)\n`.
+fn seed_note(stderr: &[u8]) -> Option<u64> {
+    let text = String::from_utf8_lossy(stderr);
+    let (seed, rest) = text.strip_prefix("seed: ")?.split_once(' ')?;
+    (rest == format!("(pass --seed {seed} to reproduce)\n"))
+        .then(|| seed.parse().ok())
+        .flatten()
+}
+
+#[test]
+fn run_without_seed_uses_a_random_seed_and_reports_it() {
+    let bell = example("bell.qx");
+    let first = qxide(&["run", &bell, "--shots", "100"]);
+    let second = qxide(&["run", &bell, "--shots", "100"]);
+    assert!(first.status.success(), "{first:?}");
+    assert!(second.status.success(), "{second:?}");
+    let a = seed_note(&first.stderr).unwrap_or_else(|| panic!("{first:?}"));
+    let b = seed_note(&second.stderr).unwrap_or_else(|| panic!("{second:?}"));
+    assert_ne!(a, b);
+    // The reported seed reproduces the run, and an explicit seed is not noted.
+    let again = qxide(&["run", &bell, "--shots", "100", "--seed", &a.to_string()]);
+    assert_eq!(again.stdout, first.stdout);
+    assert!(again.stderr.is_empty(), "{again:?}");
+    // One shot that prints a measured bit also depends on the seed.
+    let one = qxide(&["run", &bell]);
+    assert!(seed_note(&one.stderr).is_some(), "{one:?}");
+}
+
+#[test]
+fn explicit_seed_is_deterministic_and_unannounced() {
+    let bell = example("bell.qx");
+    for shots in ["1", "100"] {
+        let x = qxide(&["run", &bell, "--shots", shots, "--seed", "7"]);
+        let y = qxide(&["run", "--seed", "7", &bell, "--shots", shots]);
+        assert!(x.status.success(), "{x:?}");
+        assert_eq!(x.stdout, y.stdout);
+        assert!(x.stderr.is_empty() && y.stderr.is_empty(), "{x:?} {y:?}");
+    }
+}
+
+#[test]
+fn seed_is_not_reported_when_nothing_is_simulated() {
+    let no_measure = tmp_qx(
+        "seed_no_measure.qx",
+        "void main() {\n    println(\"{}\", 1 + 1);\n}\n",
+    );
+    // Measured, but one shot that prints no bit does not depend on the outcome.
+    let silent = tmp_qx(
+        "seed_silent_measure.qx",
+        "void main() {\n    Qubit q = qubit();\n    h(q);\n    Bit m = measure(q);\n    println(\"done\");\n}\n",
+    );
+    for (path, want) in [(&no_measure, "2\n"), (&silent, "done\n")] {
+        let out = qxide(&["run", path]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want);
+        assert!(out.stderr.is_empty(), "{out:?}");
+    }
+    // Several shots without any measurement do not simulate either.
+    let many = qxide(&["run", &no_measure, "--shots", "5"]);
+    assert!(many.status.success() && many.stderr.is_empty(), "{many:?}");
+    for cmd in ["check", "qasm"] {
+        let out = qxide(&[cmd, &example("bell.qx")]);
+        assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+    }
+}
+
+#[test]
+fn repl_without_seed_reports_it_once() {
+    use std::io::Write;
+    let session = |args: &[&str]| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_qxide"))
+            .arg("repl")
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = "Qubit q = qubit();\nh(q);\nBit m = measure(q);\nm\nQubit r = qubit();\nBit n = measure(r);\nn\n";
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let first = session(&[]);
+    assert!(first.status.success(), "{first:?}");
+    let seed = seed_note(&first.stderr).unwrap_or_else(|| panic!("{first:?}"));
+    let again = session(&["--seed", &seed.to_string()]);
+    assert_eq!(again.stdout, first.stdout);
+    assert!(again.stderr.is_empty(), "{again:?}");
+    let other = session(&[]);
+    assert_ne!(seed_note(&other.stderr), Some(seed));
+}
+
 #[test]
 fn run_flags_may_come_before_the_file() {
     let bell = example("bell.qx");
@@ -252,12 +349,12 @@ fn new_creates_a_project_that_checks_and_is_formatted() {
     assert!(qxide(&["fmt", "--check", &main_arg]).status.success());
     // Inside the project, `qxide run` finds `src/main.qx` by itself.
     let in_project = Command::new(env!("CARGO_BIN_EXE_qxide"))
-        .args(["run", "--shots", "50"])
+        .args(["run", "--shots", "50", "--seed", "0"])
         .current_dir(&dir)
         .output()
         .unwrap();
     assert!(in_project.status.success(), "{in_project:?}");
-    let run = qxide(&["run", &main_arg, "--shots", "50"]);
+    let run = qxide(&["run", &main_arg, "--shots", "50", "--seed", "0"]);
     assert!(run.status.success(), "{run:?}");
     assert_eq!(run.stdout, in_project.stdout);
     let table = String::from_utf8(run.stdout).unwrap();

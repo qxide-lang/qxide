@@ -33,6 +33,9 @@ use interp::{BitsFmt, Elaborated, OutPiece};
 // The package manager (CLI only) builds `PackageRoot`s; the playground build never does.
 #[allow(unused_imports)]
 pub use link::{PackageRoot, Project, ReadFn};
+// The CLI notes a random seed; the playground shows it itself.
+#[allow(unused_imports)]
+pub use msg::seed_note;
 
 /// Rendered diagnostics, ready for stderr.
 pub struct Failure(pub String);
@@ -285,16 +288,29 @@ pub fn run_with(
     seed: u64,
     limits: Limits,
 ) -> Result<String, Failure> {
-    run_input_with(&Input::file(name, src), shots, seed, limits)
+    run_input_with(&Input::file(name, src), shots, seed, limits).map(|r| r.out)
 }
 
 /// `qxide run` of an entry file and its imports; see `run`.
 #[allow(dead_code)]
 pub fn run_input(input: &Input, shots: u64, seed: u64) -> Result<String, Failure> {
+    run_input_report(input, shots, seed).map(|r| r.out)
+}
+
+/// What `run` printed, and whether it simulated (and so drew outcomes from the seed).
+#[allow(dead_code)]
+pub struct Ran {
+    pub out: String,
+    pub simulated: bool,
+}
+
+/// `run_input`, also reporting whether the seed was used.
+#[allow(dead_code)]
+pub fn run_input_report(input: &Input, shots: u64, seed: u64) -> Result<Ran, Failure> {
     run_input_with(input, shots, seed, Limits::CLI)
 }
 
-fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Result<String, Failure> {
+fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Result<Ran, Failure> {
     let (map, built) = build_input(input);
     let (program, e) = built.map_err(|e| render(&map, &e))?;
     let prints_bits = e
@@ -308,7 +324,10 @@ fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Resul
     };
     if !needs_sim {
         // Nothing observable depends on the shot.
-        return Ok(render_output(&e.output, None));
+        return Ok(Ran {
+            out: render_output(&e.output, None),
+            simulated: false,
+        });
     }
     let main_span = program
         .fns
@@ -349,7 +368,10 @@ fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Resul
         .map(|r| r.map_err(|err| render(&map, &[sim_error(err, main_span)])));
     if shots == 1 {
         let shot = sims.next().expect("one shot")?;
-        return Ok(render_output(&e.output, Some(&shot)));
+        return Ok(Ran {
+            out: render_output(&e.output, Some(&shot)),
+            simulated: true,
+        });
     }
     // The printed output depends only on the measured bits, so it is rendered once per record.
     let mut groups: HashMap<Vec<bool>, (u64, String)> = HashMap::new();
@@ -373,5 +395,8 @@ fn run_input_with(input: &Input, shots: u64, seed: u64, limits: Limits) -> Resul
             s.push('\n');
         }
     }
-    Ok(s)
+    Ok(Ran {
+        out: s,
+        simulated: true,
+    })
 }

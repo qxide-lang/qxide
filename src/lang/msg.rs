@@ -270,6 +270,11 @@ pub fn fmt_changed_tokens(name: &str) -> String {
     format!("qxide: internal error: formatting `{name}` would change tokens or comments; nothing was written; please report this bug in qxide\n")
 }
 
+/// Stderr line naming the random seed `run`/`repl` chose because `--seed` was not given.
+pub fn seed_note(seed: u64) -> String {
+    format!("seed: {seed} (pass --seed {seed} to reproduce)\n")
+}
+
 pub fn repl_banner(version: &str) -> String {
     format!("qxide {version} interactive .qx session; type :help for commands and :quit to exit.\n")
 }

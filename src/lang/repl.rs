@@ -45,6 +45,10 @@ pub struct Session {
     seed: u64,
     // Output already shown; later runs reprint it first because the whole session is replayed.
     shown: String,
+    // The random seed's stderr note, held back until the first input that simulates.
+    seed_note: Option<String>,
+    // Set by that input; `run` writes it to stderr before the input's reply.
+    note_due: Option<String>,
 }
 
 /// What one input produced: text for stdout, or rendered diagnostics for stderr.
@@ -271,7 +275,19 @@ impl Session {
             next_line: 1,
             seed,
             shown: String::new(),
+            seed_note: None,
+            note_due: None,
         }
+    }
+
+    /// Announces the seed on stderr once, when an input first draws measurement outcomes.
+    pub fn announce_seed(&mut self) {
+        self.seed_note = Some(msg::seed_note(self.seed));
+    }
+
+    /// The seed note due before the last input's reply, if any.
+    pub fn take_seed_note(&mut self) -> Option<String> {
+        self.note_due.take()
     }
 
     /// Handles one complete input: a `:command`, a function definition, statements, or an
@@ -345,7 +361,10 @@ impl Session {
             "help" => Reply::Out(msg::repl_help()),
             "quit" | "q" => Reply::Quit,
             "reset" => {
+                // Same seed after a reset, so a note already shown is not repeated.
+                let note = self.seed_note.take();
                 *self = Session::new(self.seed);
+                self.seed_note = note;
                 Reply::Out(msg::repl_reset())
             }
             "qasm" => match self.build(New::Nothing) {
@@ -406,6 +425,7 @@ impl Session {
         // appears, and another backend may draw different outcomes for bits already shown.
         let out = if prints_bits {
             let at = Span::new(p.input_at, p.input_at);
+            self.note_due = self.seed_note.take();
             // Shot 0 of `--seed S`, the same seed derivation as `qxide run`.
             let shot = e
                 .circuit
@@ -428,14 +448,19 @@ impl Session {
 
 /// Runs the read-eval-print loop until `:quit` or end of input. Returns the process exit code:
 /// 0, or 1 when the session ends with qubits that were never measured or discarded.
+/// With `announce`, the seed is noted on stderr once the session first simulates.
 pub fn run(
     input: impl BufRead,
     out: &mut impl Write,
     err: &mut impl Write,
     seed: u64,
+    announce: bool,
     interactive: bool,
 ) -> u8 {
     let mut session = Session::new(seed);
+    if announce {
+        session.announce_seed();
+    }
     if interactive {
         let _ = write!(out, "{}", msg::repl_banner(env!("CARGO_PKG_VERSION")));
     }
@@ -448,7 +473,8 @@ pub fn run(
         }
         let Some(Ok(line)) = lines.next() else {
             if !buf.trim().is_empty() {
-                report(session.input(&buf), out, err);
+                let reply = feed(&mut session, &buf, err);
+                report(reply, out, err);
             }
             break;
         };
@@ -457,7 +483,7 @@ pub fn run(
         if open_brackets(&buf) > 0 {
             continue;
         }
-        let reply = session.input(&buf);
+        let reply = feed(&mut session, &buf, err);
         buf.clear();
         if matches!(reply, Reply::Quit) {
             break;
@@ -471,6 +497,16 @@ pub fn run(
         }
         None => 0,
     }
+}
+
+// One input, with the seed note (if this input is the first to simulate) written ahead of its reply.
+fn feed(session: &mut Session, text: &str, err: &mut impl Write) -> Reply {
+    let reply = session.input(text);
+    if let Some(note) = session.take_seed_note() {
+        let _ = write!(err, "{note}");
+        let _ = err.flush();
+    }
+    reply
 }
 
 fn report(reply: Reply, out: &mut impl Write, err: &mut impl Write) {

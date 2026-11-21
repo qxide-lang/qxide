@@ -5,11 +5,11 @@ import {GITHUB, GITHUB_BLOB, usePageMeta} from '../lib/meta';
 const HELP = `Usage: qxide <COMMAND>
 
 Commands:
-  run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, seed 0)
+  run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, random seed, printed to stderr)
   check [FILE]                       Check a .qx program for errors without running it
   qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
-  repl [--seed S]                    Start an interactive .qx session (default: seed 0)
+  repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
   new <NAME>                         Create a new project folder with main.qx and README.md
   bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)

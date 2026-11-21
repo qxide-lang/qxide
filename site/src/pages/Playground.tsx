@@ -18,7 +18,8 @@ const SHARED_NAME = 'playground.qx';
 const MAX_BARS = 32;
 
 type Tab = 'output' | 'counts' | 'qasm';
-type Finished = {cmd: Command; echo: string; result: RunResult; name: string};
+// `seed` is the seed a run used (null for check and qasm); `randomSeed` when the field was empty.
+type Finished = {cmd: Command; echo: string; result: RunResult; name: string; seed: string | null; randomSeed: boolean};
 
 const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (m, k: string) => (k in values ? String(values[k]) : m));
@@ -27,8 +28,13 @@ function validShots(v: string): boolean {
   return /^\d{1,6}$/.test(v) && Number(v) >= 1 && Number(v) <= MAX_SHOTS;
 }
 
+// An empty seed is valid: each run then draws its own.
 function validSeed(v: string): boolean {
-  return /^\d{1,20}$/.test(v) && BigInt(v) <= U64_MAX;
+  return v === '' || (/^\d{1,20}$/.test(v) && BigInt(v) <= U64_MAX);
+}
+
+function randomSeed(): string {
+  return crypto.getRandomValues(new BigUint64Array(1))[0].toString();
 }
 
 function formatMs(ms: number): string {
@@ -145,7 +151,7 @@ export function Playground() {
   const [code, setCode] = useState(EXAMPLES[0]?.code ?? '');
   const [name, setName] = useState(EXAMPLES[0]?.file ?? SHARED_NAME);
   const [shots, setShots] = useState('1000');
-  const [seed, setSeed] = useState('0');
+  const [seed, setSeed] = useState('');
   const [running, setRunning] = useState<Command | null>(null);
   const [finished, setFinished] = useState<Finished | null>(null);
   const [qasm, setQasm] = useState<string | null>(null);
@@ -220,11 +226,14 @@ export function Playground() {
       (shotsOk ? seedInput : shotsInput).current?.focus();
       return;
     }
-    const echo = cmd === 'run' ? `qxide run ${name} --shots ${shots} --seed ${seed}` : `qxide ${cmd} ${name}`;
+    // Resolved before the echo and the request, so both name the seed the run really used.
+    const randomRun = cmd === 'run' && seed === '';
+    const used = cmd === 'run' ? (randomRun ? randomSeed() : seed) : null;
+    const echo = cmd === 'run' ? `qxide run ${name} --shots ${shots} --seed ${used}` : `qxide ${cmd} ${name}`;
     setRunning(cmd);
-    const result = await c.run({cmd, name, src: code, shots: cmd === 'run' ? shots : '1', seed: cmd === 'run' ? seed : '0'});
+    const result = await c.run({cmd, name, src: code, shots: cmd === 'run' ? shots : '1', seed: used ?? '0'});
     setRunning(null);
-    setFinished({cmd, echo, result, name});
+    setFinished({cmd, echo, result, name, seed: used, randomSeed: randomRun});
     setRunKey((k) => k + 1);
     const ok = result.kind === 'done' && result.outcome.exit === 0;
     if (cmd === 'qasm' && ok) {
@@ -261,7 +270,8 @@ export function Playground() {
   };
 
   const share = async () => {
-    const hash = await encodeShare({code, shots, seed});
+    // With an empty field, share the seed of the last run so the link reproduces it.
+    const hash = await encodeShare({code, shots, seed: seed || finished?.seed || null});
     const url = `${window.location.origin}${window.location.pathname}${hash}`;
     // replaceState keeps React Router's location (and its scroll reset) out of it.
     window.history.replaceState(window.history.state, '', url);
@@ -361,6 +371,7 @@ export function Playground() {
             className="pg-num pg-seed"
             inputMode="numeric"
             value={seed}
+            placeholder={"random"}
             onChange={(e) => setSeed(e.target.value.trim())}
             onBlur={() => setTouched((t) => ({...t, seed: true}))}
             aria-invalid={!seedOk || undefined}
@@ -434,6 +445,11 @@ export function Playground() {
             {finished && (
               <p className="result-cmd pg-echo">
                 <code>$ {finished.echo}</code>
+              </p>
+            )}
+            {finished?.randomSeed && finished.seed && (
+              <p className="pg-seed-note">
+                {fill("Ran with random seed {seed}; enter it in the Seed field or use Copy link to reproduce this run.", {seed: finished.seed})}
               </p>
             )}
             <section className="tabs pg-tabs" role="tablist" aria-label={"Result views"}>

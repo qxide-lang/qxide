@@ -228,6 +228,12 @@
 .pg-echo {
   overflow-wrap: anywhere;
 }
+.pg-seed-note {
+  margin: 0 0 var(--spacing-3);
+  color: var(--paper-muted);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
 .pg-tabs {
   border-bottom: var(--border-width) solid var(--paper-line);
   margin: 0 0 var(--spacing-4);
