@@ -63,3 +63,13 @@ jobs:
       - run: cargo run --example qasm_dump -- qasm-out
       - run: for f in examples/qx/*.qx; do cargo run -q -- qasm "$f" > "qasm-out/qx_$(basename "$f" .qx).qasm"; done
       - run: python ci/check_qasm.py qasm-out
+
+  # registry-template/scripts run in the registry repository; test them here on throwaway registries.
+  registry-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -I ci/test_registry_scripts.py

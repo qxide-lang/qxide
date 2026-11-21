@@ -299,6 +299,10 @@ fn validate_for_publish(m: &Manifest) -> Result<()> {
     if m.qxide.is_none() {
         return Err(reject(msg::reason_missing("qxide")));
     }
+    // Registries refuse build metadata (`1.0.0+x`): it would tie with `1.0.0` in precedence.
+    if !m.version.build.is_empty() {
+        return Err(reject(msg::reason_bad_version(&m.version.to_string())));
+    }
     for (name, dep) in &m.dependencies {
         if dep.req.is_none() {
             return Err(reject(msg::reason_path_only(name)));
@@ -342,6 +346,7 @@ fn publish(o: &Opts) -> Result<()> {
     validate_for_publish(&m)?;
     check_library(&m)?;
     let (bytes, files) = archive::pack(&m)?;
+    archive::check_paths(files.iter().map(String::as_str)).map_err(reject)?;
     if bytes.len() as u64 > archive::MAX_ARCHIVE {
         return Err(reject(msg::reason_too_large(archive::MAX_ARCHIVE)));
     }

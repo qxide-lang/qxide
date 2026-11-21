@@ -2,6 +2,7 @@
 // Unpacking trusts nothing: the caller verifies the sha256 first, and every entry is checked for
 // type, path and size before anything is written.
 
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -26,7 +27,9 @@ pub fn package_files(m: &Manifest) -> Result<Vec<(String, PathBuf)>> {
         let entry = entry.map_err(|e| Error::io(&m.dir, &e))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let upper = name.to_ascii_uppercase();
-        if entry.path().is_file() && (upper.starts_with("README") || upper.starts_with("LICENSE")) {
+        // `DirEntry::file_type` does not follow symlinks: a linked README could ship any file.
+        let regular = entry.file_type().is_ok_and(|t| t.is_file());
+        if regular && (upper.starts_with("README") || upper.starts_with("LICENSE")) {
             files.push((name, entry.path()));
         }
     }
@@ -93,7 +96,109 @@ fn bad(reason: String) -> Error {
     Error::new(Code::BadArchive, msg::bad_archive(&reason))
 }
 
-// `<root>/a/b.qx` -> `a/b.qx`; rejects absolute paths, `..`, drive prefixes and odd names.
+// Device names Windows reserves in every directory, with or without an extension (`nul.qx`).
+const RESERVED: [&str; 30] = [
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
+];
+
+/// Returns `true` when path component `s` is stored unchanged on every OS: non-empty, no trailing
+/// `.` or space (Windows strips them), no control characters, double quote, or `<>:/\|?*`, and not
+/// a Windows device name (`CON`, `NUL`, `COM1`, etc.) with or without an extension.
+pub fn portable_component(s: &str) -> bool {
+    if s.is_empty() || s.ends_with(['.', ' ']) {
+        return false;
+    }
+    let invalid = |c: char| {
+        c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+    };
+    if s.chars().any(invalid) {
+        return false;
+    }
+    let stem = s.split('.').next().unwrap_or(s).trim_end_matches(' ');
+    !RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
+
+/// Set of file paths in a package, compared case-insensitively as on Windows and macOS: no two
+/// files may fold to the same path, and no file may serve as a parent directory of another.
+#[derive(Default)]
+pub struct PathSet {
+    files: HashSet<Vec<String>>,
+    dirs: HashSet<Vec<String>>,
+}
+
+impl PathSet {
+    /// Inserts a file given by its path components, returning `false` if it collides with an
+    /// earlier entry.
+    pub fn insert(&mut self, parts: &[&str]) -> bool {
+        let folded: Vec<String> = parts
+            .iter()
+            .map(|p| p.to_lowercase().to_uppercase())
+            .collect();
+        if self.files.contains(&folded) || self.dirs.contains(&folded) {
+            return false;
+        }
+        for k in 1..folded.len() {
+            if self.files.contains(&folded[..k]) {
+                return false;
+            }
+        }
+        for k in 1..folded.len() {
+            self.dirs.insert(folded[..k].to_vec());
+        }
+        self.files.insert(folded);
+        true
+    }
+}
+
+/// Validates `/`-separated package-relative paths for `qxide publish` using the same rules as
+/// `unpack`, returning the failure reason in `Err`.
+pub fn check_paths<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> std::result::Result<(), String> {
+    let mut set = PathSet::default();
+    for p in paths {
+        let parts: Vec<&str> = p.split('/').collect();
+        if !parts.iter().all(|c| portable_component(c)) {
+            return Err(msg::reason_bad_path(p));
+        }
+        if !set.insert(&parts) {
+            return Err(msg::reason_duplicate_entry(p));
+        }
+    }
+    Ok(())
+}
+
+// Maps `<root>/a/b.qx` -> `a/b.qx`, rejecting absolute paths, `..`, drive prefixes, and
+// non-portable components (see `portable_component`).
 fn entry_path(path: &Path, root: &str) -> Result<PathBuf> {
     let shown = path.display().to_string();
     let mut comps = path.components();
@@ -108,7 +213,7 @@ fn entry_path(path: &Path, root: &str) -> Result<PathBuf> {
                 let s = s
                     .to_str()
                     .ok_or_else(|| bad(msg::reason_bad_path(&shown)))?;
-                if s.contains([':', '\\']) || s.is_empty() {
+                if !portable_component(s) {
                     return Err(bad(msg::reason_bad_path(&shown)));
                 }
                 rel.push(s);
@@ -120,8 +225,9 @@ fn entry_path(path: &Path, root: &str) -> Result<PathBuf> {
     Ok(rel)
 }
 
-/// Unpacks a verified archive into `dest` (which must not exist yet), keeping only regular files
-/// and directories under `<root>/`.
+/// Unpacks a checksum-verified archive into `dest` (which must not yet exist), keeping only regular
+/// files and directories under `<root>/`. Every entry is validated before writing starts, so a bad
+/// archive leaves nothing behind.
 pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
     if bytes.len() as u64 > MAX_ARCHIVE {
         return Err(bad(msg::reason_too_large(MAX_ARCHIVE)));
@@ -132,6 +238,8 @@ pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
         .map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?;
     let (mut total, mut count) = (0u64, 0usize);
     let mut saw_manifest = false;
+    let mut seen = PathSet::default();
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     for entry in entries {
         let mut entry = entry.map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?;
         let path = entry
@@ -153,6 +261,13 @@ pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
         if rel.as_os_str().is_empty() {
             return Err(bad(msg::reason_bad_path(&path.display().to_string())));
         }
+        // `entry_path` only keeps UTF-8 components.
+        let parts: Vec<&str> = rel.iter().filter_map(|c| c.to_str()).collect();
+        if !seen.insert(&parts) {
+            return Err(bad(msg::reason_duplicate_entry(
+                &path.display().to_string(),
+            )));
+        }
         let size = entry.header().size().unwrap_or(u64::MAX);
         total = total.saturating_add(size);
         if total > MAX_UNPACKED {
@@ -164,15 +279,18 @@ pub fn unpack(bytes: &[u8], root: &str, dest: &Path) -> Result<()> {
             .read_to_end(&mut data)
             .map_err(|e| bad(msg::reason_corrupt(&e.to_string())))?;
         saw_manifest |= rel == Path::new(MANIFEST);
+        files.push((rel, data));
+    }
+    if !saw_manifest {
+        return Err(bad(msg::reason_missing(MANIFEST)));
+    }
+    for (rel, data) in files {
         let out = dest.join(&rel);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, &e))?;
         }
         let mut f = std::fs::File::create(&out).map_err(|e| Error::io(&out, &e))?;
         f.write_all(&data).map_err(|e| Error::io(&out, &e))?;
-    }
-    if !saw_manifest {
-        return Err(bad(msg::reason_missing(MANIFEST)));
     }
     Ok(())
 }

@@ -80,17 +80,23 @@ impl Entry {
         }
         let vtext = str_field("vers").ok_or_else(|| msg::reason_missing("vers"))?;
         let vers = Version::parse(vtext).map_err(|_| msg::reason_bad_version(vtext))?;
+        // Build metadata does not change precedence, so `1.0.0+x` could stand in for `1.0.0`.
+        if !vers.build.is_empty() {
+            return Err(msg::reason_bad_version(vtext));
+        }
         let cksum = str_field("cksum").ok_or_else(|| msg::reason_missing("cksum"))?;
         if !is_sha256_hex(cksum) {
             return Err(msg::reason_bad_checksum(cksum));
         }
         let mut deps = Vec::new();
-        for d in v
-            .get("deps")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        let dep_values = match v.get("deps") {
+            None => &[][..],
+            Some(d) => d
+                .as_array()
+                .map(Vec::as_slice)
+                .ok_or_else(|| msg::reason_missing("deps"))?,
+        };
+        for d in dep_values {
             let dn = d.get("name").and_then(Value::as_str);
             let dr = d.get("req").and_then(Value::as_str);
             let (Some(dn), Some(dr)) = (dn, dr) else {
@@ -105,7 +111,15 @@ impl Entry {
                 req,
             });
         }
-        let qxide = match str_field("qxide") {
+        // Optional string fields: absent is fine, any other type is an error, never ignored.
+        let opt_str = |k: &str| match v.get(k) {
+            None => Ok(None),
+            Some(x) => x
+                .as_str()
+                .map(Some)
+                .ok_or_else(|| msg::reason_not_string(k)),
+        };
+        let qxide = match opt_str("qxide")? {
             None => None,
             Some(q) => Some(VersionReq::parse(q).map_err(|_| msg::reason_bad_req("qxide", q))?),
         };
@@ -115,8 +129,8 @@ impl Entry {
             deps,
             cksum: cksum.to_string(),
             qxide,
-            description: str_field("description").map(str::to_string),
-            dl: str_field("dl").map(str::to_string),
+            description: opt_str("description")?.map(str::to_string),
+            dl: opt_str("dl")?.map(str::to_string),
             yanked: v.get("yanked").and_then(Value::as_bool).unwrap_or(false),
         })
     }
@@ -212,7 +226,7 @@ impl Registry {
                 if self.offline {
                     return Err(Error::new(Code::Offline, msg::offline_uncached(rel)));
                 }
-                curl(&format!("{root}{rel}"))
+                curl(&format!("{root}{rel}"), &self.home.download_dir())
             }
         }
     }
@@ -233,7 +247,9 @@ impl Registry {
         Ok(fetched)
     }
 
-    /// Every version of `name`, in index order.
+    /// Returns every usable version of `name` in index order. Unusable lines (malformed, naming
+    /// another package, or duplicating an earlier version) are skipped and never selected; only an
+    /// index with no usable lines fails.
     pub fn entries(&self, name: &str) -> Result<Vec<Entry>> {
         let not_found = || {
             Error::new(
@@ -248,22 +264,32 @@ impl Registry {
             return Err(not_found());
         };
         let text = String::from_utf8_lossy(&bytes);
-        let mut out = Vec::new();
+        let mut out: Vec<Entry> = Vec::new();
+        let mut first_invalid = None;
         for (i, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            let invalid = |reason: String| {
-                Error::new(Code::InvalidIndex, msg::invalid_index(name, i + 1, &reason))
-            };
-            let e = Entry::parse(line).map_err(invalid)?;
-            if e.name != name {
-                return Err(invalid(msg::reason_wrong_name(&e.name)));
+            let parsed = Entry::parse(line).and_then(|e| {
+                if e.name == name {
+                    Ok(e)
+                } else {
+                    Err(msg::reason_wrong_name(&e.name))
+                }
+            });
+            match parsed {
+                // The first line of a version wins, as published lines are immutable.
+                Ok(e) if out.iter().any(|o| o.vers == e.vers) => {}
+                Ok(e) => out.push(e),
+                Err(reason) => {
+                    first_invalid.get_or_insert_with(|| {
+                        Error::new(Code::InvalidIndex, msg::invalid_index(name, i + 1, &reason))
+                    });
+                }
             }
-            out.push(e);
         }
         if out.is_empty() {
-            return Err(not_found());
+            return Err(first_invalid.unwrap_or_else(not_found));
         }
         Ok(out)
     }
@@ -306,7 +332,7 @@ impl Registry {
             if self.offline {
                 return Err(Error::new(Code::Offline, msg::offline_uncached(&url)));
             }
-            curl(&url)?
+            curl(&url, &self.home.download_dir())?
         } else if url.starts_with("file://") {
             read_optional(&file_url_path(&url))?
         } else if url.contains("://") {
@@ -422,20 +448,48 @@ pub fn file_url(path: &Path) -> String {
     }
 }
 
-/// GET with the system `curl`: `None` on 404, an error on any other failure.
-fn curl(url: &str) -> Result<Option<Vec<u8>>> {
+/// Outcome of a completed `curl` run, determined from its exit status and printed `%{http_code}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetched {
+    Body,
+    NotFound,
+    Failed,
+}
+
+/// Treats `200` and `404` as valid only when `curl` exited cleanly; a mid-body disconnect still
+/// prints `200` but exits non-zero (`18`) with a truncated file, so it maps to a failure.
+pub fn fetched(exit_ok: bool, http_code: &str) -> Fetched {
+    match http_code {
+        "404" if exit_ok => Fetched::NotFound,
+        "200" if exit_ok => Fetched::Body,
+        _ => Fetched::Failed,
+    }
+}
+
+/// Downloads `url` via system `curl` into a new file under `dir`, returning `None` on 404 and an
+/// error on any other failure.
+fn curl(url: &str, dir: &Path) -> Result<Option<Vec<u8>>> {
     let unavailable =
         |reason: String| Error::new(Code::RegistryUnavailable, msg::fetch_failed(url, &reason));
-    let tmp = std::env::temp_dir().join(format!(
-        "qxide-dl-{}-{}",
+    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, &e))?;
+    let tmp = dir.join(format!(
+        "dl-{}-{}",
         std::process::id(),
         &super::sha256_hex(url.as_bytes())[..12]
     ));
+    // Created fresh and exclusively, so curl never writes through a file planted beforehand.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| Error::io(&tmp, &e))?;
     let out = Command::new("curl")
         .args([
             "--silent",
             "--show-error",
             "--location",
+            "--globoff",
             "--proto",
             "=https",
             "--tlsv1.2",
@@ -448,15 +502,21 @@ fn curl(url: &str) -> Result<Option<Vec<u8>>> {
         .arg(&tmp)
         .args(["--write-out", "%{http_code}"])
         .arg(url)
-        .output()
-        .map_err(|e| unavailable(msg::reason_curl_missing(&e.to_string())))?;
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(unavailable(msg::reason_curl_missing(&e.to_string())));
+        }
+    };
     let status = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let body = std::fs::read(&tmp);
     let _ = std::fs::remove_file(&tmp);
-    match status.as_str() {
-        "200" => body.map(Some).map_err(|e| Error::io(&tmp, &e)),
-        "404" => Ok(None),
-        _ => Err(unavailable(
+    match fetched(out.status.success(), &status) {
+        Fetched::Body => body.map(Some).map_err(|e| Error::io(&tmp, &e)),
+        Fetched::NotFound => Ok(None),
+        Fetched::Failed => Err(unavailable(
             String::from_utf8_lossy(&out.stderr).trim().to_string() + " " + &status,
         )),
     }

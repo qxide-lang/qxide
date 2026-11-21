@@ -4,6 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
+use semver::VersionReq;
+
 use crate::lang::{PackageRoot, Project};
 
 use super::cache::{registry_id, Home};
@@ -60,6 +62,39 @@ fn package_dir(root: &Manifest, p: &lock::LockedPackage, home: &Home) -> Result<
     }
 }
 
+/// Reads a registry package's dependency requirements from its cached unpacked `qxide.toml`,
+/// returning `None` if it is not unpacked.
+fn installed_deps(home: &Home, p: &lock::LockedPackage) -> Option<Vec<(String, VersionReq)>> {
+    let Source::Registry(url) = &p.source else {
+        return None;
+    };
+    let cksum = p.checksum.as_deref()?;
+    let dir = home.installed(&registry_id(url), &p.name, &p.version, cksum)?;
+    let m = manifest::load(&dir).ok()?;
+    Some(
+        m.dependencies
+            .iter()
+            .map(|(n, d)| (n.clone(), d.req_or_any()))
+            .collect(),
+    )
+}
+
+/// Like `installed_deps`, falling back to the package's registry index entry when not unpacked
+/// (since `install` reads the index to download it anyway).
+fn locked_deps(registry: &Registry, p: &lock::LockedPackage) -> Option<Vec<(String, VersionReq)>> {
+    if let Some(deps) = installed_deps(&registry.home, p) {
+        return Some(deps);
+    }
+    let entries = registry.entries(&p.name).ok()?;
+    let e = entries.iter().find(|e| e.vers == p.version)?;
+    Some(
+        e.deps
+            .iter()
+            .map(|d| (d.name.clone(), d.req.clone()))
+            .collect(),
+    )
+}
+
 /// Builds the import roots for `entry`, or `None` when it is not inside a project.
 pub fn for_entry(entry: &Path) -> Result<Option<Project>> {
     let entry = std::path::absolute(entry).map_err(|e| Error::io(entry, &e))?;
@@ -68,6 +103,7 @@ pub fn for_entry(entry: &Path) -> Result<Option<Project>> {
     };
     let root = manifest::load(&dir)?;
     check_language(&root)?;
+    let home = Home::from_env()?;
     let lock = if root.dependencies.is_empty() {
         resolve::prune(&Lock::default(), &root)
     } else {
@@ -82,12 +118,12 @@ pub fn for_entry(entry: &Path) -> Result<Option<Project>> {
                 _ => None,
             })
             .unwrap_or_default();
-        if !resolve::is_fresh(&root, &l, &url) {
+        // Packages not unpacked yet are reported as such (Q0611) below.
+        if !resolve::is_fresh(&root, &l, &url, &mut |p| installed_deps(&home, p)) {
             return Err(Error::new(Code::LockOutdated, msg::lock_outdated()));
         }
         l
     };
-    let home = Home::from_env()?;
     let mut packages: Vec<(String, PathBuf, Vec<String>)> = Vec::new();
     let order: Vec<&lock::LockedPackage> = std::iter::once(lock.root().expect("lock has a root"))
         .chain(lock.packages.iter().filter(|p| p.source != Source::Root))
@@ -166,8 +202,12 @@ pub fn install(
         locked: None,
         fetched: Vec::new(),
     };
+    let fresh = previous.as_ref().is_some_and(|l| {
+        let reg: &Registry = registry;
+        resolve::is_fresh(root, l, &reg.url, &mut |p| locked_deps(reg, p))
+    });
     let lock = match previous {
-        Some(l) if resolve::is_fresh(root, &l, &registry.url) => l,
+        Some(l) if fresh => l,
         _ if locked => return Err(Error::new(Code::LockOutdated, msg::lock_outdated_locked())),
         previous => {
             let url = registry.url.clone();

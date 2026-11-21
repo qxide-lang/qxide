@@ -15,15 +15,18 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+import unicodedata
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
-NAME = re.compile(r"^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$")
-SEMVER = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
-)
-SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# Patterns are used with fullmatch (`$` would also accept a trailing newline).
+NAME = re.compile(r"[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,63}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+U64_MAX = (1 << 64) - 1
+MAX_COMPARATORS = 32
+# Download locations after template expansion: an https URL or a plain path in this repository.
+DL_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~%+!$&'()*,;=:@/-]*)?")
+DL_SEGMENT = re.compile(r"[A-Za-z0-9._+-]+")
 REQUIRED = {"name", "vers", "deps", "cksum", "yanked", "v"}
 KNOWN = REQUIRED | {"qxide", "description", "dl"}
 DEFAULT_DL = "packages/{prefix}/{name}/{name}-{version}.tar.gz"
@@ -31,8 +34,33 @@ MAX_ARCHIVE = 10 << 20
 MAX_UNPACKED = 50 << 20
 MAX_FILES = 2000
 
+# Windows device names, reserved with or without an extension (mirrors src/pkg/archive.rs).
+RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    f"{dev}{n}" for dev in ("COM", "LPT") for n in "123456789¹²³"
+}
+WINDOWS_INVALID = set('<>:"/\\|?*')
+ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+INVALID_VALUE = "`{key}` has invalid value {value}"
+CONFIG_LOCKED = "cannot be modified in a pull request"
+SELF_DEPENDENCY = "cannot depend on itself"
+
 errors: list[str] = []
 summary: list[str] = []
+
+
+def portable(part: str) -> bool:
+    """Matches the client's `portable_component` rule: a path component every OS stores unchanged.
+    """
+    if not part or part.endswith((".", " ")):
+        return False
+    if any(c in WINDOWS_INVALID or unicodedata.category(c) == "Cc" for c in part):
+        return False
+    return part.split(".")[0].rstrip(" ").translate(ASCII_UPPER) not in RESERVED
+
+
+def fold(part: str) -> str:
+    """Case folding used to detect archive entries that collide on case-insensitive file systems."""
+    return part.lower().upper()
 
 
 def error(where: str, what: str) -> None:
@@ -53,7 +81,11 @@ def dl_template() -> str:
     config = ROOT / "config.json"
     if not config.is_file():
         return DEFAULT_DL
-    return json.loads(config.read_text(encoding="utf-8")).get("dl", DEFAULT_DL)
+    dl = json.loads(config.read_text(encoding="utf-8")).get("dl", DEFAULT_DL)
+    if not isinstance(dl, str):
+        error("config.json", INVALID_VALUE.format(key="dl", value=repr(dl)))
+        return DEFAULT_DL
+    return dl
 
 
 def archive_path(entry: dict, template: str) -> str:
@@ -64,6 +96,151 @@ def archive_path(entry: dict, template: str) -> str:
         .replace("{prefix}", prefix(entry["name"]))
         .replace("{sha256-checksum}", entry["cksum"])
     )
+
+
+def valid_dl(target: str) -> bool:
+    """Reports whether an expanded download location is valid: an `https` URL or a relative path of
+    plain segments inside the registry.
+    """
+    if target.startswith("https://"):
+        return DL_URL.fullmatch(target) is not None
+    parts = target.split("/")
+    return all(DL_SEGMENT.fullmatch(p) and p not in (".", "..") and portable(p) for p in parts)
+
+
+# Port of the Rust `semver` crate parser used by the qxide client, so this checker accepts the exact
+# same versions and requirements: 64-bit numbers, no leading zeros, ASCII only.
+class _Bad(Exception):
+    pass
+
+
+def _number(s: str, i: int) -> tuple[int, int]:
+    j = i
+    while j < len(s) and "0" <= s[j] <= "9":
+        j += 1
+    if j == i or (j - i > 1 and s[i] == "0"):
+        raise _Bad
+    value = int(s[i:j])
+    if value > U64_MAX:
+        raise _Bad
+    return value, j
+
+
+def _dot(s: str, i: int) -> int:
+    if s[i : i + 1] != ".":
+        raise _Bad
+    return i + 1
+
+
+def _identifier(s: str, i: int, pre: bool) -> tuple[str, int]:
+    """Parses dot-separated `[0-9A-Za-z-]` segments of a pre-release or build identifier; numeric
+    pre-release segments may not have a leading zero.
+    """
+    start = i
+    while True:
+        j = i
+        while j < len(s) and s[j].isascii() and (s[j].isalnum() or s[j] == "-"):
+            j += 1
+        segment = s[i:j]
+        if not segment or (pre and len(segment) > 1 and segment.isdigit() and segment[0] == "0"):
+            raise _Bad
+        if s[j : j + 1] == ".":
+            i = j + 1
+            continue
+        return s[start:j], j
+
+
+def parse_version(s: str):
+    """Returns `(major, minor, patch, pre, build)` as parsed by the client, or `None`."""
+    try:
+        major, i = _number(s, 0)
+        minor, i = _number(s, _dot(s, i))
+        patch, i = _number(s, _dot(s, i))
+        pre = build = ""
+        if s[i : i + 1] == "-":
+            pre, i = _identifier(s, i + 1, True)
+        if s[i : i + 1] == "+":
+            build, i = _identifier(s, i + 1, False)
+        if i != len(s):
+            raise _Bad
+        return major, minor, patch, pre, build
+    except _Bad:
+        return None
+
+
+def registry_version(s) -> bool:
+    """Reports whether `s` is a valid `vers`: semver without build metadata, which would tie in
+    precedence with the plain version.
+    """
+    v = parse_version(s) if isinstance(s, str) else None
+    return v is not None and v[4] == ""
+
+
+def _comparator(s: str) -> int:
+    """Parses one comparator at the start of `s` and returns the index past it and its trailing
+    spaces.
+    """
+    i = 0
+    if s.startswith((">=", "<=")):
+        i = 2
+    elif s[:1] in ("=", ">", "<", "~", "^"):
+        i = 1
+    while s[i : i + 1] == " ":
+        i += 1
+    _, i = _number(s, i)
+    wild = False
+    patch = None
+    if s[i : i + 1] == ".":
+        i += 1
+        if s[i : i + 1] in ("*", "x", "X"):
+            wild, i = True, i + 1
+        else:
+            _, i = _number(s, i)
+    if s[i : i + 1] == ".":
+        i += 1
+        if s[i : i + 1] in ("*", "x", "X"):
+            i += 1
+        elif wild:
+            raise _Bad
+        else:
+            patch, i = _number(s, i)
+    if patch is not None and s[i : i + 1] == "-":
+        _, i = _identifier(s, i + 1, True)
+    if patch is not None and s[i : i + 1] == "+":
+        _, i = _identifier(s, i + 1, False)
+    while s[i : i + 1] == " ":
+        i += 1
+    return i
+
+
+def valid_req(s) -> bool:
+    """Reports whether the client accepts `s` as a version requirement."""
+    if not isinstance(s, str):
+        return False
+    try:
+        s = s.lstrip(" ")
+        if s[:1] in ("*", "x", "X"):
+            return s[1:].lstrip(" ") == ""
+        count = 0
+        while True:
+            s = s[_comparator(s) :]
+            count += 1
+            if not s:
+                return True
+            if s[0] != "," or count == MAX_COMPARATORS:
+                raise _Bad
+            s = s[1:].lstrip(" ")
+    except _Bad:
+        return False
+
+
+def precedence(vers: str):
+    """Sort key giving semver precedence; versions with equal keys represent the same release."""
+    major, minor, patch, pre, _ = parse_version(vers)
+    if not pre:
+        return (major, minor, patch, 1, ())
+    ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+    return (major, minor, patch, 0, ids)
 
 
 def check_entry(where: str, entry: dict, file_name: str) -> bool:
@@ -78,26 +255,42 @@ def check_entry(where: str, entry: dict, file_name: str) -> bool:
     if unknown:
         error(where, f"unknown keys {sorted(unknown)}")
     ok = True
-    if entry["v"] != 1:
+    # `True == 1` in Python, so check the type before the value.
+    if type(entry["v"]) is not int or entry["v"] != 1:
         error(where, "`v` must be 1")
         ok = False
-    if entry["name"] != file_name or not NAME.match(str(entry["name"])):
+    if entry["name"] != file_name or not isinstance(entry["name"], str) or not NAME.fullmatch(entry["name"]):
         error(where, f"name `{entry['name']}` does not match the index file `{file_name}`")
         ok = False
-    if not SEMVER.match(str(entry["vers"])):
+    if not isinstance(entry["vers"], str) or parse_version(entry["vers"]) is None:
         error(where, f"`vers` {entry['vers']!r} is not a semantic version")
         ok = False
-    if not SHA256.match(str(entry["cksum"])):
+    elif not registry_version(entry["vers"]):
+        error(where, INVALID_VALUE.format(key="vers", value=repr(entry["vers"])))
+        ok = False
+    if not isinstance(entry["cksum"], str) or not SHA256.fullmatch(entry["cksum"]):
         error(where, "`cksum` must be 64 lowercase hex characters")
         ok = False
     if not isinstance(entry["yanked"], bool):
         error(where, "`yanked` must be true or false")
         ok = False
+    if "qxide" in entry and not valid_req(entry["qxide"]):
+        error(where, INVALID_VALUE.format(key="qxide", value=repr(entry["qxide"])))
+        ok = False
+    for key in ("description", "dl"):
+        if key in entry and not isinstance(entry[key], str):
+            error(where, INVALID_VALUE.format(key=key, value=repr(entry[key])))
+            ok = False
     if not isinstance(entry["deps"], list):
         error(where, "`deps` must be a list")
         return False
     for d in entry["deps"]:
-        if not (isinstance(d, dict) and NAME.match(str(d.get("name", ""))) and isinstance(d.get("req"), str)):
+        if not (
+            isinstance(d, dict)
+            and isinstance(d.get("name"), str)
+            and NAME.fullmatch(d["name"])
+            and valid_req(d.get("req"))
+        ):
             error(where, f"bad dependency {d!r}")
             ok = False
     return ok
@@ -114,14 +307,26 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
         return []
     root = f"{entry['name']}-{entry['vers']}"
     files, total, manifest = [], 0, None
+    shipped: set[str] = set()
+    folded_files: set[tuple[str, ...]] = set()
+    folded_dirs: set[tuple[str, ...]] = set()
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            members = tar.getmembers()
-            if len(members) > MAX_FILES:
-                error(where, f"more than {MAX_FILES} files")
-            for m in members:
+            count = 0
+            # Iterate lazily: a huge member list is refused without being read in full.
+            for m in tar:
+                count += 1
+                if count > MAX_FILES:
+                    error(where, f"more than {MAX_FILES} files")
+                    break
                 p = PurePosixPath(m.name)
-                if p.is_absolute() or ".." in p.parts or p.parts[:1] != (root,) or any(":" in s or "\\" in s for s in p.parts):
+                if (
+                    p.is_absolute()
+                    or ".." in p.parts
+                    or p.parts[:1] != (root,)
+                    or any(":" in s or "\\" in s for s in p.parts)
+                    or not all(portable(s) for s in p.parts[1:])
+                ):
                     error(where, f"unsafe path `{m.name}`")
                     continue
                 if m.isdir():
@@ -129,8 +334,19 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
                 if not m.isfile():
                     error(where, f"`{m.name}` is not a regular file")
                     continue
-                total += m.size
                 rel = "/".join(p.parts[1:])
+                if not rel:
+                    error(where, f"unsafe path `{m.name}`")
+                    continue
+                folded = tuple(fold(s) for s in p.parts[1:])
+                prefixes = [folded[:k] for k in range(1, len(folded))]
+                if folded in folded_files or folded in folded_dirs or any(d in folded_files for d in prefixes):
+                    error(where, "entry `{path}` collides case-insensitively with another entry".format(path=m.name))
+                    continue
+                folded_files.add(folded)
+                folded_dirs.update(prefixes)
+                shipped.add(rel)
+                total += m.size
                 files.append(f"{rel} ({m.size} B)")
                 if rel == "qxide.toml":
                     manifest = tar.extractfile(m).read().decode("utf-8")
@@ -152,7 +368,7 @@ def check_archive(where: str, entry: dict, data: bytes) -> list[str]:
     for key in ("description", "license", "qxide"):
         if not pkg.get(key):
             error(where, f"qxide.toml has no `{key}`")
-    if not any(f.startswith("src/lib.qx ") for f in files):
+    if "src/lib.qx" not in shipped:
         error(where, "archive has no src/lib.qx")
     return files
 
@@ -161,11 +377,43 @@ def git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True, text=True).stdout
 
 
+def index_lines(data: bytes) -> list[str]:
+    """Decodes UTF-8 and splits lines like Rust's `str::lines` in the client: only on a newline
+    character, stripping a single trailing carriage return.
+    """
+    lines = data.decode("utf-8").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [l[:-1] if l.endswith("\r") else l for l in lines]
+
+
+def _reject_constant(name: str):
+    raise ValueError(name)
+
+
+def _depth(value, level: int = 1) -> int:
+    if isinstance(value, dict):
+        return max([level] + [_depth(v, level + 1) for v in value.values()])
+    if isinstance(value, list):
+        return max([level] + [_depth(v, level + 1) for v in value])
+    return level - 1
+
+
+def strict_json(line: str):
+    """Wrapper around `json.loads` restricted to what the client's `serde_json` accepts; raises
+    `ValueError` otherwise.
+    """
+    value = json.loads(line, parse_constant=_reject_constant)
+    # serde_json rejects lone surrogates (`"\\ud800"`) and nesting deeper than 128 levels.
+    json.dumps(value, ensure_ascii=False).encode("utf-8")
+    if _depth(value) > 100:
+        raise ValueError(f"depth {_depth(value)}")
+    return value
+
+
 def base_lines(base: str, rel: str) -> list[str]:
-    try:
-        return git("show", f"{base}:{rel}").splitlines()
-    except subprocess.CalledProcessError:
-        return []
+    r = subprocess.run(["git", "-C", str(ROOT), "show", f"{base}:{rel}"], capture_output=True)
+    return index_lines(r.stdout) if r.returncode == 0 else []
 
 
 def squash(name: str) -> str:
@@ -188,24 +436,26 @@ def main() -> int:
     for path in sorted(p for p in index_dir.rglob("*") if p.is_file() and p.name != ".gitkeep"):
         rel = path.relative_to(ROOT).as_posix()
         name = path.name
-        if rel != f"index/{prefix(name)}/{name}" or not NAME.match(name):
+        if rel != f"index/{prefix(name)}/{name}" or not NAME.fullmatch(name):
             error(rel, f"index files live at index/{prefix(name)}/{name} and use valid package names")
             continue
         entries, seen = [], set()
-        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for i, line in enumerate(index_lines(path.read_bytes()), 1):
             if not line.strip():
                 continue
             where = f"{rel}:{i}"
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as e:
+                entry = strict_json(line)
+            except ValueError as e:
                 error(where, f"invalid JSON: {e}")
                 continue
             if not check_entry(where, entry, name):
                 continue
-            if entry["vers"] in seen:
+            # Compared by precedence, so no two lines can ever stand for the same release.
+            key = precedence(entry["vers"])
+            if key in seen:
                 error(where, f"version {entry['vers']} is listed twice")
-            seen.add(entry["vers"])
+            seen.add(key)
             entries.append(entry)
         names[name] = entries
 
@@ -214,9 +464,12 @@ def main() -> int:
     for name, entries in names.items():
         for entry in entries:
             target = archive_path(entry, template)
+            where = f"{name} {entry['vers']}"
+            if not valid_dl(target):
+                error(where, INVALID_VALUE.format(key="dl", value=repr(target)))
+                continue
             if "://" in target:
                 continue
-            where = f"{name} {entry['vers']}"
             archive = ROOT / target
             if not archive.is_file():
                 error(where, f"archive {target} is missing")
@@ -227,6 +480,8 @@ def main() -> int:
     for name, entries in names.items():
         for entry in entries:
             for d in entry["deps"]:
+                if d["name"] == name:
+                    error(f"{name} {entry['vers']}", SELF_DEPENDENCY)
                 if d["name"] not in names:
                     error(f"{name} {entry['vers']}", f"dependency `{d['name']}` is not in the registry")
 
@@ -262,6 +517,8 @@ def main() -> int:
                     error(p, "a pull request that changes index/ or packages/ may not change other files")
         for status, *paths in diff:
             for p in paths:
+                if p == "config.json":
+                    error(p, CONFIG_LOCKED)
                 if p.startswith("packages/") and status[0] in "MDR":
                     error(p, "published archives cannot be modified or deleted")
                 if p == "search.json":

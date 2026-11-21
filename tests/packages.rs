@@ -90,6 +90,39 @@ impl Env {
         std::fs::write(dir.join("src/main.qx"), main).unwrap();
         dir
     }
+
+    /// Creates a library package directory containing an empty public function in `src/lib.qx` and
+    /// the given `[dependencies]` lines.
+    fn lib(&self, name: &str, version: &str, deps: &str) -> PathBuf {
+        let dir = self.root.join(format!("{name}-{version}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("qxide.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"{version}\"\ndescription = \"d\"\n\
+                 license = \"MIT\"\nqxide = \">=0.6\"\n\n[dependencies]\n{deps}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.qx"), "public void noop() {}\n").unwrap();
+        dir
+    }
+
+    /// Rewrites `qxide.lock` in `dir` using closure `f`.
+    fn edit_lock(&self, dir: &Path, f: impl FnOnce(String) -> String) {
+        let path = dir.join("qxide.lock");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, f(text)).unwrap();
+    }
+}
+
+const PLAIN_MAIN: &str = "void main() {\n    println(\"ok\");\n}\n";
+
+// The `[[package]]` block of `name` in a lock file.
+fn lock_block<'a>(lock: &'a str, name: &str) -> &'a str {
+    let start = lock.find(&format!("name = \"{name}\"\n")).unwrap();
+    let end = lock[start..].find("\n\n").map_or(lock.len(), |e| start + e);
+    &lock[start..end]
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -214,6 +247,91 @@ fn lock_must_match_the_manifest() {
 }
 
 #[test]
+fn transitive_requirements_keep_the_lock_honest() {
+    let env = Env::new("transitive");
+    for v in [None, Some("0.1.1"), Some("0.2.0")] {
+        let lib = env.package("bell-utils", v);
+        env.ok(&lib, &["publish"]);
+    }
+    let index = read(&env.registry.join("index/be/ll/bell-utils"));
+    let cksum = |v: &str| {
+        let line = index
+            .lines()
+            .find(|l| l.contains(&format!("\"vers\":\"{v}\"")))
+            .unwrap();
+        line.split("\"cksum\":\"").nth(1).unwrap()[..64].to_string()
+    };
+    // A registry package that needs bell-utils ^0.1.1.
+    let top = env.lib("top", "1.0.0", "bell-utils = \"^0.1.1\"\n");
+    env.ok(&top, &["install"]);
+    env.ok(&top, &["publish"]);
+    let app = env.app("demo", PLAIN_MAIN);
+    env.ok(&app, &["add", "top"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.1.1\""));
+    // Hand-edited to 0.1.0 with its real checksum, which breaks top's requirement.
+    let (old, new) = (cksum("0.1.1"), cksum("0.1.0"));
+    env.edit_lock(&app, |t| {
+        t.replace("version = \"0.1.1\"", "version = \"0.1.0\"")
+            .replace(&old, &new)
+    });
+    env.fails(&app, &["install", "--locked"], "Q0612");
+    env.fails(&app, &["run"], "Q0612");
+    // With an empty cache the requirements come from the index, before any download.
+    let out = env.qx_home(&app, &env.root.join("home2"), &["install", "--locked"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("error[Q0612]"), "{err}");
+    env.ok(&app, &["install"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.1.1\""));
+    env.ok(&app, &["run"]);
+
+    // A path package whose own requirement changed after locking.
+    let mid = env.lib("mid", "0.1.0", "bell-utils = \"^0.1\"\n");
+    let app = env.app("demo2", PLAIN_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nmid = { path = \"../mid-0.1.0\" }\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    env.ok(&app, &["install"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.1.1\""));
+    let manifest = read(&mid.join("qxide.toml")).replace("\"^0.1\"", "\"^0.2\"");
+    std::fs::write(mid.join("qxide.toml"), manifest).unwrap();
+    env.fails(&app, &["install", "--locked"], "Q0612");
+    env.fails(&app, &["run"], "Q0612");
+    env.ok(&app, &["install"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock_block(&lock, "bell-utils").contains("version = \"0.2.0\""));
+    env.ok(&app, &["run"]);
+}
+
+#[test]
+fn lock_entries_cannot_escape_the_cache() {
+    let env = Env::new("lockname");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils"]);
+    let lock = read(&app.join("qxide.lock"));
+    let block = lock_block(&lock, "bell-utils").to_string();
+    let with_copy = |name: &str| {
+        let copy = block.replace("name = \"bell-utils\"", &format!("name = \"{name}\""));
+        format!("{lock}\n[[package]]\n{copy}\n")
+    };
+    // Lock names become cache paths: a traversal is refused as soon as the lock is read.
+    env.edit_lock(&app, |_| with_copy("../../../../outside/x"));
+    env.fails(&app, &["install", "--locked"], "Q0603");
+    env.fails(&app, &["run"], "Q0603");
+    assert!(!env.root.join("outside").exists());
+    // A locked package nothing depends on is stale, not fetched.
+    env.edit_lock(&app, |_| with_copy("zz-unused"));
+    env.fails(&app, &["install", "--locked"], "Q0612");
+    env.fails(&app, &["run"], "Q0612");
+    env.ok(&app, &["install"]);
+    assert_eq!(read(&app.join("qxide.lock")), lock);
+    env.ok(&app, &["run"]);
+}
+
+#[test]
 fn checksums_are_enforced() {
     let env = Env::new("cksum");
     let lib = env.package("bell-utils", None);
@@ -244,6 +362,138 @@ fn checksums_are_enforced() {
     std::fs::write(&index, line.replace(&cksum, &"0".repeat(64))).unwrap();
     let out = env.qx_home(&app, &env.root.join("home-index"), &["install"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("error[Q0607]"));
+}
+
+#[test]
+fn build_metadata_versions_are_never_published_or_selected() {
+    let env = Env::new("buildmeta");
+    let lib = env.package("bell-utils", None);
+    env.ok(&lib, &["publish"]);
+    let evil = env.package("bell-utils", Some("0.1.0+evil"));
+    env.fails(&evil, &["publish"], "Q0614");
+    // A look-alike line appended by hand, with another checksum.
+    let index = env.registry.join("index/be/ll/bell-utils");
+    let original = read(&index);
+    let cksum = original.split("\"cksum\":\"").nth(1).unwrap()[..64].to_string();
+    let fake = "f".repeat(64);
+    let line = original
+        .trim_end()
+        .replace(&cksum, &fake)
+        .replace("\"vers\":\"0.1.0\"", "\"vers\":\"0.1.0+evil\"");
+    std::fs::write(&index, format!("{original}{line}\n")).unwrap();
+    let app = env.app("demo", BELL_MAIN);
+    env.ok(&app, &["add", "bell-utils@=0.1.0"]);
+    let lock = read(&app.join("qxide.lock"));
+    assert!(lock.contains(&format!("sha256:{cksum}")), "{lock}");
+    assert!(!lock.contains("+evil"), "{lock}");
+    env.ok(&app, &["run"]);
+}
+
+// Compiles `tests/support/fake_curl.rs` with `rustc` into a `curl` binary next to a copy of `qxide`
+// and returns the copy. Windows checks the executable's own directory before System32 (which
+// includes a real `curl.exe`), and on Unix this directory is also placed first on `PATH`.
+fn fake_curl_qxide(env: &Env) -> PathBuf {
+    let bin = env.root.join("fakebin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = std::env::consts::EXE_SUFFIX;
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_curl.rs");
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let out = Command::new(rustc)
+        .args(["--edition", "2021", "-o"])
+        .arg(bin.join(format!("curl{exe}")))
+        .arg(&src)
+        .output()
+        .expect("run rustc");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let qxide = bin.join(format!("qxide{exe}"));
+    std::fs::copy(env!("CARGO_BIN_EXE_qxide"), &qxide).unwrap();
+    qxide
+}
+
+#[test]
+fn failed_downloads_are_never_accepted_or_cached() {
+    let env = Env::new("curl");
+    for v in [None, Some("0.1.1")] {
+        let lib = env.package("bell-utils", v);
+        env.ok(&lib, &["publish"]);
+    }
+    let qxide = fake_curl_qxide(&env);
+    let app = env.app("demo", BELL_MAIN);
+    let m = read(&app.join("qxide.toml")) + "\n[dependencies]\nbell-utils = \"0.1\"\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    let log = env.root.join("curl.log");
+    let path = std::env::join_paths(
+        std::iter::once(qxide.parent().unwrap().to_path_buf()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )),
+    )
+    .unwrap();
+    let run = |home: &Path, trunc: &str| {
+        Command::new(&qxide)
+            .arg("install")
+            .current_dir(&app)
+            .env("PATH", &path)
+            .env("QXIDE_HOME", home)
+            .env("QXIDE_REGISTRY", "https://fake.invalid/")
+            .env_remove("QXIDE_OFFLINE")
+            .env("FAKE_ROOT", &env.registry)
+            .env("FAKE_LOG", &log)
+            .env("FAKE_TRUNC", trunc)
+            .output()
+            .unwrap()
+    };
+    // curl exits 18 after a truncated body but still prints http_code 200.
+    for (trunc, home) in [("index/", "home-index"), ("packages/", "home-archive")] {
+        let home = env.root.join(home);
+        let out = run(&home, trunc);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{trunc}: {err}");
+        assert!(err.contains("error[Q0608]"), "{trunc}: {err}");
+        assert!(!home.join("registry/src").exists(), "{trunc}: {err}");
+        let cached_index = std::fs::read_dir(home.join("registry/index"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|d| d.path().join("index/be/ll/bell-utils").exists());
+        assert_eq!(cached_index, trunc != "index/", "{trunc}");
+    }
+    // The stand-in really ran: same requests, complete bodies, install succeeds.
+    let home = env.root.join("home-ok");
+    let out = run(&home, "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_dir(home.join("registry/tmp"))
+            .unwrap()
+            .count(),
+        0,
+        "downloads are removed"
+    );
+    let calls = read(&log);
+    let args: Vec<&str> = calls.lines().collect();
+    assert!(args.contains(&"--globoff"), "{calls}");
+    // Downloads go to a file under QXIDE_HOME, never to a shared temporary directory.
+    let outputs: Vec<&str> = args
+        .windows(2)
+        .filter(|w| w[0] == "--output")
+        .map(|w| w[1])
+        .collect();
+    assert!(outputs.len() >= 4, "{calls}");
+    for o in outputs {
+        assert!(
+            Path::new(o).starts_with(env.root.join("home-index"))
+                || Path::new(o).starts_with(env.root.join("home-archive"))
+                || Path::new(o).starts_with(&home),
+            "{o}"
+        );
+    }
 }
 
 #[test]

@@ -120,6 +120,100 @@ fn index_entries_round_trip() {
     assert!(Entry::parse(&line.replace("bell-utils", "Bell")).is_err());
 }
 
+// A directory registry holding one index file with these lines.
+fn dir_registry(dir: &Path, name: &str, lines: &[String]) -> index::Registry {
+    let file = dir.join("registry").join(index::index_path(name));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+    let home = cache::Home {
+        root: dir.join("home"),
+    };
+    let reg = dir.join("registry").display().to_string();
+    index::Registry::open(Some(&reg), false, home).unwrap()
+}
+
+#[test]
+fn index_lines_the_client_cannot_use_are_skipped() {
+    let good = entry("evil", "1.0.0", &[]);
+    let newer = entry("evil", "1.1.0", &[]);
+    let line = good.to_json();
+    let with = |extra: &str| line.replacen('{', &format!("{{{extra},"), 1);
+    let mut twin = good.clone();
+    twin.cksum = sha256_hex(b"twin");
+    let bad = [
+        // Build metadata ties with `1.0.0` in precedence.
+        entry("evil", "1.0.0+evil", &[]).to_json(),
+        line.replace("\"1.0.0\"", "\"1.0.99999999999999999999\""),
+        line.replace("\"1.0.0\"", "\"1.0.1-01\""),
+        entry("evil", "1.0.2", &[("other", "^1")])
+            .to_json()
+            .replace("^1", "not a req"),
+        with("\"qxide\":\"bogus!\""),
+        with("\"qxide\":99"),
+        with("\"dl\":5"),
+        with("\"description\":[]"),
+        line.replace("\"deps\":[]", "\"deps\":{}"),
+        "not json".to_string(),
+        entry("other", "1.0.3", &[]).to_json(),
+    ];
+    for b in &bad[..bad.len() - 1] {
+        assert!(Entry::parse(b).is_err(), "{b}");
+    }
+    let mut lines = vec![line.clone()];
+    lines.extend(bad.iter().cloned());
+    // A second line for a published version is ignored: the first one wins.
+    lines.push(twin.to_json());
+    lines.push(newer.to_json());
+    let dir = tmp_dir("skip");
+    let reg = dir_registry(&dir, "evil", &lines);
+    assert_eq!(reg.entries("evil").unwrap(), [good.clone(), newer]);
+    // `=1.0.0` resolves to the original line, never to a look-alike.
+    let mut reg = reg;
+    let lock = Resolver::new(
+        &root("evil = \"=1.0.0\"\n"),
+        None,
+        &mut reg,
+        URL,
+        Version::new(0, 6, 0),
+    )
+    .resolve()
+    .unwrap();
+    assert_eq!(lock.get("evil").unwrap().checksum, Some(good.cksum));
+    // An index without a single usable line is malformed, not missing.
+    let dir = tmp_dir("allbad");
+    let reg = dir_registry(&dir, "evil", &bad[..2]);
+    assert_eq!(reg.entries("evil").unwrap_err().code, Code::InvalidIndex);
+}
+
+#[test]
+fn index_json_is_strict() {
+    // validate.py rejects the same lines (ci/test_registry_scripts.py).
+    let line = entry("evil", "1.0.0", &[]).to_json();
+    let with = |extra: &str| line.replacen('{', &format!("{{{extra},"), 1);
+    assert!(Entry::parse(&with("\"description\":\"\\ud800\"")).is_err());
+    assert!(Entry::parse(&with("\"x\":NaN")).is_err());
+    let deep = "[".repeat(130) + &"]".repeat(130);
+    assert!(Entry::parse(&with(&format!("\"x\":{deep}"))).is_err());
+    // Only `\n` ends a line: two entries joined by a form feed are one unusable line.
+    let dir = tmp_dir("formfeed");
+    let other = entry("evil", "1.1.0", &[]).to_json();
+    let reg = dir_registry(&dir, "evil", &[format!("{line}\u{c}{other}")]);
+    assert_eq!(reg.entries("evil").unwrap_err().code, Code::InvalidIndex);
+}
+
+#[test]
+fn curl_results_need_a_clean_exit() {
+    use index::{fetched, Fetched};
+    assert_eq!(fetched(true, "200"), Fetched::Body);
+    assert_eq!(fetched(true, "404"), Fetched::NotFound);
+    assert_eq!(fetched(false, "404"), Fetched::Failed);
+    // Exit 18 (partial file) and similar failures after a 200 status line.
+    assert_eq!(fetched(false, "200"), Fetched::Failed);
+    for code in ["000", "500", "403", "", "200 "] {
+        assert_eq!(fetched(true, code), Fetched::Failed, "{code:?}");
+    }
+}
+
 #[test]
 fn manifests_parse_and_validate() {
     let m = root("a = \"0.1\"\nb = { version = \"1\", path = \"../b\" }\nc = { path = \"c\" }\n");
@@ -188,9 +282,139 @@ fn resolution_picks_newest_and_respects_the_lock() {
     }
     let again = resolve_with(&m, Some(&pinned), &mut reg).unwrap();
     assert_eq!(versions(&again), [pair("a", "0.1.3"), pair("b", "1.0.0")]);
-    assert!(resolve::is_fresh(&m, &lock, URL));
-    assert!(!resolve::is_fresh(&root("a = \"0.2\"\n"), &lock, URL));
-    assert!(!resolve::is_fresh(&m, &lock, "file:///elsewhere/"));
+    assert!(fresh(&m, &lock, URL, &reg));
+    assert!(!fresh(&root("a = \"0.2\"\n"), &lock, URL, &reg));
+    assert!(!fresh(&m, &lock, "file:///elsewhere/", &reg));
+}
+
+// `is_fresh` with the requirements of registry packages taken from the in-memory index.
+fn fresh(m: &Manifest, lock: &Lock, url: &str, reg: &Mem) -> bool {
+    resolve::is_fresh(m, lock, url, &mut |p| {
+        let e = reg.0.get(&p.name)?.iter().find(|e| e.vers == p.version)?;
+        Some(
+            e.deps
+                .iter()
+                .map(|d| (d.name.clone(), d.req.clone()))
+                .collect(),
+        )
+    })
+}
+
+fn pkg<'a>(lock: &'a mut Lock, name: &str) -> &'a mut LockedPackage {
+    lock.packages.iter_mut().find(|p| p.name == name).unwrap()
+}
+
+#[test]
+fn freshness_checks_the_whole_graph() {
+    let mut reg = registry(vec![
+        entry("a", "1.0.0", &[("b", "^1.2")]),
+        entry("b", "1.0.0", &[]),
+        entry("b", "1.2.0", &[]),
+        entry("c", "1.0.0", &[]),
+    ]);
+    let m = root("a = \"1\"\n");
+    let lock = resolve_with(&m, None, &mut reg).unwrap();
+    assert!(fresh(&m, &lock, URL, &reg));
+    let edit = |f: &dyn Fn(&mut Lock)| {
+        let mut l = lock.clone();
+        f(&mut l);
+        l.sort();
+        l
+    };
+    // A hand-edited downgrade of a transitive dependency breaks `a`'s `^1.2` on it.
+    let downgraded = edit(&|l| {
+        let b = pkg(l, "b");
+        b.version = Version::new(1, 0, 0);
+        b.checksum = Some(entry("b", "1.0.0", &[]).cksum);
+    });
+    assert!(!fresh(&m, &downgraded, URL, &reg));
+    // A new resolution moves it back up.
+    let again = resolve_with(&m, Some(&downgraded), &mut reg).unwrap();
+    assert_eq!(versions(&again), [pair("a", "1.0.0"), pair("b", "1.2.0")]);
+    // A locked package nothing depends on would still be fetched by `install`.
+    let extra = edit(&|l| {
+        l.packages.push(LockedPackage {
+            name: "c".into(),
+            version: Version::new(1, 0, 0),
+            source: Source::Registry(URL.into()),
+            checksum: Some(entry("c", "1.0.0", &[]).cksum),
+            dependencies: vec![],
+        })
+    });
+    assert!(!fresh(&m, &extra, URL, &reg));
+    // A registry package locked as a path package.
+    let moved = edit(&|l| {
+        let b = pkg(l, "b");
+        b.source = Source::Path("../b".into());
+        b.checksum = None;
+    });
+    assert!(!fresh(&m, &moved, URL, &reg));
+    // Dependency names that differ from the index entry.
+    let renamed = edit(&|l| {
+        let a = pkg(l, "a");
+        a.dependencies.push("app".into());
+    });
+    assert!(!fresh(&m, &renamed, URL, &reg));
+    // Self-dependencies are stale even where the requirements are not known locally.
+    assert!(resolve::is_fresh(&m, &lock, URL, &mut |_| None));
+    for target in ["a", "app"] {
+        let cyclic = edit(&|l| pkg(l, "a").dependencies.push(target.into()));
+        assert!(
+            !resolve::is_fresh(&m, &cyclic, URL, &mut |_| None),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn freshness_rereads_path_packages() {
+    let dir = tmp_dir("pathfresh");
+    let mid = dir.join("mid");
+    std::fs::create_dir_all(&mid).unwrap();
+    let write_mid = |req: &str| {
+        std::fs::write(
+            mid.join("qxide.toml"),
+            format!(
+                "[package]\nname = \"mid\"\nversion = \"0.1.0\"\n\n[dependencies]\nb = \"{req}\"\n"
+            ),
+        )
+        .unwrap()
+    };
+    write_mid("^1");
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n";
+    let m = manifest::parse(text, &dir.join("app")).unwrap();
+    let mut reg = registry(vec![entry("b", "1.0.0", &[]), entry("b", "2.0.0", &[])]);
+    let lock = resolve_with(&m, None, &mut reg).unwrap();
+    assert_eq!(versions(&lock), [pair("b", "1.0.0"), pair("mid", "0.1.0")]);
+    assert!(fresh(&m, &lock, URL, &reg));
+    // The path package now needs `b` 2, which the lock does not have.
+    write_mid("^2");
+    assert!(!fresh(&m, &lock, URL, &reg));
+    let again = resolve_with(&m, Some(&lock), &mut reg).unwrap();
+    assert_eq!(versions(&again), [pair("b", "2.0.0"), pair("mid", "0.1.0")]);
+}
+
+#[test]
+fn lock_names_are_validated() {
+    let path = Path::new("qxide.lock");
+    let ok = "version = 1\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = []\n";
+    assert!(lock::parse(ok, path).is_ok());
+    // Names end up in cache paths, so a traversal must be refused when the lock is read.
+    let cksum = sha256_hex(b"x");
+    for bad in [
+        ok.replace("name = \"app\"", "name = \"../../../../outside/x\""),
+        ok.replace("dependencies = []", "dependencies = [\"../x\"]"),
+        format!(
+            "{ok}\n[[package]]\nname = \"..\\\\x\"\nversion = \"1.0.0\"\nsource = \"registry+{URL}\"\nchecksum = \"sha256:{cksum}\"\ndependencies = []\n"
+        ),
+    ] {
+        assert_eq!(
+            lock::parse(&bad, path).unwrap_err().code,
+            Code::InvalidLock,
+            "{bad}"
+        );
+    }
 }
 
 #[test]
@@ -227,6 +451,13 @@ fn resolution_errors_have_codes() {
         code("a = \"1\"\nb = \"1\"\n", &mut reg),
         Code::VersionConflict
     );
+    // A registry package that depends on itself (design §7: Q0606), directly or as a dependency.
+    let mut selfish = registry(vec![
+        entry("s", "1.0.0", &[("s", "^1")]),
+        entry("t", "1.0.0", &[("s", "^1")]),
+    ]);
+    assert_eq!(code("s = \"1\"\n", &mut selfish), Code::VersionConflict);
+    assert_eq!(code("t = \"1\"\n", &mut selfish), Code::VersionConflict);
     let mut newer = entry("d", "1.0.0", &[]);
     newer.qxide = Some(VersionReq::parse(">=9").unwrap());
     let mut reg = registry(vec![newer]);
@@ -362,6 +593,117 @@ fn unsafe_archive_entries_are_rejected() {
     );
 }
 
+// A gzip tarball of regular files with raw header paths, in the given order.
+fn raw_archive(files: &[&str]) -> Vec<u8> {
+    let mut raw = Vec::new();
+    for path in files {
+        let mut h = tar::Header::new_gnu();
+        {
+            let name = &mut h.as_old_mut().name;
+            name[..path.len()].copy_from_slice(path.as_bytes());
+        }
+        h.set_size(4);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_cksum();
+        raw.extend_from_slice(h.as_bytes());
+        raw.extend_from_slice(b"evil");
+        raw.resize(raw.len() + 508, 0);
+    }
+    raw.resize(raw.len() + 1024, 0);
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, &raw).unwrap();
+    gz.finish().unwrap()
+}
+
+#[test]
+fn archive_paths_must_be_portable_and_unique() {
+    let dir = tmp_dir("portable");
+    let ok = raw_archive(&[
+        "demo-1.0.0/qxide.toml",
+        "demo-1.0.0/src/lib.qx",
+        "demo-1.0.0/src/console.qx",
+        "demo-1.0.0/src/com10.qx",
+        "demo-1.0.0/src/lib/x.qx",
+    ]);
+    archive::unpack(&ok, "demo-1.0.0", &dir.join("ok")).unwrap();
+    // Each path either collides with `src/lib.qx` (or another entry) on Windows or macOS, or cannot
+    // be created on those platforms.
+    for second in [
+        "src/lib.qx.",
+        "src/lib.qx ",
+        "src/LIB.qx",
+        "src/lib.qx",
+        "SRC/lib.qx",
+        "src/lib.qx/x.qx",
+        "src/nul.qx",
+        "src/CON",
+        "src/aux.tar.gz",
+        "src/Com1.qx",
+        "src/lpt9",
+        "src/conin$.qx",
+        "src/com\u{b9}.qx",
+        "src/nul .qx",
+        "src/a<b.qx",
+        "src/a>b.qx",
+        "src/a\"b.qx",
+        "src/a|b.qx",
+        "src/a?b.qx",
+        "src/a*b.qx",
+        "src/a\u{1}b.qx",
+        "src/a\u{7f}b.qx",
+        "src./x.qx",
+    ] {
+        let bytes = raw_archive(&[
+            "demo-1.0.0/qxide.toml",
+            "demo-1.0.0/src/lib.qx",
+            &format!("demo-1.0.0/{second}"),
+        ]);
+        let out = dir.join("out");
+        let err = archive::unpack(&bytes, "demo-1.0.0", &out).unwrap_err();
+        assert_eq!(err.code, Code::BadArchive, "{second:?}");
+        assert!(!out.exists(), "nothing written for {second:?}");
+        assert!(
+            archive::check_paths(["qxide.toml", "src/lib.qx", second]).is_err(),
+            "{second:?}"
+        );
+    }
+    // A directory first, then a file of the same (case-folded) name.
+    let bytes = raw_archive(&[
+        "demo-1.0.0/qxide.toml",
+        "demo-1.0.0/src/a/x.qx",
+        "demo-1.0.0/src/A",
+    ]);
+    let err = archive::unpack(&bytes, "demo-1.0.0", &dir.join("out")).unwrap_err();
+    assert_eq!(err.code, Code::BadArchive);
+    assert!(!dir.join("out").exists());
+    assert!(archive::check_paths(["qxide.toml", "src/lib.qx", "src/lib/x.qx"]).is_ok());
+}
+
+#[test]
+fn publishing_skips_symlinked_top_level_files() {
+    let dir = tmp_dir("symlink");
+    let m = write_package(&dir.join("pkg"));
+    std::fs::write(dir.join("secret"), "do not ship").unwrap();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(dir.join("secret"), m.dir.join("LICENSE"));
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(dir.join("secret"), m.dir.join("LICENSE"));
+    #[cfg(not(any(unix, windows)))]
+    let linked: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
+    if linked.is_err() {
+        // Windows without Developer Mode or admin rights cannot create symlinks.
+        return;
+    }
+    let files: Vec<String> = archive::package_files(&m)
+        .unwrap()
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect();
+    assert!(!files.contains(&"LICENSE".to_string()), "{files:?}");
+    assert!(files.contains(&"README.md".to_string()), "{files:?}");
+}
+
 #[test]
 fn installs_verify_the_checksum_first() {
     let dir = tmp_dir("install");
@@ -381,4 +723,30 @@ fn installs_verify_the_checksum_first() {
     assert!(path.join("src/sub/x.qx").is_file());
     assert_eq!(home.installed("r", "demo", &v, &cksum), Some(path));
     assert!(home.cached_archive("r", "demo", &v, &cksum).is_some());
+}
+
+// Shared with ci/test_registry_scripts.py, so the registry checker accepts exactly what we parse.
+const SEMVER_CASES: &str = include_str!("../../tests/data/semver_cases.json");
+
+#[test]
+fn semver_cases_match_the_registry_checker() {
+    let cases: serde_json::Value = serde_json::from_str(SEMVER_CASES).unwrap();
+    let list = |k: &str| -> Vec<(String, bool)> {
+        cases[k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c[0].as_str().unwrap().into(), c[1].as_bool().unwrap()))
+            .collect()
+    };
+    let cksum = sha256_hex(b"x");
+    for (text, ok) in list("versions") {
+        let line = serde_json::json!({"name": "a", "vers": text, "deps": [], "cksum": cksum});
+        assert_eq!(Entry::parse(&line.to_string()).is_ok(), ok, "vers {text:?}");
+    }
+    for (text, ok) in list("reqs") {
+        let dep = serde_json::json!([{"name": "b", "req": text}]);
+        let line = serde_json::json!({"name": "a", "vers": "1.0.0", "deps": dep, "cksum": cksum, "qxide": text});
+        assert_eq!(Entry::parse(&line.to_string()).is_ok(), ok, "req {text:?}");
+    }
 }
