@@ -7,6 +7,7 @@ mod check;
 #[allow(dead_code)]
 pub mod command;
 mod diag;
+mod engine;
 mod explain;
 mod fmt;
 pub mod ide;
@@ -21,6 +22,8 @@ pub mod stdlib;
 #[allow(dead_code)]
 pub mod studio;
 
+#[cfg(test)]
+mod bench;
 #[cfg(test)]
 mod sampling_tests;
 #[cfg(test)]

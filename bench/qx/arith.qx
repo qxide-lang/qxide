@@ -1,0 +1,46 @@
+// bench: shots=1
+// General computation: integer trial division and a double series.
+int isqrt(int n) {
+    double x = (double) n;
+    for i in 0..40 {
+        x = (x + n / x) / 2;
+    }
+    int r = (int) x;
+    if (r + 1) * (r + 1) <= n {
+        r = r + 1;
+    }
+    if r * r > n {
+        r = r - 1;
+    }
+    return r;
+}
+
+boolean isPrime(int n) {
+    if n < 2 {
+        return false;
+    }
+    for d in 2..isqrt(n) + 1 {
+        if n % d == 0 {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    int count = 0;
+    int sum = 0;
+    for n in 0..60000 {
+        if isPrime(n) {
+            count = count + 1;
+            sum = sum + n;
+        }
+    }
+    double pi = 0.0;
+    double sign = 1.0;
+    for k in 0..200000 {
+        pi = pi + sign * 4.0 / (2 * k + 1);
+        sign = -sign;
+    }
+    println("primes below 60000: {} (sum {}), pi ~ {}", count, sum, pi);
+}

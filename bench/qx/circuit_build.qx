@@ -1,0 +1,23 @@
+// bench: build
+// Circuit construction: many gate calls through helper functions on a large register.
+void layer(QReg r, int n, int k) {
+    for i in 0..n - 1 {
+        if (i + k) % 2 == 0 {
+            cx(r[i], r[i + 1]);
+        } else {
+            h(r[i]);
+            rz(r[i + 1], 0.01 * k);
+        }
+    }
+}
+
+void main() {
+    int n = 512;
+    QReg r = qreg(n);
+    for k in 0..400 {
+        layer(r, n, k);
+    }
+    BitReg m = measure(r);
+    Bit first = m[0];
+    println("{}", first);
+}

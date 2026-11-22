@@ -1,0 +1,32 @@
+// bench: shots=1
+// Recursive calls: naive Fibonacci and mutual recursion near the depth limit.
+int fib(int n) {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+boolean isEven(int n) {
+    if n == 0 {
+        return true;
+    }
+    return isOdd(n - 1);
+}
+
+boolean isOdd(int n) {
+    if n == 0 {
+        return false;
+    }
+    return isEven(n - 1);
+}
+
+void main() {
+    int evens = 0;
+    for k in 0..2000 {
+        if isEven(k % 190) {
+            evens = evens + 1;
+        }
+    }
+    println("fib(24) = {}, evens = {}", fib(24), evens);
+}

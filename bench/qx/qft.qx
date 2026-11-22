@@ -1,0 +1,41 @@
+// bench: shots=100
+// State-vector simulation: a 12-qubit quantum Fourier transform and its inverse.
+void cphase(Qubit c, Qubit t, double theta) {
+    rz(c, theta / 2);
+    rz(t, theta / 2);
+    cx(c, t);
+    rz(t, -theta / 2);
+    cx(c, t);
+}
+
+int pow2(int k) {
+    int p = 1;
+    for i in 0..k {
+        p = p * 2;
+    }
+    return p;
+}
+
+void qft(QReg r, int n, double dir) {
+    for i in 0..n {
+        h(r[i]);
+        for j in i + 1..n {
+            cphase(r[j], r[i], dir * PI / (double) pow2(j - i));
+        }
+    }
+}
+
+void main() {
+    int n = 12;
+    QReg r = qreg(n);
+    for i in 0..n {
+        if i % 3 == 0 {
+            x(r[i]);
+        }
+        ry(r[i], 0.1 * i);
+    }
+    qft(r, n, 1.0);
+    qft(r, n, -1.0);
+    BitReg m = measure(r);
+    println("{}", m.to_binary());
+}

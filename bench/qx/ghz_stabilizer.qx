@@ -1,0 +1,17 @@
+// bench: shots=100
+// Stabilizer simulation: a 400-qubit GHZ state with Clifford layers (no rotations).
+void main() {
+    int n = 400;
+    QReg r = qreg(n);
+    h(r[0]);
+    for i in 1..n {
+        cx(r[i - 1], r[i]);
+    }
+    for i in 0..n {
+        s(r[i]);
+        sdg(r[i]);
+    }
+    BitReg m = measure(r);
+    Bit first = m[0];
+    println("{}", first);
+}
