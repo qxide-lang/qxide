@@ -69,11 +69,21 @@ pub fn fingerprint(src: &str) -> Option<(Vec<Tok>, Vec<String>)> {
 // arguments (a `<` right after the name of a generic struct or enum of the file).
 fn angle_brackets(toks: &[Token]) -> Vec<bool> {
     let mut generics = std::collections::HashSet::new();
+    let mut declared = std::collections::HashSet::new();
     for w in toks.windows(3) {
-        if matches!(w[0].tok, Tok::Struct | Tok::Enum) && w[2].tok == Tok::Lt {
+        if matches!(w[0].tok, Tok::Struct | Tok::Enum) {
             if let Tok::Ident(n) = &w[1].tok {
-                generics.insert(n.as_str());
+                declared.insert(n.as_str());
+                if w[2].tok == Tok::Lt {
+                    generics.insert(n.as_str());
+                }
             }
+        }
+    }
+    // The prelude's `Result<T, E>` and `Option<T>`, unless the file declares its own.
+    for n in parser::PRELUDE_TYPES {
+        if !declared.contains(n) {
+            generics.insert(n);
         }
     }
     let mut angle = vec![false; toks.len()];
@@ -425,7 +435,13 @@ impl<'a> Printer<'a> {
         }
         let closes_type = *prev == Tok::Gt && self.angle[p];
         match tok {
-            Tok::RParen | Tok::RBracket | Tok::Comma | Tok::Semi | Tok::Dot | Tok::DotDot => false,
+            Tok::RParen
+            | Tok::RBracket
+            | Tok::Comma
+            | Tok::Semi
+            | Tok::Dot
+            | Tok::DotDot
+            | Tok::Question => false,
             // Calls and indexing: `f(x)`, `r[i]`, `measure(q)[0]`.
             Tok::LParen | Tok::LBracket => {
                 !(matches!(prev, Tok::Ident(_) | Tok::RParen | Tok::RBracket) || closes_type)

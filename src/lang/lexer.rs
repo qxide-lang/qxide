@@ -42,6 +42,8 @@ pub enum Tok {
     Arrow,
     // `=>` in `match` arms.
     FatArrow,
+    // Postfix `?`: early return of an `Err` or `None`.
+    Question,
     DotDot,
     Dot,
     Plus,
@@ -102,6 +104,7 @@ impl Tok {
             Colon => ":",
             Arrow => "->",
             FatArrow => "=>",
+            Question => "?",
             DotDot => "..",
             Dot => ".",
             Plus => "+",
@@ -347,6 +350,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnosti
                 (b',', _) => (Tok::Comma, 1),
                 (b';', _) => (Tok::Semi, 1),
                 (b':', _) => (Tok::Colon, 1),
+                (b'?', _) => (Tok::Question, 1),
                 (b'+', _) => (Tok::Plus, 1),
                 (b'-', _) => (Tok::Minus, 1),
                 (b'*', _) => (Tok::Star, 1),

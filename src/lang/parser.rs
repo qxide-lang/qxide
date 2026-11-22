@@ -10,6 +10,9 @@ use std::collections::HashSet;
 // Bounds recursion on hostile input (deeply nested parentheses or blocks).
 pub const MAX_DEPTH: usize = 128;
 
+/// Types of the prelude (`std/prelude.qx`), usable in every file without an import.
+pub const PRELUDE_TYPES: &[&str] = &["Result", "Option"];
+
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
@@ -51,6 +54,14 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
             if toks.get(i + 2).is_some_and(|t| t.tok == Tok::Lt) {
                 generics.insert(n.clone());
             }
+        }
+    }
+    // The prelude's generic enums are known in every file that does not declare its own type of
+    // that name (the linker adds their declarations, `link::add_prelude`).
+    for name in PRELUDE_TYPES {
+        if !structs.contains(*name) && !enums.contains(*name) {
+            enums.insert(name.to_string());
+            generics.insert(name.to_string());
         }
     }
     let mut p = Parser {
@@ -894,6 +905,18 @@ impl Parser {
                     },
                     span,
                 };
+            } else if self.peek() == &Tok::Question {
+                let op = self.bump().span;
+                let span = e.span.to(op);
+                e = Expr {
+                    kind: ExprKind::Try {
+                        expr: Box::new(e),
+                        op,
+                    },
+                    span,
+                };
+                self.enter()?;
+                grown += 1;
             } else {
                 self.depth -= grown;
                 return Ok(e);

@@ -652,6 +652,77 @@ impl<'p, 'a> FnLower<'p, 'a> {
         }
     }
 
+    // `e?`: branch on the tag; the failing side builds the function's `Err`/`None` and returns.
+    fn try_expr(&mut self, inner: &'p Expr, span: Span) -> Reg {
+        let v = self.expr(inner);
+        let (IrTy::Enum(id), IrTy::Enum(ret)) = (self.ty(v), self.func.ret) else {
+            self.trap(internal(span));
+            return self.reg(IrTy::Unit);
+        };
+        let (ty, ret) = (Ty::Enum(id), Ty::Enum(ret));
+        let found = super::super::record::try_tags(self.layouts, ty, ret);
+        let payload = self.layouts.payload(ty, found.map_or(0, |(ok, _)| ok));
+        let (Some((ok, fail)), Some(payload), 0) = (found, payload, self.regions) else {
+            self.trap(internal(span));
+            return self.reg(IrTy::Unit);
+        };
+        let tag = self.reg(IrTy::I64);
+        self.emit(Inst::EnumTag {
+            dst: tag,
+            src: v,
+            span,
+        });
+        let k = self.konst(Const::I64(i64::from(ok)));
+        let cond = self.reg(IrTy::Bool);
+        self.emit(Inst::IntOp {
+            op: BinOp::Eq,
+            dst: cond,
+            a: tag,
+            b: k,
+            span,
+        });
+        let (yes, no) = (self.new_block(), self.new_block());
+        self.terminate(Term::Br {
+            cond,
+            then: yes as BlockId,
+            els: no as BlockId,
+        });
+        self.switch(no);
+        let carried = self.layouts.payload(ret, fail).unwrap_or_default();
+        let mut args = Vec::new();
+        if let Some(&t) = carried.first() {
+            let r = self.reg(IrTy::of(t));
+            self.emit(Inst::EnumField {
+                dst: r,
+                src: v,
+                index: 0,
+                span,
+            });
+            args.push(r);
+        }
+        let out = self.reg(IrTy::Enum(match ret {
+            Ty::Enum(r) => r,
+            _ => id,
+        }));
+        self.emit(Inst::NewEnum {
+            dst: out,
+            ty: ret,
+            tag: fail,
+            args: args.into(),
+            span,
+        });
+        self.terminate(Term::Ret(Some(out)));
+        self.switch(yes);
+        let dst = self.reg(IrTy::of(payload.first().copied().unwrap_or(Ty::Error)));
+        self.emit(Inst::EnumField {
+            dst,
+            src: v,
+            index: 0,
+            span,
+        });
+        dst
+    }
+
     fn return_stmt(&mut self, value: Option<&'p Expr>) {
         let v = value.map(|e| self.expr(e));
         if self.regions > 0 {
@@ -825,6 +896,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 });
                 dst
             }
+            ExprKind::Try { expr, .. } => self.try_expr(expr, e.span),
             ExprKind::ArrayLit { ty, elems } => {
                 let elems: Box<[Reg]> = elems.iter().map(|x| self.expr(x)).collect();
                 let Some(ty) = *ty else {

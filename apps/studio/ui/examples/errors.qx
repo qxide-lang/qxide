@@ -1,0 +1,59 @@
+// Errors as values: the prelude's `Result` and `Option`, and `?` to pass a failure on.
+Result<int, String> sum_all(String[] items) {
+    int total = 0;
+    for i in 0..len(items) {
+        total += items[i].try_parse_int()?;
+    }
+    return Result.Ok(total);
+}
+
+Option<int> first_even(int[] xs) {
+    for i in 0..len(xs) {
+        if xs[i] % 2 == 0 {
+            return Option.Some(xs[i]);
+        }
+    }
+    return Option.None;
+}
+
+Option<int> half_of_first_even(int[] xs) {
+    int e = first_even(xs)?;
+    return Option.Some(e / 2);
+}
+
+void show(Result<int, String> r) {
+    match r {
+        Ok(v) => {
+            println("sum = {}", v);
+        }
+        Err(e) => {
+            println("error: {}", e);
+        }
+    }
+}
+
+void show_half(Option<int> o) {
+    match o {
+        Some(h) => {
+            println("half = {}", h);
+        }
+        None => {
+            println("no even number");
+        }
+    }
+}
+
+void main() {
+    show(sum_all(new String[]{"1", " 2", "3 "}));
+    show(sum_all(new String[]{"4", "x5", "6"}));
+    show_half(half_of_first_even(new int[]{1, 8, 3}));
+    show_half(half_of_first_even(new int[]{1, 3, 5}));
+    match "2.5".try_parse_double() {
+        Ok(v) => {
+            println("{}", v * 2);
+        }
+        Err(e) => {
+            println("{}", e);
+        }
+    }
+}

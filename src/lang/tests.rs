@@ -10,6 +10,7 @@ const FUNCTIONS: &str = include_str!("../../examples/qx/functions.qx");
 const ROTATION: &str = include_str!("../../examples/qx/rotation.qx");
 const TELEPORT_FN: &str = include_str!("../../examples/qx/teleport_fn.qx");
 pub(super) const GENERICS: &str = include_str!("../../examples/qx/generics.qx");
+pub(super) const ERRORS: &str = include_str!("../../examples/qx/errors.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -2136,6 +2137,110 @@ fn generic_errors() {
     assert_eq!(
         codes(&with("struct N { Option<N> next; } void main() {}")),
         ["Q0227"]
+    );
+}
+
+// The prelude's `Result` and `Option` need no declaration; `?` returns the `Err` or `None` early.
+#[test]
+fn result_option_and_try() {
+    let out = run_ok(ERRORS, 1);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 5, "{out}");
+    assert_eq!(lines[0], "sum = 6");
+    assert!(
+        lines[1].starts_with("error: ") && lines[1].contains("x5"),
+        "{out}"
+    );
+    assert_eq!(&lines[2..], ["half = 4", "no even number", "5.0"]);
+    // `?` in generic code, in a loop condition, on a call result and as a statement.
+    let src = "<T> Result<T, String> at(T[] a, int i) {
+    if i < 0 || i >= len(a) {
+        return Result.Err(\"out of range\");
+    }
+    return Result.Ok(a[i]);
+}
+
+<T> Result<T, String> second_of(T[] a, int i) {
+    at(a, i)?;
+    return at(a, i + 1);
+}
+
+Result<int, String> count(String[] items) {
+    int i = 0;
+    while items[i].try_parse_int()? > 0 {
+        i += 1;
+    }
+    return Result.Ok(i);
+}
+
+int get(Result<int, String> r) {
+    match r {
+        Ok(v) => {
+            return v;
+        }
+        Err(_) => {
+            return -1;
+        }
+    }
+}
+
+void main() {
+    int[] xs = {10, 20, 30};
+    String[] ss = {\"3\", \"2\", \"0\", \"x\"};
+    String[] bad = {\"3\", \"x\"};
+    println(\"{} {} {} {} {}\", get(second_of(xs, 1)), get(second_of(xs, 2)), get(second_of(xs, 5)), get(count(ss)), get(count(bad)));
+}
+";
+    assert_eq!(run_ok(src, 1), "30 -1 -1 2 -1\n");
+    // A program's own `Option` replaces the prelude's, and a non-generic one is fine too.
+    let src = "enum Option {\n    A,\n    B,\n}\n\nvoid main() {\n    Option o = Option.B;\n    match o {\n        A => {\n            println(\"a\");\n        }\n        B => {\n            println(\"b\");\n        }\n    }\n}\n";
+    assert_eq!(run_ok(src, 1), "b\n");
+    // A borrowed qubit parameter may stay live at a `?`; the caller owns it.
+    ok("Result<int, String> f(Qubit q) {\n    h(q);\n    int x = \"1\".try_parse_int()?;\n    return Result.Ok(x);\n}\n\nvoid main() {}\n");
+}
+
+#[test]
+fn try_errors() {
+    // The operand must be a `Result` or an `Option`.
+    assert_eq!(
+        errors("Result<int, String> f() {\n    int x = 3;\n    return Result.Ok(x?);\n}\nvoid main() {}"),
+        [("Q0231", 3, 23)]
+    );
+    // The function must return the same kind with the same error type; `main` returns nothing.
+    assert_eq!(
+        errors("void main() {\n    int x = \"1\".try_parse_int()?;\n}"),
+        [("Q0231", 2, 32)]
+    );
+    assert_eq!(
+        codes("Result<int, int> g() { return Result.Ok(1); } Result<int, String> f() { int x = g()?; return Result.Ok(x); } void main() {}"),
+        ["Q0231"]
+    );
+    assert_eq!(
+        codes("Option<int> f() { int x = \"1\".try_parse_int()?; return Option.Some(x); } void main() {}"),
+        ["Q0231"]
+    );
+    assert_eq!(
+        codes("Result<int, String> f() { int x = Option.Some(1)?; return Result.Ok(x); } void main() {}"),
+        ["Q0231"]
+    );
+    // Like `return`: an owned qubit may not be live at a `?`, also inside a loop.
+    assert_eq!(
+        errors("Result<int, String> f() {\n    Qubit q = qubit();\n    int x = \"1\".try_parse_int()?;\n    discard(q);\n    return Result.Ok(x);\n}\nvoid main() {}"),
+        [("Q0302", 2, 11)]
+    );
+    assert_eq!(
+        codes("Result<int, String> f(String[] a) { int t = 0; for i in 0..len(a) { Qubit q = qubit(); t += a[i].try_parse_int()?; discard(q); } return Result.Ok(t); } void main() {}"),
+        ["Q0302"]
+    );
+    // Like `return`: not inside an `if` on a measured bit.
+    assert_eq!(
+        codes("Result<int, String> f() { Qubit q = qubit(); h(q); Bit b = measure(q); if b { int x = \"1\".try_parse_int()?; } return Result.Ok(1); } void main() {}"),
+        ["Q0308"]
+    );
+    // `try_parse_int` needs the prelude's shape of `Result`.
+    assert_eq!(
+        codes("enum Result { Ok(int v), Err(String e), Other } void main() { var r = \"1\".try_parse_int(); }"),
+        ["Q0231"]
     );
 }
 

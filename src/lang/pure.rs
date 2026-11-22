@@ -43,13 +43,33 @@ pub const STRING_METHODS: &[(&str, &[Ty], Ty)] = &[
     ("repeat", &[Ty::Int], Ty::String),
     ("parse_int", &[], Ty::Int),
     ("parse_double", &[], Ty::Double),
+    // Listed with their `Ok` type; they return `Result<int, String>` (`string_method`).
+    ("try_parse_int", &[], Ty::Int),
+    ("try_parse_double", &[], Ty::Double),
 ];
+
+/// The `Ok` type of `try_parse_int` and `try_parse_double`.
+pub fn try_parse_ok(name: &str) -> Option<Ty> {
+    match name {
+        "try_parse_int" => Some(Ty::Int),
+        "try_parse_double" => Some(Ty::Double),
+        _ => None,
+    }
+}
+
+/// `Result<ok, String>` of the prelude.
+pub fn parse_result(ok: Ty) -> Ty {
+    Ty::instance(Ty::enum_named("Result"), &[ok, Ty::String])
+}
 
 pub fn string_method(name: &str) -> Option<(&'static str, &'static [Ty], Ty)> {
     STRING_METHODS
         .iter()
         .find(|(n, _, _)| *n == name)
-        .map(|&(n, p, r)| (n, p, r))
+        .map(|&(n, p, r)| match try_parse_ok(n) {
+            Some(ok) => (n, p, parse_result(ok)),
+            None => (n, p, r),
+        })
 }
 
 fn num(v: &HostValue, span: Span) -> R<f64> {
@@ -301,6 +321,27 @@ impl Machine<'_> {
                     msg::parse_number(&shown(&s), "double"),
                 )),
             },
+            // `Ok(value)`, or `Err(message)` with the text `parse_int` would stop with.
+            "try_parse_int" | "try_parse_double" => {
+                let (ok, parsed) = if name == "try_parse_int" {
+                    (Ty::Int, s.trim().parse::<i64>().ok().map(Value::Int))
+                } else {
+                    (Ty::Double, s.trim().parse::<f64>().ok().map(Value::Double))
+                };
+                let ty = parse_result(ok);
+                let (variant, payload) = match parsed {
+                    Some(v) => ("Ok", v),
+                    None => {
+                        let text = msg::parse_number(&shown(&s), ok.name());
+                        ("Err", built(self, text)?)
+                    }
+                };
+                let (tag, _) = self
+                    .layouts()
+                    .variant(ty, variant)
+                    .ok_or_else(|| internal(span))?;
+                self.new_enum(ty, tag, vec![payload], span)
+            }
             _ => Err(internal(span)),
         }
     }

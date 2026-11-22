@@ -259,7 +259,7 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
                 scan_expr(a, out);
             }
         }
-        ExprKind::Field { recv, .. } => scan_expr(recv, out),
+        ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => scan_expr(recv, out),
         ExprKind::Int(_)
         | ExprKind::Double(_)
         | ExprKind::Bool(_)
@@ -1417,6 +1417,7 @@ impl Checker {
                 let t = self.expr(recv);
                 self.field_ty(t, name)
             }
+            ExprKind::Try { expr, op } => self.try_expr(expr, *op),
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
                 if self.param_op(recv.span, &[t]) {
@@ -1884,6 +1885,62 @@ impl Checker {
         ty
     }
 
+    // `e?`: the payload of an `Ok` or `Some`, or an early return of the `Err` or `None`. The
+    // function must return a `Result` with the same error type (or an `Option`). Like `return`,
+    // it is rejected inside an `if` on a measured bit and may not leave an owned qubit live.
+    fn try_expr(&mut self, inner: &Expr, op: Span) -> Ty {
+        let t = self.expr(inner);
+        if t == Ty::Error {
+            return Ty::Error;
+        }
+        let Some((kind, ok, err)) = self.try_shape(t) else {
+            self.err(Code::BadTry, op, msg::try_operand(t.name()));
+            return Ty::Error;
+        };
+        if let Some(&at) = self.bit_ifs.last() {
+            self.err(Code::ForbiddenInBitIf, op, msg::forbidden_in_bit_if("?"))
+                .notes
+                .push(note(at, msg::note_bit_if_here()));
+            return ok;
+        }
+        let ret = self.ret;
+        let fits = match self.try_shape(ret) {
+            Some((k, _, e)) => k == kind && e == err,
+            None => false,
+        };
+        if ret != Ty::Error && !fits {
+            self.err(Code::BadTry, op, msg::try_return(t.name(), ret.name()));
+            return ok;
+        }
+        let live: Vec<usize> = self
+            .scopes
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&id| self.owned_live(id))
+            .collect();
+        for id in live {
+            let (decl, name) = (self.vars[id].decl, self.vars[id].name.clone());
+            self.err(Code::NeverConsumed, decl, msg::never_consumed(&name))
+                .notes
+                .push(note(op, msg::note_try_returns_here()));
+        }
+        ok
+    }
+
+    // The prelude shapes `?` works on: `Result<T, E>` gives ("Result", T, Some(E)) and
+    // `Option<T>` gives ("Option", T, None).
+    fn try_shape(&self, t: Ty) -> Option<(&'static str, Ty, Option<Ty>)> {
+        let (base, _) = t.generic_args()?;
+        let vs = self.variants_of(t)?;
+        let shape: Vec<(&str, usize)> = vs.iter().map(|(n, f)| (n.as_str(), f.len())).collect();
+        match (base.name(), shape.as_slice()) {
+            ("Result", [("Ok", 1), ("Err", 1)]) => Some(("Result", vs[0].1[0], Some(vs[1].1[0]))),
+            ("Option", [("None", 0), ("Some", 1)]) => Some(("Option", vs[1].1[0], None)),
+            _ => None,
+        }
+    }
+
     // Arms run like the branches of an `if`/`else if` chain: qubit states merge the same way,
     // and the statement diverges only if it is exhaustive and every arm diverges.
     fn match_stmt(&mut self, scrutinee: &Expr, arms: &[Arm], span: Span) -> bool {
@@ -2166,6 +2223,20 @@ impl Checker {
         for (a, want) in args.iter().zip(params) {
             let found = self.expr(a);
             self.expect_ty(a.span, *want, found);
+        }
+        // `try_parse_int` returns the prelude `Result`; a program's own `Result` replaces it.
+        if let Some(ok) = pure::try_parse_ok(&name.name) {
+            let shaped = self
+                .try_shape(ret)
+                .is_some_and(|(_, t, e)| t == ok && e == Some(Ty::String));
+            if !shaped {
+                self.err(
+                    Code::BadTry,
+                    name.span,
+                    msg::try_parse_needs_result(&name.name),
+                );
+                return Ty::Error;
+            }
         }
         ret
     }

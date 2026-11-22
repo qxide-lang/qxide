@@ -98,6 +98,18 @@ public String format(String source) { return \"\"; }
 /// The reserved package name of the standard library.
 pub const PACKAGE: &str = "std";
 
+/// The prelude: generic enums every file may use without an import (`parser::PRELUDE_TYPES`).
+pub const PRELUDE: &str = "enum Result<T, E> {
+    Ok(T value),
+    Err(E error),
+}
+
+enum Option<T> {
+    None,
+    Some(T value),
+}
+";
+
 pub fn module_source(name: &str) -> Option<&'static str> {
     MODULES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }

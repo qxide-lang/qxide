@@ -82,6 +82,7 @@ codes! {
     NonExhaustive => "Q0228",
     BadPattern => "Q0229",
     TypeArgs => "Q0230",
+    BadTry => "Q0231",
     UseAfterConsume => "Q0301",
     NeverConsumed => "Q0302",
     DuplicateQubit => "Q0303",
@@ -225,6 +226,11 @@ impl SourceMap {
     fn file(&self, offset: usize) -> &File {
         let i = self.files.partition_point(|f| f.base <= offset).max(1) - 1;
         &self.files[i]
+    }
+
+    /// Whether any loaded file's text contains `word` (comments included).
+    pub fn mentions(&self, word: &str) -> bool {
+        self.files.iter().any(|f| f.text.contains(word))
     }
 
     /// Display name of the file that holds `offset`.

@@ -1030,6 +1030,39 @@ void main() {
 }
 ```
 
+## Q0231: invalid use of the `?` operator
+
+The postfix `?` operator was applied to a value that does not support it, used in a function whose return type cannot carry the early return, or paired with a user-defined `Result` type that conflicts with `try_parse_int` or `try_parse_double`. In `.qx`, `?` works only on the prelude types `Result<T, E>` and `Option<T>`: on `Ok(v)` or `Some(v)` it evaluates to `v`, and on `Err(e)` or `None` it returns early from the enclosing function with `Result.Err(e)` or `Option.None` of the function's own return type. Because the early return must fit the enclosing signature without implicit error conversion, a `Result` operand requires a function returning a `Result` with the exact same error type `E` (the success types may differ), an `Option` operand requires a function returning an `Option`, and `void` functions—including `main`—never qualify. This code is also reported when calling `try_parse_int` or `try_parse_double` in a program that declares its own `Result` type with a different shape, since those `String` methods return the prelude `Result<int, String>` and `Result<double, String>`. Like `return`, `?` may not leave an owned qubit unmeasured (which is `Q0302`) and is not allowed inside an `if` on a measurement result (`Q0308`).
+
+Erroneous code example:
+
+```qx
+void main() {
+    int n = "42".try_parse_int()?;  // error[Q0231]
+    println("{}", n);
+}
+```
+
+To fix it, handle the `Result` with `match` directly in `main` (since `main` returns `void`), or move the `?` code into a function that returns a `Result` and match on its result in `main`.
+
+```qx
+Result<int, String> doubled(String s) {
+    int n = s.try_parse_int()?;
+    return Result.Ok(n * 2);
+}
+
+void main() {
+    match doubled("42") {
+        Ok(n) => {
+            println("{}", n);
+        }
+        Err(e) => {
+            println("error: {}", e);
+        }
+    }
+}
+```
+
 ## Q0301: use of a consumed qubit
 
 A `Qubit` was used after it had already been consumed by being measured, discarded, or moved. In `.qx`, qubits have linear types checked at compile time, so once a qubit is consumed it is no longer available for further operations. This prevents a program from applying gates or other operations to a qubit whose quantum state has already been measured, discarded, or transferred.

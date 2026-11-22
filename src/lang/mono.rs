@@ -312,7 +312,11 @@ impl Mono<'_> {
                 self.expr(base, map)?;
                 self.expr(index, map)
             }
-            ExprKind::Method { recv, args, .. } => {
+            ExprKind::Method { recv, args, name } => {
+                // `s.try_parse_int()` returns `Result<int, String>`, which no declaration names.
+                if let Some(ok) = super::pure::try_parse_ok(&name.name) {
+                    self.need(super::pure::parse_result(ok), at)?;
+                }
                 self.expr(recv, map)?;
                 self.exprs(args, map)
             }
@@ -326,7 +330,7 @@ impl Mono<'_> {
                 *ty = self.ty(t, map, at)?;
                 self.exprs(args, map)
             }
-            ExprKind::Field { recv, .. } => self.expr(recv, map),
+            ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => self.expr(recv, map),
             ExprKind::NewArray { ty, dims } => {
                 *ty = self.ty(*ty, map, at)?;
                 self.exprs(dims, map)

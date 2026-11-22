@@ -834,6 +834,22 @@ pub fn instantiation_limit(limit: usize) -> String {
     format!("exceeded the limit of {limit} generic instantiations; check for infinitely recursive generic calls")
 }
 
+pub fn try_operand(ty: &str) -> String {
+    format!("cannot use `?` on a value of type `{ty}`; `?` requires a `Result` or `Option` value")
+}
+
+pub fn try_return(operand: &str, ret: &str) -> String {
+    format!("cannot use `?` on `{operand}` in a function returning `{ret}`")
+}
+
+pub fn note_try_returns_here() -> String {
+    "function may return early here".into()
+}
+
+pub fn try_parse_needs_result(method: &str) -> String {
+    format!("cannot use `String` method `{method}` because user-defined `Result` does not match built-in `Result<T, E>`")
+}
+
 pub fn type_too_large(limit: usize) -> String {
     format!("exceeded the generic type nesting limit of {limit}; check for infinitely recursive generic calls")
 }

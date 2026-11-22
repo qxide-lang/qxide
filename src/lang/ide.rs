@@ -379,7 +379,7 @@ impl Scopes {
                     self.expr(a);
                 }
             }
-            ExprKind::Field { recv, .. } => self.expr(recv),
+            ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => self.expr(recv),
             ExprKind::Int(_) | ExprKind::Double(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
         }
     }
@@ -849,7 +849,7 @@ impl Analysis {
         for (name, _) in CONSTANTS {
             push(name, ItemKind::Constant, Some("double".to_string()));
         }
-        for t in TYPES {
+        for t in TYPES.iter().chain(parser::PRELUDE_TYPES) {
             push(t, ItemKind::Type, None);
         }
         for k in KEYWORDS {

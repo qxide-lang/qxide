@@ -91,6 +91,12 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf("boolean c = a < b;", "<"), scopeOf("boolean c = a > b;", ">"));
   assert.equal(scopeOf("match e { A => {} }", "match"), "keyword.control.qx");
   assert.equal(scopeOf("match e { A => {} }", "=>"), "keyword.operator.arrow.qx");
+  const tried = "Result<int, String> f(String s) { int n = s.try_parse_int()?; return Result.Ok(n); }";
+  assert.equal(scopeOf(tried, "Result"), "support.type.prelude.qx");
+  assert.equal(scopeOf(tried, "try_parse_int"), "support.function.method.qx");
+  assert.equal(scopeOf(tried, "?"), "keyword.operator.try.qx");
+  assert.equal(scopeOf(tried, "Ok"), "support.constant.variant.qx");
+  assert.equal(scopeOf("Option<int> o = Option.None;", "None"), "support.constant.variant.qx");
   assert.equal(scopeOf(src, "helper"), "entity.name.function.call.qx");
   assert.equal(scopeOf(src, "as_int"), "support.function.method.qx");
 });

@@ -117,6 +117,8 @@ enum Flow {
 struct Frame<'p> {
     // (name, value, declared type)
     scopes: Vec<Vec<(&'p str, Value, Ty)>>,
+    // The function's return type: what a failing `?` wraps its `Err` or `None` in.
+    ret: Ty,
 }
 
 impl<'p> Frame<'p> {
@@ -164,6 +166,8 @@ impl<'p> Frame<'p> {
 struct Interp<'p, 'h> {
     fns: HashMap<&'p str, &'p FnDecl>,
     m: Machine<'h>,
+    // The value a failing `?` returns: it unwinds to `call_fn` as an error, which returns it.
+    unwind: Option<Value>,
 }
 
 /// Runs `main` once, recording its circuit. Std calls go to `host`.
@@ -184,6 +188,7 @@ pub fn elaborate_call(
     let mut it = Interp {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
         m: Machine::new(host, limits, super::record::Layouts::of(p)),
+        unwind: None,
     };
     let f = *it.fns.get(name).ok_or_else(|| internal(Span::default()))?;
     let mut c = Circuit::new();
@@ -210,10 +215,15 @@ impl<'p> Interp<'p, '_> {
                 .zip(args)
                 .map(|(p, v)| (p.name.name.as_str(), coerce(v, p.ty), p.ty))
                 .collect()],
+            ret: f.ret,
         };
         let flow = self.block(c, &mut frame, &f.body);
         self.m.leave_call();
-        match flow? {
+        let flow = match (flow, self.unwind.take()) {
+            (Err(_), Some(v)) => Flow::Return(v),
+            (flow, _) => flow?,
+        };
+        match flow {
             Flow::Return(v) => Ok(coerce(v, f.ret)),
             Flow::Next if f.ret == Ty::Void => Ok(Value::Unit),
             Flow::Next => Err(Diagnostic::new(
@@ -443,7 +453,35 @@ impl<'p> Interp<'p, '_> {
             ExprKind::NewStruct { ty, args } => self.new_struct(c, f, *ty, args, e.span),
             ExprKind::Variant { ty, name, args } => self.variant(c, f, *ty, name, args, e.span),
             ExprKind::Field { recv, name } => self.field(c, f, recv, name, e.span),
+            ExprKind::Try { expr, .. } => self.try_expr(c, f, expr, e.span),
         }
+    }
+
+    // `e?`: the `Ok`/`Some` payload, or the function returns `Err(error)`/`None` of its own
+    // return type (through `unwind`; the checker rejects `?` inside an `if` on a measured bit).
+    fn try_expr(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        inner: &'p Expr,
+        span: Span,
+    ) -> R<Value> {
+        let v = self.expr(c, f, inner)?;
+        let Value::Enum(e) = &v else {
+            return Err(internal(span));
+        };
+        let layouts = self.m.layouts();
+        let (ok, fail) = super::record::try_tags(&layouts, Ty::Enum(e.ty), f.ret)
+            .ok_or_else(|| internal(span))?;
+        let payload = e.fields.first().cloned();
+        if e.tag == ok {
+            return payload.ok_or_else(|| internal(span));
+        }
+        let out = self
+            .m
+            .new_enum(f.ret, fail, payload.into_iter().collect(), span)?;
+        self.unwind = Some(out);
+        Err(internal(span))
     }
 
     fn variant(

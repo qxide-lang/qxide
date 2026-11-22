@@ -100,6 +100,8 @@ pub fn link(
     };
     // Single-file programs without imports take the old path unchanged.
     if program.imports.is_empty() {
+        let mut program = program;
+        add_prelude(&mut l.map, &mut program);
         return (l.map, Ok(program));
     }
     let pkg = project.map(|p| p.entry_package);
@@ -132,15 +134,42 @@ pub fn link(
         .iter_mut()
         .flat_map(|m| std::mem::take(&mut m.program.enums))
         .collect();
-    (
-        l.map,
-        Ok(Program {
-            imports: Vec::new(),
-            structs,
-            enums,
-            fns,
-        }),
-    )
+    let mut program = Program {
+        imports: Vec::new(),
+        structs,
+        enums,
+        fns,
+    };
+    add_prelude(&mut l.map, &mut program);
+    (l.map, Ok(program))
+}
+
+// Adds the prelude types the program's files mention (`try_parse_int` returns a `Result`) and do
+// not declare themselves: a program-wide `Result` or `Option` replaces the prelude's. Programs
+// that mention neither are unchanged.
+fn add_prelude(map: &mut SourceMap, p: &mut Program) {
+    let declared = |p: &Program, n: &str| {
+        p.structs.iter().any(|s| s.name.name == n) || p.enums.iter().any(|e| e.name.name == n)
+    };
+    let wanted: Vec<&str> = parser::PRELUDE_TYPES
+        .iter()
+        .copied()
+        .filter(|n| !declared(p, n))
+        .filter(|n| map.mentions(n) || (*n == "Result" && map.mentions("try_parse_")))
+        .collect();
+    if wanted.is_empty() {
+        return;
+    }
+    let base = map.add("std/prelude.qx", stdlib::PRELUDE);
+    let Ok(prelude) = parse_at(stdlib::PRELUDE, base) else {
+        return;
+    };
+    p.enums.extend(
+        prelude
+            .enums
+            .into_iter()
+            .filter(|e| wanted.contains(&e.name.name.as_str())),
+    );
 }
 
 fn shift(s: Span, base: usize) -> Span {
@@ -715,7 +744,9 @@ impl Linker<'_> {
                     self.rewrite_expr(scope, a);
                 }
             }
-            ExprKind::Field { recv, .. } => self.rewrite_expr(scope, recv),
+            ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => {
+                self.rewrite_expr(scope, recv)
+            }
             ExprKind::Int(_)
             | ExprKind::Double(_)
             | ExprKind::Bool(_)

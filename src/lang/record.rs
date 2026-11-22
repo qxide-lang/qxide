@@ -328,6 +328,16 @@ pub fn enum_tag(v: &Value, span: Span) -> R<u32> {
 }
 
 /// Payload field `index` of an enum value.
+/// Tags for `?` on a value of enum type `ty` in a function returning `ret`: the `Ok` (or `Some`)
+/// tag of `ty` and the `Err` (or `None`) tag of `ret`.
+pub fn try_tags(l: &Layouts, ty: Ty, ret: Ty) -> Option<(u32, u32)> {
+    if let Some((ok, _)) = l.variant(ty, "Ok") {
+        return Some((ok, l.variant(ret, "Err")?.0));
+    }
+    let (some, _) = l.variant(ty, "Some")?;
+    Some((some, l.variant(ret, "None")?.0))
+}
+
 pub fn enum_field(v: &Value, index: usize, span: Span) -> R<Value> {
     match v {
         Value::Enum(e) => e.fields.get(index).cloned().ok_or_else(|| internal(span)),

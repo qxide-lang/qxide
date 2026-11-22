@@ -523,6 +523,12 @@ pub enum ExprKind {
         recv: Box<Expr>,
         name: Ident,
     },
+    // `e?` on a `Result` or `Option`: the `Ok`/`Some` payload, or an early return of the
+    // `Err`/`None` from the enclosing function. `op` is the `?` token.
+    Try {
+        expr: Box<Expr>,
+        op: Span,
+    },
     // `new int[n]`, `new double[r][c]`, `new int[n][]`: `ty` is the resulting array type; one
     // length per given dimension, missing inner dimensions are empty arrays.
     NewArray {

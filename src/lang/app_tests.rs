@@ -331,6 +331,10 @@ public Box<int> boxed(int n) {
 public <T> T same(T x) {
     return x;
 }
+
+public Result<int, String> parsed(int n) {
+    return Result.Ok(n);
+}
 "#;
 
 fn app_call(
@@ -352,6 +356,7 @@ fn app_call(
         "pair",
         "boxed",
         "same",
+        "parsed",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -487,6 +492,11 @@ fn command_errors() {
     );
     assert_eq!(
         code(app_call("same", &[("x", JsArg::Int(2))], 1, 0)),
+        "Q0714"
+    );
+    // The prelude's `Result` is an instance too.
+    assert_eq!(
+        code(app_call("parsed", &[("n", JsArg::Int(2))], 1, 0)),
         "Q0714"
     );
     let e = app_call("flip", &[], 1, 0).unwrap_err();
