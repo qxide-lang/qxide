@@ -244,7 +244,7 @@
 | 2a | 완료 (커밋 `149994c`, 설계 문서 `qx-language.md` 19.9절) |
 | 2b | 완료 (커밋 `17143a1`, 설계 문서 `qx-language.md` 19.10절) |
 | 2c | 미착수 |
-| 3a | 완료 (설계 문서 `qx-build.md`, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
+| 3a | 완료 (커밋 `7cd7891`, 설계 문서 `qx-build.md`, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
 | 3b~3c | 미착수 (Cranelift AOT, JIT 커버리지 확대·lowering 캐싱) |
 | Stage 4 | 미착수 |
 | Stage 5 | 미착수 |
