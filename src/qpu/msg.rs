@@ -281,3 +281,10 @@ pub fn bad_device_config(path: &str, reason: &str) -> String {
         reason = reason
     )
 }
+
+pub fn max_seconds_range(max: u64) -> String {
+    format!(
+        "--max-seconds must be at most {max} seconds (3-hour service limit)",
+        max = max
+    )
+}

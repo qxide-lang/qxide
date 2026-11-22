@@ -445,9 +445,15 @@ fn unreadable_results_are_saved() {
     assert_eq!(out.status.code(), Some(1));
     let err = text(&out.stderr);
     assert!(err.contains("job-7"), "{err}");
-    let saved = std::env::temp_dir().join("qxide-ibm-job-7-results.json");
+    // A new file in the temp directory (a suffix is added if the name is taken).
+    let saved = err
+        .split("saved to `")
+        .nth(1)
+        .and_then(|s| s.split('`').next())
+        .unwrap_or_else(|| panic!("no saved path: {err}"));
+    assert!(saved.contains("qxide-ibm-job-7-results"), "{saved}");
     assert_eq!(
-        std::fs::read_to_string(&saved).unwrap(),
+        std::fs::read_to_string(saved).unwrap(),
         r#"{"__type__": "SomethingElse"}"#
     );
     let _ = std::fs::remove_file(saved);
@@ -539,6 +545,15 @@ fn backend_flags_are_checked() {
             "ibm:x",
             "--device-config",
             "c.json",
+        ],
+        vec![
+            "run",
+            &bell,
+            "--backend",
+            "ibm:x",
+            "--dry-run",
+            "--max-seconds",
+            "10801",
         ],
         vec!["run", &bell, "--backend", "aws:sv1"],
         vec!["run", &bell, "--backend", "ibm:../x"],

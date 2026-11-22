@@ -379,11 +379,34 @@ impl Provider for Ibm {
             session.request("GET", &format!("/jobs/{id}/results"), None)?,
         )?;
         results::decode(&r.body, "c", job.bits).map_err(|reason| {
-            let path = std::env::temp_dir().join(format!("qxide-ibm-{id}-results.json"));
-            let saved = std::fs::write(&path, &r.body).map(|()| path.display().to_string());
+            let saved = save_raw(&id, &r.body);
             msg::results_unreadable(&id, &saved.unwrap_or_else(|e| e.to_string()), &reason)
         })
     }
+}
+
+// Keeps an undecodable result in a new file of the temp directory (never one that already
+// exists, so nothing planted there is written through).
+fn save_raw(id: &str, body: &[u8]) -> std::io::Result<String> {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir();
+    for n in 0..100 {
+        let name = match n {
+            0 => format!("qxide-ibm-{id}-results.json"),
+            n => format!("qxide-ibm-{id}-results-{n}.json"),
+        };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => return f.write_all(body).map(|()| path.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
 }
 
 fn poll_interval() -> Duration {

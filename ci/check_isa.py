@@ -32,8 +32,9 @@ for fake in [FakeTorino(), FakeFez(), FakeBrisbane()]:
         )
         name = f"{fake.name} {pathlib.Path(program).name}"
         if run.returncode != 0:
-            # Programs that measure nothing are refused on purpose.
-            print(f"skip {name}: {run.stderr.strip()}")
+            # Every given program measures something, so a refusal is a failure.
+            failed += 1
+            print(f"FAIL {name}: exit {run.returncode}: {run.stderr.strip()}")
             continue
         isa = run.stdout.split("\nOpenQASM 3:\n", 1)[1]
         try:

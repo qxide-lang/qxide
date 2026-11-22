@@ -34,6 +34,8 @@ pub struct Settings {
 }
 
 pub const DEFAULT_MAX_SECONDS: u64 = 120;
+// The service's limit for a job's `cost` (three hours; the API schema's maximum).
+const MAX_SECONDS: u64 = 10_800;
 
 /// Progress and confirmation, so tests can drive a run without a terminal.
 pub trait Ui {
@@ -93,7 +95,7 @@ pub fn check_flags(
     backend: bool,
     dry_run: bool,
     yes: bool,
-    max_seconds: bool,
+    max_seconds: Option<u64>,
     device_config: bool,
     seed: bool,
     allow: bool,
@@ -102,7 +104,7 @@ pub fn check_flags(
         for (set, flag) in [
             (dry_run, "--dry-run"),
             (yes, "--yes"),
-            (max_seconds, "--max-seconds"),
+            (max_seconds.is_some(), "--max-seconds"),
             (device_config, "--device-config"),
         ] {
             if set {
@@ -118,6 +120,9 @@ pub fn check_flags(
     }
     if device_config && !dry_run {
         return Err(msg::device_config_needs_dry_run());
+    }
+    if max_seconds.is_some_and(|s| s > MAX_SECONDS) {
+        return Err(msg::max_seconds_range(MAX_SECONDS));
     }
     Ok(())
 }

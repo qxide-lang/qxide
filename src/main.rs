@@ -429,7 +429,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
         backend.is_some(),
         dry_run,
         yes,
-        max_seconds.is_some(),
+        max_seconds,
         device_config.is_some(),
         seed.is_some(),
         allow_fs,

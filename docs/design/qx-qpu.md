@@ -64,6 +64,7 @@ qxide run [FILE] --backend ibm:<device> [--shots N] [--yes] [--dry-run] [--max-s
 - `--backend` 없이 `--dry-run`, `--yes`, `--max-seconds`, `--device-config`를 지정하면 사용법 오류(종료 코드 `2`)다.
 - `--backend`와 함께 `--seed` 또는 `--allow`를 지정하면 사용법 오류다.
 - `--device-config`는 `--dry-run`과 함께만 사용할 수 있다.
+- `--max-seconds`는 1에서 10800초까지의 값을 허용하며 이를 초과하는 값은 사용법 오류(종료 코드 2)로 처리한다. 이는 해당 값을 전달하는 작업 필드 `cost`가 서비스 API 스키마에서 최댓값 10800(3시간)인 `int32`로 정의되어 있으며, 문서화된 서비스 최대 실행 시간 상한과 일치하기 때문이다.
 - 알 수 없는 제공자 접두사이거나 장치 이름이 길이 1~64의 ASCII 영문자·숫자·`_`·`-` 범위를 벗어나면 종료 코드 `2`로 실패한다. 실행 단계의 오류는 종료 코드 `1`로 종료한다.
 - 측정이 없는 프로그램은 장치가 측정 결과만 반환하므로 제출 전에 거부한다.
 
@@ -132,6 +133,8 @@ IBM 장치는 결합된 물리 큐비트 위의 네이티브 게이트로 구성
 - **결과 픽스처 (`tests/data/qpu/`)**: 공식 클라이언트의 `RuntimeEncoder`로 생성하며(`ci/qpu_fixtures.py`), 생성 시 `RuntimeDecoder`로 다시 복호화되는지 함께 확인한다.
 - **오프라인 장치 ISA 검증 (`ci/check_isa.py`)**: CI의 `qasm-interop` 작업에서 네트워크 없이 실행된다. `qiskit_ibm_runtime.fake_provider`의 오프라인 스냅샷 `FakeTorino`, `FakeFez`(`cz`, Heron)와 `FakeBrisbane`(방향성 `ecr`, Eagle)의 구성을 추출해 `examples/qx`의 각 프로그램을 `--dry-run --device-config`로 변환한 뒤, 참조 파서·`qiskit.qasm3.loads`·공식 `validate_isa_circuits`(해당 장치 타깃 기준)를 모두 통과하는지 확인한다. 로컬에서는 `ccx`, `if`/`else`, 큐비트 재사용을 포함한 추가 프로그램 2개를 더해 총 27개 프로그램·장치 조합이 모두 통과했다.
 - 전체 테스트 스위트, `clippy -- -D warnings`, wasm 크레이트 clippy 및 빌드, 데스크톱 앱 런타임 검사가 모두 통과했다.
+- Windows 자격 증명 관리자 읽기(`CredReadW`)는 개발 머신에서 `cmdkey`로 생성한 일회용 일반 자격 증명 `qxide:qxide-test`를 대상으로 무시된 테스트(`QXIDE_TEST_KEYCHAIN=1 cargo test keychain -- --ignored`)를 1회 실행해 확인한 뒤 해당 항목을 삭제했으며, macOS 및 Secret Service 경로는 실행하지 않았다.
+- `ci/check_isa.py`는 거부된 프로그램을 실패로 처리하므로 모든 변환이 실패하는 회귀가 조용히 통과할 수 없으며, 전체 CI 명령(`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`)과 `cargo test --features jit` 모두 통과한다.
 
 ## 결정 사항
 
@@ -154,6 +157,7 @@ IBM 장치는 결합된 물리 큐비트 위의 네이티브 게이트로 구성
 - 결과 형식: `sampler`에 대해 공식 클라이언트가 복호화하는 `RuntimeEncoder` JSON을 가정했으나, 공개 OpenAPI 문서에는 executor 결과용으로 다른 텐서 봉투 형식(`schema_version` v2.0)이 기술되어 있다.
 - IBM 컴파일러가 `if (c[k] == true)` 구문과 인라인 `ecr` 게이트 정의를 수용하는지 여부(Qiskit 임포터는 둘 다 허용하지만, Qiskit 출력기는 `if (c[k])`를 사용한다).
 - 결함 큐비트와 결함 간선(장치 properties)은 읽지 않으며, 배치 시 오류율은 고려하지 않는다.
+- 가짜 서버가 루프백에서 평문 HTTP로만 통신하므로, `curl`의 HTTPS 경로(`proto =https`, TLS)는 테스트에서 한 번도 실행되지 않았다.
 - 상태 응답의 `state`·`length_queue` 필드명과 장시간 대기 중 IAM 토큰 갱신은 실제 서비스 대상으로 검증되지 않았다. `curl` 설정 전달 경로는 현재까지 Windows에서만 실행되었으며, CI의 `test` 잡이 Linux와 Windows에서 `cargo test`를 실행하므로 이 브랜치에서 CI가 실행되면 fake-server 테스트는 Linux에서도 실행되지만, macOS(`curl` 및 `security` 키체인 경로)는 CI 범위에 포함되지 않는다.
 
 ## 후속 과제
