@@ -4,6 +4,7 @@ import {highlightQx} from '../components/CodeBlock';
 import {CopyLabel} from '../components/CopyLabel';
 import {WAVES, WAVE_WIDTH} from '../lib/waves';
 import {GITHUB, usePageMeta} from '../lib/meta';
+import {Inline} from '../components/Inline';
 
 type Os = 'unix' | 'windows';
 
@@ -80,7 +81,14 @@ function Install() {
       </p>
       {/* /install.sh and /install.ps1 redirect via public/_redirects. */}
       <p className="install-alt">
-        Or <code>cargo install qxide</code> · <code>pip install qxide</code>
+        <Inline text="Or `pip install qxide`" />
+      </p>
+      <p className="install-alt">
+        <Inline text="Editor support: a VS Code extension (`.vsix`, highlighting and `qxide lsp`) is attached to the" />{' '}
+        <a href={`${GITHUB}/releases/latest`} target="_blank" rel="noreferrer">
+          GitHub release<span className="sr-only"> (opens in a new tab)</span>
+        </a>
+        . A Visual Studio Marketplace listing is in preparation.
       </p>
     </section>
   );
@@ -106,7 +114,7 @@ function BellCode() {
   );
 }
 
-// Output captured by running `qxide run examples/qx/bell.qx --shots 1000` and `qxide qasm examples/qx/bell.qx`.
+// Output captured with qxide 0.8.0: `qxide run examples/qx/bell.qx --shots 1000 --seed 0` and `qxide qasm examples/qx/bell.qx`.
 const RUN_OUT = `[1, 1]  0b11 = 3  ×521
   a=1 b=1
 [0, 0]  0b00 = 0  ×479
@@ -143,7 +151,7 @@ function Example() {
           </div>
           <div className="result-body">
             <p className="result-cmd">
-              <span aria-hidden="true">$ </span>qxide run bell.qx --shots 1000
+              <span aria-hidden="true">$ </span>qxide run bell.qx --shots 1000 --seed 0
             </p>
             <pre className="result-qasm" tabIndex={0} aria-label="Output of qxide run with 1000 shots">
               {RUN_OUT}
@@ -239,7 +247,7 @@ export function Home() {
         </h1>
         <p className="hero-sub">
           Familiar C-style syntax, compile-time qubit safety like Rust&apos;s ownership, and OpenQASM 3 output.
-          Version 0.7.0 is still an early experiment; the language may still change.
+          Version 0.8.0 is still an early experiment; the language may still change.
         </p>
         <div className="cta">
           <Link className="pill pill-solid" to="/learn">

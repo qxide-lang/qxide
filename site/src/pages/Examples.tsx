@@ -10,12 +10,12 @@ type Example = {
   note?: string;
 };
 
-// .qx programs in examples/qx/ at v0.7.0. Results were captured by running the commands.
+// .qx programs in examples/qx/ at v0.8.0. Results were captured by running the commands with qxide 0.8.0.
 const QX_EXAMPLES: Example[] = [
   {
     name: 'bell',
     summary: 'A Bell pair: the two measured bits are always equal.',
-    command: 'qxide run examples/qx/bell.qx --shots 1000',
+    command: 'qxide run examples/qx/bell.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: '[1, 1]  0b11 = 3  ×521\n  a=1 b=1\n[0, 0]  0b00 = 0  ×479\n  a=0 b=0',
@@ -25,7 +25,7 @@ const QX_EXAMPLES: Example[] = [
   {
     name: 'ghz',
     summary: 'A 5-qubit GHZ state: the register always reads all zeros or all ones.',
-    command: 'qxide run examples/qx/ghz.qx --shots 1000',
+    command: 'qxide run examples/qx/ghz.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: '[1, 1, 1, 1, 1]  0b11111 = 31  ×521\n  [1, 1, 1, 1, 1]  0b11111 = 31\n[0, 0, 0, 0, 0]  0b00000 = 0  ×479\n  [0, 0, 0, 0, 0]  0b00000 = 0',
@@ -35,7 +35,7 @@ const QX_EXAMPLES: Example[] = [
   {
     name: 'teleport',
     summary: 'Quantum teleportation of |1⟩: measured bits steer the corrections applied to the third qubit.',
-    command: 'qxide run examples/qx/teleport.qx --shots 1000',
+    command: 'qxide run examples/qx/teleport.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: '[1, 0, 1]  0b101 = 5  ×273\n  bob=1\n[0, 0, 1]  0b100 = 4  ×251\n  bob=1\n[1, 1, 1]  0b111 = 7  ×248\n  bob=1\n[0, 1, 1]  0b110 = 6  ×228\n  bob=1',
@@ -45,7 +45,7 @@ const QX_EXAMPLES: Example[] = [
   {
     name: 'functions',
     summary: 'bellPair borrows two qubits and entangles them, while measureAll takes ownership of the register with consume and measures it.',
-    command: 'qxide run examples/qx/functions.qx --shots 1000',
+    command: 'qxide run examples/qx/functions.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: "[1, 1]  0b11 = 3  ×521\n  [1, 1]\n[0, 0]  0b00 = 0  ×479\n  [0, 0]",
@@ -55,7 +55,7 @@ const QX_EXAMPLES: Example[] = [
   {
     name: 'rotation',
     summary: 'Uses var, PI, and an (int) cast: four ry rotations of PI / 8 add up to 90 degrees.',
-    command: 'qxide run examples/qx/rotation.qx --shots 1000',
+    command: 'qxide run examples/qx/rotation.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: "[1]  0b1 = 1  ×518\n  ry total 90 degrees (90.0), m=1\n[0]  0b0 = 0  ×482\n  ry total 90 degrees (90.0), m=0",
@@ -65,7 +65,7 @@ const QX_EXAMPLES: Example[] = [
   {
     name: 'teleport_fn',
     summary: 'Quantum teleportation built from functions: prepareOne returns a qubit, and the corrections correctX and correctZ are called inside if branches on measured bits.',
-    command: 'qxide run examples/qx/teleport_fn.qx --shots 1000',
+    command: 'qxide run examples/qx/teleport_fn.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: "[1, 0, 1]  0b101 = 5  ×273\n  bob=1\n[0, 0, 1]  0b100 = 4  ×251\n  bob=1\n[1, 1, 1]  0b111 = 7  ×248\n  bob=1\n[0, 1, 1]  0b110 = 6  ×228\n  bob=1",
@@ -75,7 +75,7 @@ const QX_EXAMPLES: Example[] = [
   {
     name: 'conditional_fn',
     summary: 'Calls gate-only functions inside if and else branches on measured bits, including a loop of rz rotations, a nested if on a Bit parameter, and a classical helper.',
-    command: 'qxide run examples/qx/conditional_fn.qx --shots 1000',
+    command: 'qxide run examples/qx/conditional_fn.qx --shots 1000 --seed 0',
     result: {
       label: 'Output',
       text: "[1, 0, 0, 0]  0b0001 = 1  ×268\n  m=1 f=0 r=[0, 0]\n[1, 1, 1, 0]  0b0111 = 7  ×250\n  m=1 f=1 r=[1, 0]\n[0, 1, 0, 0]  0b0010 = 2  ×246\n  m=0 f=1 r=[0, 0]\n[0, 0, 0, 0]  0b0000 = 0  ×236\n  m=0 f=0 r=[0, 0]",
@@ -110,7 +110,7 @@ const EXAMPLES: Example[] = [
   {
     name: 'qasm_dump',
     summary:
-      'Writes OpenQASM 3 for eight sample circuits to a directory (default qasm-out): bell, gates, teleport, nested_branches, reset_and_reuse, ghz_register, no_measurement and ancilla_parity. CI parses them with Qiskit.',
+      'Writes OpenQASM 3 for ten sample circuits to a directory (default qasm-out): bell, gates, teleport, nested_branches, reset_and_reuse, ghz_register, no_measurement, ancilla_parity, extreme_angles and empty. CI parses them with the OpenQASM 3 reference parser and Qiskit.',
     command: 'cargo run --example qasm_dump -- qasm-out',
     result: {
       label: 'Output',

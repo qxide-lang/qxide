@@ -1,11 +1,14 @@
 import {Link} from 'react-router';
 import {CodeBlock} from '../components/CodeBlock';
 import {GITHUB, GITHUB_BLOB, usePageMeta} from '../lib/meta';
+import {Inline} from '../components/Inline';
 
 const HELP = `Usage: qxide <COMMAND>
 
 Commands:
   run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, random seed, printed to stderr)
+  run [FILE] --backend ibm:DEVICE    Run a .qx program on an IBM quantum computer (prompts before submitting; uses QPU time)
+                                     --dry-run (preview), --yes (no prompt), --max-seconds S (QPU cap, default 120), --device-config FILE (dry-run)
   check [FILE]                       Check a .qx program for errors without running it
   qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
@@ -13,13 +16,18 @@ Commands:
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
   new <NAME>                         Create a new project folder with main.qx and README.md
   bell [SHOTS]                       Print the Bell-state circuit as OpenQASM 3 and simulate it (default: 1000 shots)
+  lsp                                Start a .qx language server (LSP) on stdin/stdout
   add <PKG>[@VER] [--path DIR]       Add a dependency to qxide.toml and install it
   remove <PKG>                       Remove a dependency
   install [--locked] [--offline]     Download and verify packages in qxide.lock
   publish [--dry-run]                Package the project and submit it to the registry
   search <WORD>                      Search the package registry
+  app new <NAME>                   Create a desktop app project with .qx logic and an HTML/JS UI
+  app dev [DIR]                    Run the app in a window, loading files directly from disk
+  app build [DIR]                  Build a portable app executable in target/app/
 
 Options:
+  --engine ast|ir|jit                Select engine for run, qasm, and repl (default: QXIDE_ENGINE or ast; ir: typed IR; jit: IR + native, needs jit feature)
   -V, --version                      Print version
   -h, --help                         Print help`;
 
@@ -44,14 +52,50 @@ const REPO_DOCS = [
   },
   {
     path: 'docs/design/qx-ir.md',
-    title: 'Typed IR design draft',
-    desc: 'Design draft of the typed IR planned to replace the tree-walking interpreter and prepare for native code generation; not implemented yet.',
+    title: 'Typed IR design',
+    desc: "Design of the typed IR that checked `.qx` programs lower to, implemented in 0.8.0 as an IR interpreter selected with `--engine ir` (the tree-walking `ast` engine remains the default).",
     lang: 'Korean',
+  },
+  {
+    path: 'docs/design/qx-jit.md',
+    title: 'Cranelift JIT',
+    desc: "Design record of the optional Cranelift JIT (`--engine jit`, Cargo feature `jit`, off by default), which compiles build-time classical functions using only `int`, `double`, and `boolean` to native code and runs everything else in the IR interpreter.",
+    lang: 'Korean',
+  },
+  {
+    path: 'docs/design/qx-qpu.md',
+    title: 'Quantum computer submission (IBM)',
+    desc: "Design record of `qxide run --backend ibm:<device>`: OpenQASM 3 checks, IBM Quantum (Qiskit Runtime REST) client, credentials, conversion to native gates and coupled qubits, cost and queue notices, and what is unverified against the real service (tested only against a local fake server).",
+    lang: 'Korean',
+  },
+  {
+    path: 'docs/perf/QX_BENCHMARKS.md',
+    title: '.qx benchmark suite',
+    desc: "The `.qx` benchmark suite in `bench/qx/`, how to run it, the measurement method, and measured times for the `ast`, `ir`, and `jit` engines on one Windows laptop.",
+    lang: 'English',
+  },
+  {
+    path: 'docs/design/lsp.md',
+    title: 'Language server and VS Code extension',
+    desc: "Design of the `qxide lsp` language server (diagnostics, formatting, hover, symbols, go to definition, and completions) and the VS Code extension in `editors/vscode`.",
+    lang: 'English',
+  },
+  {
+    path: 'docs/design/qx-app.md',
+    title: 'Desktop apps and Qxide Studio',
+    desc: "Design of desktop apps written in `.qx` (`qxide app new|dev|build`, the `qxide-app` webview runtime, permissions, and the `std` modules) and Qxide Studio.",
+    lang: 'English',
   },
   {
     path: 'CHANGELOG.md',
     title: 'Change log',
     desc: 'Per-version list of notable changes across releases, starting with 0.6.0.',
+    lang: 'English',
+  },
+  {
+    path: 'docs/release-notes/v0.8.0.md',
+    title: 'v0.8.0 release notes',
+    desc: "What changed in 0.8.0: the typed IR engine and optional Cranelift JIT, IBM quantum computer submission, the `String` type and `std` library, desktop apps and Qxide Studio, the language server and VS Code extension, registry package owners, a random default seed, execution budgets, and breaking changes.",
     lang: 'English',
   },
   {
@@ -76,6 +120,12 @@ const REPO_DOCS = [
     path: 'docs/release.md',
     title: 'Release runbook',
     desc: 'How releases are cut: cargo-dist installers and archives on GitHub Releases, and PyPI wheels built with maturin.',
+    lang: 'English',
+  },
+  {
+    path: 'docs/vscode-extension.md',
+    title: 'VS Code extension releases',
+    desc: "How the VS Code extension is packaged as a `.vsix`, attached to GitHub releases, and published to Visual Studio Marketplace and Open VSX.",
     lang: 'English',
   },
   {
@@ -111,7 +161,7 @@ const REPO_DOCS = [
   {
     path: 'ROADMAP.md',
     title: 'Roadmap',
-    desc: 'Stage 0 (Rust library, current), stage 1 (.qx syntax) and stage 2 (compiler). Unchecked items are not built yet.',
+    desc: "Stage 0 (Rust library), stage 1 (`.qx` syntax), stage 2 (compiler, current: typed IR and Cranelift JIT done; LLVM backend and verified quantum hardware submission open), and stage 3 (desktop apps and self-hosting); unchecked items are not built yet.",
     lang: 'Korean',
   },
 ];
@@ -127,7 +177,7 @@ export function Docs() {
       <header className="page-head">
         <h1>Docs</h1>
         <p className="lede">
-          Qxide is an early experiment, so the docs are split between the Rust API reference and a handful of documents in the repository, including the package manager design and every error code. New here? Start with the <Link to="/learn">tutorial</Link>.
+          <Inline text={"Qxide is an early experiment. Documentation is split between the Rust API reference on docs.rs and documents in the GitHub repository, including design records for the typed IR, Cranelift JIT, and IBM quantum computer submission, plus the package manager design, benchmark results, and every error code."} /> New here? Start with the <Link to="/learn">tutorial</Link>.
         </p>
       </header>
 
@@ -164,7 +214,9 @@ export function Docs() {
               <span className="doc-meta">
                 <code>{d.path}</code> · {d.lang}
               </span>
-              <span className="doc-desc">{d.desc}</span>
+              <span className="doc-desc">
+                <Inline text={d.desc} />
+              </span>
             </li>
           ))}
         </ul>
@@ -178,7 +230,14 @@ export function Docs() {
         <CodeBlock label="qxide --help" code={HELP} />
         <ul className="plain-list">
           <li>
-            <code>qxide run [FILE]</code> checks and simulates a program, defaulting to <code>src/main.qx</code> inside a project when no file is given. Pass <code>--shots N</code> to print a table grouped by outcome (such as <code>[0, 1, 1]  0b110 = 6  ×503</code>) and <code>--seed S</code> to make a run repeatable, with each shot receiving its own seed derived from <code>S</code>.
+            <code>qxide run [FILE]</code>: <Inline text={"Checks and simulates a program, defaulting to `src/main.qx` in a project when no file is given. `--shots N` prints a table grouped by outcome (such as `[0, 1, 1]  0b110 = 6  ×503`). Without `--seed`, runs use a random seed and print `seed: S (pass --seed S to reproduce)` to stderr if output depends on measurements. `--seed S` makes runs repeatable, deriving each shot's seed from `S`."} />
+          </li>
+          <li>
+            <code>--engine ast|ir|jit</code>: <Inline text={"Selects the circuit-building engine for `qxide run`, `qxide qasm`, and `qxide repl`. The default is `ast` (the tree-walking interpreter), or the `QXIDE_ENGINE` environment variable if set. `ir` runs the typed IR interpreter with the same output. `jit` also compiles build-time classical functions to native code with Cranelift. It requires a build with the Cargo feature `jit`, which prebuilt binaries and the PyPI package do not include; other builds reject it with exit code 2."} />
+          </li>
+          <li>
+            <code>qxide run [FILE] --backend ibm:DEVICE</code>: <Inline text={"Sends the circuit to an IBM Quantum computer instead of simulating it. `--dry-run` prints the request without reading credentials or using the network. A real run asks for confirmation (unless `--yes` is passed), uses paid or quota-limited QPU time, and caps it with `--max-seconds` (default 120). This path has been tested only against a local fake server so far. Details are in the"} />{' '}
+            <Link to="/learn#ibm">tutorial</Link>.
           </li>
           <li>
             <code>qxide check [FILE]</code> parses, type-checks, and verifies qubit usage without running the circuit, while <code>qxide qasm [FILE]</code> prints the circuit as OpenQASM 3. Inside a project, both default to <code>src/main.qx</code> when no file is given.
@@ -191,6 +250,12 @@ export function Docs() {
           </li>
           <li>
             <code>qxide add</code>, <code>qxide remove</code>, and <code>qxide install</code> (with <code>--locked</code> and <code>--offline</code> options) manage dependencies in <code>qxide.toml</code> and record their SHA-256 checksums in <code>qxide.lock</code>. <code>qxide search</code> queries the GitHub registry <code>qxide-lang/registry</code>, and <code>qxide publish</code> packages a project and opens a pull request there using the GitHub CLI <code>gh</code>.
+          </li>
+          <li>
+            <code>qxide lsp</code>: <Inline text={"Starts a language server on stdin/stdout for diagnostics, formatting, hover, symbols, go to definition, and completions. The VS Code extension (a `.vsix` attached to the GitHub release; Marketplace listing in preparation) starts it automatically and requires `qxide` 0.8.0 or newer and VS Code 1.91 or newer."} />
+          </li>
+          <li>
+            <code>qxide app new|dev|build</code>: <Inline text={"Creates, runs, and packages desktop apps with `.qx` logic and an HTML/JS UI. `qxide app build` attaches the app to a prebuilt `qxide-app` runtime. That runtime is not yet included in release archives or PyPI wheels and must be built from `crates/qxide-app-runtime` in the repository, as described in `docs/design/qx-app.md`."} />
           </li>
           <li>
             <code>qxide bell</code> prints the OpenQASM 3 for a built-in Bell-state circuit, followed by outcome counts from 1000 simulated shots. Run <code>qxide --version</code> to print the installed version.
