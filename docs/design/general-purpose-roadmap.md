@@ -181,9 +181,18 @@
 
 ### Stage 2 — 표준 라이브러리 기초
 
-- 내용: 프로세스 인자/환경 변수/종료 코드/stdin, 고전 전용 프로그램의 스트리밍 stdout, 경로(path), `std.fs` 확장, 단조 시계(time monotonic), 시드 지정 PRNG(random), 컬렉션(`List`/`Map`), JSON.
-- 완료 기준: 인자로 받은 파일의 단어 수를 세는 등의 CLI 도구를 `.qx`로 작성할 수 있다.
-- 테스트 기준: 모듈별 CLI 통합 테스트, 호스트별 권한 테스트.
+- **2a 프로세스 입출력**
+  - 내용: `main` 커맨드라인 인자(`String[] args`), `int main()` 종료 코드, `std.io`(`write`/`write_line`/`read_line`/`read_all`), `std.env.get`, `std.time.monotonic_millis` 추가.
+  - 완료 기준: `.qx`로 작성한 단어 수 세기 CLI 도구(`examples/cli/wc.qx`)가 표준 입력을 읽고 집계 결과를 즉시 출력하며 오류 시 0이 아닌 종료 코드로 종료한다.
+  - 테스트 기준: CLI 통합 테스트(인자, 종료 코드, stdin, 환경 변수, 출력 순서), 호스트별 권한 테스트, 스크립트된 호스트를 사용한 dual-engine 테스트.
+- **2b 기초 데이터 도구**
+  - 내용: `String`의 `split`/`join`, 비트 및 시프트 연산자, 시드 기반 순수 결정적 PRNG 모듈(`std.random`), 고전 전용 제네릭 컬렉션 `List<T>`/`Map<K, V>` 추가.
+  - 완료 기준: 텍스트를 토큰화하고 `Map`으로 단어 빈도를 집계하는 프로그램을 작성할 수 있으며, 모든 엔진에서 동일한 결과와 스텝 과금으로 동작한다.
+  - 테스트 기준: 스텝 한도 스윕을 포함한 dual-engine 테스트, PRNG 재현성 테스트.
+- **2c 파일과 데이터 형식**
+  - 내용: 경로 처리 모듈(`std.path`), `std.fs` 확장(명시적 권한 아래 커맨드라인으로 지정한 파일 읽기, 디렉터리 목록 조회), JSON 파싱·직렬화 추가.
+  - 완료 기준: `qxide run wc.qx --allow fs -- file.txt` 형태의 CLI 도구가 인자로 전달된 파일을 읽을 수 있고, JSON 파싱·직렬화가 왕복(round-trip)으로 일치한다.
+  - 테스트 기준: CLI 통합 테스트, 권한 테스트, JSON 적합성 테스트 사례.
 
 ### Stage 3 — 실행 방식
 
@@ -223,7 +232,9 @@
 | 1g | 완료 (커밋 `693770e`, 설계 문서 `qx-language.md` 19.6절) |
 | 1f | 완료 (커밋 `10f5cbe`, 설계 문서 `qx-language.md` 19.7절) |
 | 1h | 완료 (커밋 `e833250`, 설계 문서 `qx-language.md` 19.8절) |
-| Stage 2 | 미착수 |
+| 2a | 완료 (커밋 `149994c`, 설계 문서 `qx-language.md` 19.9절) |
+| 2b | 미착수 |
+| 2c | 미착수 |
 | Stage 3 | 미착수 |
 | Stage 4 | 미착수 |
 | Stage 5 | 미착수 |
