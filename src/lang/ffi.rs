@@ -569,4 +569,35 @@ mod tests {
         assert_eq!(e.kind, StdErrorKind::Unavailable);
         assert!(off.libs.is_empty());
     }
+
+    // All six slots, including doubles past the fourth argument (stack slots on Windows x64).
+    #[cfg(all(
+        feature = "ffi",
+        any(
+            all(windows, target_arch = "x86_64"),
+            all(unix, any(target_arch = "x86_64", target_arch = "aarch64"))
+        )
+    ))]
+    #[test]
+    fn passes_six_mixed_arguments() {
+        extern "C" fn mix(a: i64, b: f64, c: i64, d: f64, e: f64, f: i64) -> f64 {
+            a as f64 + b * 10.0 + c as f64 * 100.0 + d * 1e3 + e * 1e4 + f as f64 * 1e5
+        }
+        extern "C" fn ints(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64 {
+            a + b * 10 + c * 100 + d * 1000 + e * 10_000 + f * 100_000
+        }
+        extern "C" fn doubles(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> f64 {
+            a + b * 10.0 + c * 100.0 + d * 1e3 + e * 1e4 + f * 1e5
+        }
+        let (i, d) = (Val::I, Val::D);
+        let mixed = [i(1), d(2.0), i(3), d(4.0), d(5.0), i(6)];
+        let got = unsafe { sys::call(mix as *const () as usize, &mixed, Kind::Double) };
+        assert!(matches!(got, Val::D(x) if x == 654_321.0), "{got:?}");
+        let all_i = [i(1), i(2), i(3), i(4), i(5), i(6)];
+        let got = unsafe { sys::call(ints as *const () as usize, &all_i, Kind::Int) };
+        assert!(matches!(got, Val::I(654_321)), "{got:?}");
+        let all_d = [d(1.0), d(2.0), d(3.0), d(4.0), d(5.0), d(6.0)];
+        let got = unsafe { sys::call(doubles as *const () as usize, &all_d, Kind::Double) };
+        assert!(matches!(got, Val::D(x) if x == 654_321.0), "{got:?}");
+    }
 }
