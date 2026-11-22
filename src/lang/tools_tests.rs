@@ -148,6 +148,33 @@ fn fmt_canonical_layout() {
     assert_eq!(run("t.qx", &out, 1, 0).ok(), run("t.qx", MESSY, 1, 0).ok());
 }
 
+// One enum variant per line; `match` arms are blocks, with or without a comma after them.
+#[test]
+fn fmt_lays_out_enums_and_match() {
+    let messy = "enum E { A, B(int n, String s), }\nvoid main() { E e = E.B(1, \"s\"); match e { A => {}, B(n, _) => { println(\"{}\", n); }, } match -1 { -1 => { } _ => {} } }\n";
+    let tidy = "enum E {
+    A,
+    B(int n, String s),
+}
+void main() {
+    E e = E.B(1, \"s\");
+    match e {
+        A => {},
+        B(n, _) => {
+            println(\"{}\", n);
+        },
+    }
+    match -1 {
+        -1 => {}
+        _ => {}
+    }
+}
+";
+    assert_eq!(fmt_ok(messy), tidy);
+    assert_eq!(fmt_ok(tidy), tidy);
+    assert_eq!(run("t.qx", tidy, 1, 0).ok(), run("t.qx", messy, 1, 0).ok());
+}
+
 #[test]
 fn fmt_keeps_literal_spelling_bom_and_crlf() {
     let src = "\u{feff}void main() {\r\n  int big=1_000;double e=1e3;\r\n  println(\"tab\\t{{}} {} {}\",big,e);\r\n}\r\n";

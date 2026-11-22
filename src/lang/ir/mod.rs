@@ -42,6 +42,8 @@ pub enum IrTy {
     Array(TyId),
     // A shared struct value; fields are resolved to indices when lowering.
     Struct(TyId),
+    // An immutable enum value; variants are resolved to tags when lowering.
+    Enum(TyId),
 }
 
 impl IrTy {
@@ -59,6 +61,7 @@ impl IrTy {
             Ty::QReg => IrTy::QReg,
             Ty::Array(id) => IrTy::Array(id),
             Ty::Struct(id) => IrTy::Struct(id),
+            Ty::Enum(id) => IrTy::Enum(id),
             Ty::Void | Ty::Error => IrTy::Unit,
         }
     }
@@ -86,6 +89,7 @@ impl IrTy {
             IrTy::Unit => "unit",
             IrTy::Array(id) => Ty::Array(id).name(),
             IrTy::Struct(id) => Ty::Struct(id).name(),
+            IrTy::Enum(id) => Ty::Enum(id).name(),
         }
     }
 
@@ -230,6 +234,27 @@ pub enum Inst {
         dst: Reg,
         ty: Ty,
         args: Box<[Reg]>,
+        span: Span,
+    },
+    /// `Shape.Circle(r)`: the variant with tag `tag`, one register per payload field (widened).
+    NewEnum {
+        dst: Reg,
+        ty: Ty,
+        tag: u32,
+        args: Box<[Reg]>,
+        span: Span,
+    },
+    /// The variant tag of an enum value, as an `int`.
+    EnumTag {
+        dst: Reg,
+        src: Reg,
+        span: Span,
+    },
+    /// Payload field `index` of an enum value (of the variant a preceding test established).
+    EnumField {
+        dst: Reg,
+        src: Reg,
+        index: u32,
         span: Span,
     },
     /// `p.f` by field index.
@@ -602,6 +627,21 @@ impl Func {
                 let args: Vec<String> = args.iter().map(|a| r(*a)).collect();
                 format!("{} = new {}({})", r(*dst), ty.name(), args.join(", "))
             }
+            Inst::NewEnum {
+                dst, ty, tag, args, ..
+            } => {
+                let args: Vec<String> = args.iter().map(|a| r(*a)).collect();
+                format!(
+                    "{} = enum {}#{tag}({})",
+                    r(*dst),
+                    ty.name(),
+                    args.join(", ")
+                )
+            }
+            Inst::EnumTag { dst, src, .. } => format!("{} = tag {}", r(*dst), r(*src)),
+            Inst::EnumField {
+                dst, src, index, ..
+            } => format!("{} = payload {}.{index}", r(*dst), r(*src)),
             Inst::GetField {
                 dst, recv, index, ..
             } => format!("{} = field {}.{index}", r(*dst), r(*recv)),

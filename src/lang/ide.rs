@@ -79,8 +79,8 @@ pub struct Item {
 
 /// Every keyword of the language; a test keeps this in sync with the lexer.
 pub const KEYWORDS: &[&str] = &[
-    "final", "var", "struct", "consume", "import", "public", "if", "else", "for", "in", "while",
-    "break", "continue", "return", "true", "false",
+    "final", "var", "struct", "enum", "consume", "import", "public", "if", "else", "for", "in",
+    "while", "break", "continue", "match", "return", "true", "false",
 ];
 
 /// Type names as written in source.
@@ -304,6 +304,26 @@ impl Scopes {
                     self.expr(base);
                     self.expr(value);
                 }
+                Stmt::Match {
+                    scrutinee, arms, ..
+                } => {
+                    self.expr(scrutinee);
+                    for a in arms {
+                        if let PatKind::Variant { binds, .. } = &a.pat.kind {
+                            for b in binds.iter().filter(|b| b.name != "_") {
+                                self.locals.push(Local {
+                                    name: b.name.clone(),
+                                    decl: b.span,
+                                    ty: None,
+                                    kind: LocalKind::Decl { is_final: true },
+                                    visible: (a.pat.span.end, a.body.close.end),
+                                    func,
+                                });
+                            }
+                        }
+                        self.block(&a.body, func);
+                    }
+                }
                 Stmt::Expr(e) => self.expr(e),
             }
         }
@@ -353,7 +373,8 @@ impl Scopes {
             }
             ExprKind::NewArray { dims: items, .. }
             | ExprKind::ArrayLit { elems: items, .. }
-            | ExprKind::NewStruct { args: items, .. } => {
+            | ExprKind::NewStruct { args: items, .. }
+            | ExprKind::Variant { args: items, .. } => {
                 for a in items {
                     self.expr(a);
                 }

@@ -264,7 +264,7 @@ fn is_fn_decl(input: &str) -> bool {
     lexer::lex(input)
         .ok()
         .and_then(|toks| parser::parse(toks).ok())
-        .is_some_and(|p| !p.fns.is_empty() || !p.structs.is_empty())
+        .is_some_and(|p| !p.fns.is_empty() || !p.structs.is_empty() || !p.enums.is_empty())
 }
 
 impl Session {

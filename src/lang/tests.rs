@@ -1639,6 +1639,319 @@ fn wide_structs_and_long_struct_chains() {
     assert_eq!(codes(&looped), ["Q0227"]);
 }
 
+pub(super) const ENUMS: &str = "enum Shape {
+    Circle(double r),
+    Rect(double w, double h),
+    Empty,
+}
+
+enum Tree {
+    Leaf,
+    Node(Tree left, int value, Tree right),
+}
+
+struct Holder {
+    Shape shape;
+    String label;
+}
+
+double area(Shape s) {
+    match s {
+        Circle(r) => {
+            return 3 * r * r;
+        }
+        Shape.Rect(w, h) => {
+            return w * h;
+        }
+        Empty => {
+            return 0;
+        }
+    }
+}
+
+Tree insert(Tree t, int v) {
+    match t {
+        Leaf => {
+            return Tree.Node(Tree.Leaf, v, Tree.Leaf);
+        }
+        Node(l, x, r) => {
+            if v < x {
+                return Tree.Node(insert(l, v), x, r);
+            }
+            return Tree.Node(l, x, insert(r, v));
+        }
+    }
+}
+
+int total(Tree t) {
+    match t {
+        Node(l, x, r) => {
+            return total(l) + x + total(r);
+        }
+        _ => {
+            return 0;
+        }
+    }
+}
+
+String kind(int n, String s, boolean b) {
+    String out = \"\";
+    match n {
+        -1 => {
+            out += \"neg\";
+        }
+        0 => {
+            out += \"zero\";
+        }
+        _ => {
+            out += \"other\";
+        }
+    }
+    match s {
+        \"a\" => {
+            out += \"A\";
+        }
+        _ => {
+            out += \"?\";
+        }
+    }
+    match b {
+        true => {
+            out += \"T\";
+        }
+        false => {
+            out += \"F\";
+        }
+    }
+    return out;
+}
+
+void main() {
+    Shape[] shapes = {Shape.Circle(1), Shape.Rect(2, 3.5), Shape.Empty};
+    double sum = 0;
+    for i in 0..len(shapes) {
+        sum += area(shapes[i]);
+    }
+    Tree t = Tree.Leaf;
+    int[] keys = {5, 2, 8, 1, 9, 3};
+    for i in 0..len(keys) {
+        t = insert(t, keys[i]);
+    }
+    Holder h = new Holder(Shape.Rect(1, 1), \"x\");
+    Holder[] blanks = new Holder[1];
+    Shape[] defaults = new Shape[2];
+    var d = defaults[1];
+    println(\"{} {} {} {}\", sum, total(t), area(h.shape), area(blanks[0].shape) + area(d));
+    println(\"{} {} {}\", kind(-1, \"a\", true), kind(0, \"b\", false), kind(7, \"\", true));
+}
+";
+
+#[test]
+fn enums_and_match() {
+    assert_eq!(run_ok(ENUMS, 1), "10.0 28 1.0 0.0\nnegAT zero?F other?T\n");
+    // Types and variants may be used before their declaration; `match` arms may end with a comma.
+    ok(
+        "void main() { E e = E.B(1); match e { A => {}, B(n) => { println(\"{}\", n); } } }
+enum E { A, B(int n) }",
+    );
+}
+
+// Dropping a long recursive value is iterative in every engine (no native stack overflow).
+#[test]
+fn long_enum_lists_drop_without_recursion() {
+    let src = "enum L {
+    Nil,
+    Cons(int head, L tail),
+}
+
+void main() {
+    L list = L.Nil;
+    for i in 0..1000000 {
+        list = L.Cons(i, list);
+    }
+    int n = 0;
+    boolean more = true;
+    while more {
+        match list {
+            Cons(h, rest) => {
+                n += 1;
+                list = rest;
+            }
+            Nil => {
+                more = false;
+            }
+        }
+    }
+    println(\"{}\", n);
+}
+";
+    assert_eq!(run_ok(src, 1), "1000000\n");
+    let keep = src.replace("        list = rest;\n", "").replace(
+        "            Cons(h, rest) => {\n                n += 1;\n",
+        "            Cons(h, rest) => {\n                n += 1;\n                more = false;\n",
+    );
+    assert_eq!(run_ok(&keep, 1), "1\n");
+}
+
+#[test]
+fn enum_errors() {
+    // Duplicate names (enums share the struct namespace), variants and payload fields.
+    assert_eq!(codes("enum E { A } enum E { B } void main() {}"), ["Q0205"]);
+    assert_eq!(
+        codes("struct E { int x; } enum E { A } void main() {}"),
+        ["Q0205"]
+    );
+    assert_eq!(codes("enum E { A, A } void main() {}"), ["Q0205"]);
+    assert_eq!(
+        codes("enum E { A(int x, int x) } void main() {}"),
+        ["Q0205"]
+    );
+    // Payload types, and recursion through the first variant (the default value).
+    assert_eq!(codes("enum E { A(Qubit q) } void main() {}"), ["Q0227"]);
+    assert_eq!(
+        codes("enum L { Cons(int h, L t), Nil } void main() {}"),
+        ["Q0227"]
+    );
+    assert_eq!(
+        codes("struct S { E e; } enum E { A(S[] s) } void main() {}"),
+        ["Q0227"]
+    );
+    ok("enum L { Nil, Cons(int h, L t) } struct S { L l; } void main() {}");
+    ok("enum T { Leaf, Node(T l, T r), Pair(P p) } struct P { int[] xs; } void main() {}");
+    // A cycle through a struct or an array could make a value refer to itself.
+    assert_eq!(
+        errors("enum L { Nil, Cons(S s) } struct S { L l; } void main() {}"),
+        [("Q0227", 1, 38)]
+    );
+    assert_eq!(
+        errors("enum L { Nil, Many(L[] kids) } void main() {}"),
+        [("Q0227", 1, 20)]
+    );
+    assert_eq!(codes("enum E {} void main() {}"), ["Q0105"]);
+    let p = |body: &str| {
+        codes(&format!(
+            "enum E {{ A, B(int n, String s) }}
+void main() {{
+    E e = E.B(1, \"s\");
+{body}
+}}
+"
+        ))
+    };
+    // Construction.
+    assert_eq!(p("    E f = E.B(1);"), ["Q0203"]);
+    assert_eq!(p("    E f = E.B(1.5, \"s\");"), ["Q0204"]);
+    assert_eq!(p("    E f = E.C;"), ["Q0229"]);
+    assert_eq!(p("    boolean same = e == E.A;"), ["Q0204", "Q0204"]);
+    assert_eq!(p("    println(\"{}\", e);"), ["Q0212"]);
+    assert_eq!(p("    var f = e;\n    E g = f;"), Vec::<&str>::new());
+    // Exhaustiveness.
+    assert_eq!(p("    match e { A => {} }"), ["Q0228"]);
+    assert_eq!(p("    match 1 { 0 => {} }"), ["Q0228"]);
+    assert_eq!(p("    match \"a\" { \"a\" => {} }"), ["Q0228"]);
+    assert_eq!(p("    match true { true => {} }"), ["Q0228"]);
+    assert_eq!(
+        p("    match true { true => {} false => {} }"),
+        Vec::<&str>::new()
+    );
+    // Patterns.
+    assert_eq!(p("    match e { A => {} C => {} _ => {} }"), ["Q0229"]);
+    assert_eq!(p("    match e { A => {} B(n) => {} }"), ["Q0229"]);
+    assert_eq!(
+        p("    match e { A => {} A => {} B(n, s) => {} }"),
+        ["Q0229"]
+    );
+    assert_eq!(p("    match e { _ => {} A => {} }"), ["Q0229"]);
+    assert_eq!(p("    match e { 1 => {} _ => {} }"), ["Q0229"]);
+    assert_eq!(p("    match 1 { \"a\" => {} _ => {} }"), ["Q0229"]);
+    assert_eq!(p("    match e { F.A => {} _ => {} }"), ["Q0229"]);
+    assert_eq!(
+        p("    match e { E.A => {} E.B(_, _) => {} }"),
+        Vec::<&str>::new()
+    );
+    assert_eq!(p("    match 1.5 { _ => {} }"), ["Q0229"]);
+    assert_eq!(p("    match e { A => {} B(n, n) => {} }"), ["Q0205"]);
+    // Bindings are final and scoped to their arm.
+    assert_eq!(
+        p("    match e { A => {} B(n, s) => { n = 2; } }"),
+        ["Q0207"]
+    );
+    assert_eq!(
+        p("    match e { A => {} B(n, s) => {} }\n    int m = n;"),
+        ["Q0201"]
+    );
+}
+
+// Arms are branches: the same qubit rules as `if`/`else`.
+#[test]
+fn match_arms_follow_the_qubit_rules() {
+    let p = |body: &str| {
+        codes(&format!(
+            "enum E {{ A, B }}
+int f(E e) {{
+{body}
+}}
+void main() {{
+    println(\"{{}}\", f(E.A));
+}}
+"
+        ))
+    };
+    let both = "    Qubit q = qubit();
+    match e {
+        A => {
+            discard(q);
+        }
+        B => {
+            Bit b = measure(q);
+        }
+    }
+    return 1;";
+    assert_eq!(p(both), Vec::<&str>::new());
+    let one = "    Qubit q = qubit();
+    match e {
+        A => {
+            discard(q);
+        }
+        B => {}
+    }
+    return 1;";
+    assert_eq!(p(one), ["Q0304"]);
+    let leak = "    match e {
+        A => {
+            Qubit q = qubit();
+        }
+        B => {}
+    }
+    return 1;";
+    assert_eq!(p(leak), ["Q0302"]);
+    // An exhaustive match whose arms all return ends the function.
+    assert_eq!(
+        p("    match e {\n        A => {\n            return 1;\n        }\n        B => {\n            return 2;\n        }\n    }"),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        p("    match e {\n        A => {\n            return 1;\n        }\n        _ => {\n            return 2;\n        }\n    }"),
+        Vec::<&str>::new()
+    );
+    // A loop body may not consume an outer qubit in an arm.
+    assert_eq!(
+        p("    Qubit q = qubit();
+    for i in 0..2 {
+        match e {
+            A => {
+                discard(q);
+            }
+            B => {
+                discard(q);
+            }
+        }
+    }
+    return 1;"),
+        ["Q0302", "Q0305"]
+    );
+}
+
 #[test]
 fn struct_errors() {
     // Duplicate structs and fields, field types, recursion (directly, through arrays, mutually).

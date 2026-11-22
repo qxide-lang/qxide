@@ -14,15 +14,17 @@ pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     depth: usize,
-    // Names of the structs this file declares (found before parsing, so types may be used
-    // before their declaration).
+    // Names of the structs and enums this file declares (found before parsing, so types may be
+    // used before their declaration).
     structs: HashSet<String>,
+    enums: HashSet<String>,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
 
 pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     let mut structs = HashSet::new();
+    let mut enums = HashSet::new();
     let mut depth = 0usize;
     for w in toks.windows(2) {
         match &w[0].tok {
@@ -33,6 +35,11 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
                     structs.insert(n.clone());
                 }
             }
+            Tok::Enum if depth == 0 => {
+                if let Tok::Ident(n) = &w[1].tok {
+                    enums.insert(n.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -41,6 +48,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         pos: 0,
         depth: 0,
         structs,
+        enums,
     };
     let mut imports = Vec::new();
     while p.peek() == &Tok::Import {
@@ -48,6 +56,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     }
     let mut fns = Vec::new();
     let mut structs = Vec::new();
+    let mut enums = Vec::new();
     while p.peek() != &Tok::Eof {
         if p.peek() == &Tok::Import {
             return Err(Diagnostic::new(
@@ -58,6 +67,8 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         }
         if p.peek() == &Tok::Struct {
             structs.push(p.struct_decl()?);
+        } else if p.peek() == &Tok::Enum {
+            enums.push(p.enum_decl()?);
         } else {
             fns.push(p.fn_decl()?);
         }
@@ -65,6 +76,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     Ok(Program {
         imports,
         structs,
+        enums,
         fns,
     })
 }
@@ -308,13 +320,128 @@ impl Parser {
         Ok(StructDecl { name, fields })
     }
 
-    // A built-in type name or a struct of this file.
+    // `enum Name { A, B(Type x, Type y), ... }` (a trailing comma is allowed).
+    fn enum_decl(&mut self) -> PResult<EnumDecl> {
+        self.bump();
+        let name = self.name()?;
+        self.expect(Tok::LBrace)?;
+        let mut variants = Vec::new();
+        while self.peek() != &Tok::RBrace {
+            let vname = self.name()?;
+            let mut fields = Vec::new();
+            if self.eat(&Tok::LParen) {
+                while self.peek() != &Tok::RParen {
+                    let (ty, ty_span) = self.ty()?;
+                    let name = self.name()?;
+                    fields.push(Field { ty, ty_span, name });
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Tok::RParen)?;
+            }
+            variants.push(Variant {
+                name: vname,
+                fields,
+            });
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        // An enum needs a first variant: it is the default value.
+        if variants.is_empty() {
+            return Err(self.unexpected(msg::expected_ident(&self.peek().describe())));
+        }
+        self.expect(Tok::RBrace)?;
+        Ok(EnumDecl { name, variants })
+    }
+
+    // A built-in type name or a struct or enum of this file.
     fn named_ty(&self, name: &str) -> Option<Ty> {
-        Ty::from_name(name).or_else(|| self.structs.contains(name).then(|| Ty::struct_named(name)))
+        Ty::from_name(name)
+            .or_else(|| self.structs.contains(name).then(|| Ty::struct_named(name)))
+            .or_else(|| self.enums.contains(name).then(|| Ty::enum_named(name)))
     }
 
     fn is_type_name(&self, name: &str) -> bool {
-        Ty::from_name(name).is_some() || self.structs.contains(name)
+        Ty::from_name(name).is_some() || self.structs.contains(name) || self.enums.contains(name)
+    }
+
+    // `match e { pattern => { ... } ... }` (a comma after an arm is allowed).
+    fn match_stmt(&mut self) -> PResult<Stmt> {
+        self.enter()?;
+        let span = self.bump().span;
+        let scrutinee = self.expr()?;
+        self.expect(Tok::LBrace)?;
+        let mut arms = Vec::new();
+        while self.peek() != &Tok::RBrace {
+            let pat = self.pattern()?;
+            self.expect(Tok::FatArrow)?;
+            let body = self.block()?;
+            arms.push(Arm { pat, body });
+            self.eat(&Tok::Comma);
+        }
+        self.expect(Tok::RBrace)?;
+        self.depth -= 1;
+        Ok(Stmt::Match {
+            scrutinee,
+            arms,
+            span,
+        })
+    }
+
+    // `_`, a literal (`-1`, `"a"`, `true`), or a variant with bindings: `Shape.Rect(w, _)`.
+    fn pattern(&mut self) -> PResult<Pattern> {
+        let start = self.span();
+        let kind =
+            match self.peek().clone() {
+                Tok::Ident(n) if n == "_" => {
+                    self.bump();
+                    PatKind::Wild
+                }
+                Tok::Int(n) => {
+                    self.bump();
+                    PatKind::Int(n)
+                }
+                Tok::Minus if matches!(self.peek_at(1), Tok::Int(_)) => {
+                    self.bump();
+                    let Tok::Int(n) = self.bump().tok else {
+                        unreachable!("checked above")
+                    };
+                    PatKind::Int(-n)
+                }
+                Tok::True | Tok::False => PatKind::Bool(self.bump().tok == Tok::True),
+                Tok::Str(text) => {
+                    self.bump();
+                    PatKind::Str(parse_format(&text).ok_or_else(|| {
+                        Diagnostic::new(Code::BadFormat, start, msg::bad_format())
+                    })?)
+                }
+                Tok::Ident(_) => {
+                    let first = self.ident()?;
+                    let (qual, name) = if self.eat(&Tok::Dot) {
+                        (Some(first), self.ident()?)
+                    } else {
+                        (None, first)
+                    };
+                    let mut binds = Vec::new();
+                    if self.eat(&Tok::LParen) {
+                        while self.peek() != &Tok::RParen {
+                            binds.push(self.name()?);
+                            if !self.eat(&Tok::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(Tok::RParen)?;
+                    }
+                    PatKind::Variant { qual, name, binds }
+                }
+                t => return Err(self.unexpected(msg::expected_pattern(&t.describe()))),
+            };
+        Ok(Pattern {
+            kind,
+            span: start.to(self.prev_span()),
+        })
     }
 
     // `[public] ReturnType name(Type a, consume Type b) { ... }`
@@ -376,6 +503,7 @@ impl Parser {
                     stmts.push(self.decl()?)
                 }
                 Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
+                Tok::Match => stmts.push(self.match_stmt()?),
                 Tok::For => stmts.push(self.for_stmt()?),
                 Tok::While => {
                     let span = self.bump().span;
@@ -742,6 +870,30 @@ impl Parser {
             {
                 self.bump();
                 return self.new_array(span);
+            }
+            // `Shape.Circle(2.0)` or `Shape.Empty`: a variant of an enum of this file.
+            Tok::Ident(name)
+                if self.enums.contains(&name)
+                    && self.peek_at(1) == &Tok::Dot
+                    && matches!(self.peek_at(2), Tok::Ident(_)) =>
+            {
+                self.bump();
+                self.bump();
+                let vname = self.ident()?;
+                let ty = Ty::enum_named(&name);
+                let (args, end) = if self.eat(&Tok::LParen) {
+                    self.call_args()?
+                } else {
+                    (Vec::new(), vname.span)
+                };
+                return Ok(Expr {
+                    kind: ExprKind::Variant {
+                        ty,
+                        name: vname,
+                        args,
+                    },
+                    span: span.to(end),
+                });
             }
             Tok::Ident(name) => {
                 let name = Ident {

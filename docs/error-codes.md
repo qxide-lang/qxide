@@ -873,7 +873,7 @@ void main() {
 
 ## Q0227: struct field of an unsupported type
 
-A struct field was declared with a type that struct fields cannot hold, or the struct contains itself through this field, directly or through arrays or other structs. In `.qx`, struct fields hold build-time classical values: `int`, `double`, `boolean`, `String`, arrays, and other structs; `Qubit`, `QReg`, `Bit`, and `BitReg` stay outside structs because the qubit ownership rules track them. A struct that contains itself is rejected because the language has no `null` to end the chain and such structures could form reference cycles; lists and trees need an optional type, which is planned for later.
+A struct field or enum variant payload field was declared with a type that it cannot hold, or violates the recursion rules for composite types. In `.qx`, struct fields and enum payloads hold build-time classical values: `int`, `double`, `boolean`, `String`, arrays, structs, and enums; `Qubit`, `QReg`, `Bit`, and `BitReg` stay outside them because the qubit ownership rules track those types. A struct may not contain itself—directly, through arrays, or through other structs or enums—because structs are mutable shared references and the language has no `null` to end the chain. Because an enum's first variant is its default value (used for new array elements and struct fields), that variant may not contain the enum itself; its other variants may refer to the enum directly (for example `Cons(int head, List tail)`), but not through an array, since arrays (like structs) are mutable and a value could otherwise end up referring to itself in a reference cycle that is never freed. Lists and trees are written as recursive enums (see `enum` in the language design).
 
 Erroneous code example:
 
@@ -898,6 +898,103 @@ struct Chain {
 void main() {
     Chain c = new Chain(new int[]{1, 2, 3});
     println("{}", c.values[2]);
+}
+```
+
+## Q0228: non-exhaustive `match`
+
+A `match` statement did not cover every possible value of what it matches. In `.qx`, every `match` must be exhaustive: every variant of an `enum`, both `true` and `false` for a `boolean`, and a `_` wildcard arm for `int` or `String` (which have too many values to list). The error points at the `match` keyword and names what is missing, with a help line suggesting the missing arms or a `_` arm. Requiring exhaustiveness ensures that an unhandled value cannot silently do nothing, and because each arm is checked like a branch of an `if`/`else` chain (with qubit ownership rules applied per arm), it also lets the checker know that a `match` whose arms all `return` ends the function.
+
+Erroneous code example:
+
+```qx
+enum Light {
+    Red,
+    Yellow,
+    Green,
+}
+
+void main() {
+    Light l = Light.Yellow;
+    match l {  // error[Q0228]
+        Red => {
+            println("stop");
+        }
+        Green => {
+            println("go");
+        }
+    }
+}
+```
+
+To fix it, add an arm for `Yellow` so every variant of `Light` is covered.
+
+```qx
+enum Light {
+    Red,
+    Yellow,
+    Green,
+}
+
+void main() {
+    Light l = Light.Yellow;
+    match l {
+        Red => {
+            println("stop");
+        }
+        Yellow => {
+            println("slow down");
+        }
+        Green => {
+            println("go");
+        }
+    }
+}
+```
+
+## Q0229: invalid `match` pattern
+
+A `match` statement contained a pattern that cannot validly match the target value, or matched on a type that `match` does not support. In `.qx`, `match` only accepts enums, `int`, `String`, and `boolean` (types such as `double`, `Bit`, and `Qubit` are rejected), and each pattern must be compatible with the matched type—for example, a string literal on an `int`, a number on an enum, or a variant qualified by another enum's name such as `Other.A` is invalid. For enum variants, the variant must be declared by that enum, the pattern must provide one binding per payload field (a name or `_` to ignore it), and no arm may be unreachable because an earlier arm or `_` wildcard already matches everything it would. The same code is also reported when an expression constructs an unknown variant such as `Shape.Hexagon`.
+
+Erroneous code example:
+
+```qx
+enum Shape {
+    Circle(double r),
+    Rect(double w, double h),
+}
+
+void main() {
+    Shape s = Shape.Rect(2, 3);
+    match s {
+        Circle(r) => {
+            println("{}", r);
+        }
+        Rect(w) => {  // error[Q0229]
+            println("{}", w);
+        }
+    }
+}
+```
+
+To fix it, bind both payload fields of `Rect`, using `_` for the one that is not needed.
+
+```qx
+enum Shape {
+    Circle(double r),
+    Rect(double w, double h),
+}
+
+void main() {
+    Shape s = Shape.Rect(2, 3);
+    match s {
+        Circle(r) => {
+            println("{}", r);
+        }
+        Rect(w, _) => {
+            println("{}", w);
+        }
+    }
 }
 ```
 

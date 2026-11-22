@@ -50,9 +50,10 @@ impl ArrayData {
             (ArrayData::Double(a), Value::Double(x)) => a[i] = x,
             (ArrayData::Double(a), Value::Int(n)) => a[i] = n as f64,
             (ArrayData::Bool(a), Value::Bool(b)) => a[i] = b,
-            (ArrayData::Other(a), v @ (Value::Str(_) | Value::Array(_) | Value::Struct(_))) => {
-                a[i] = v
-            }
+            (
+                ArrayData::Other(a),
+                v @ (Value::Str(_) | Value::Array(_) | Value::Struct(_) | Value::Enum(_)),
+            ) => a[i] = v,
             _ => return Err(internal(span)),
         }
         Ok(())
@@ -95,6 +96,7 @@ impl Machine<'_> {
                 Value::Array(Rc::new(RefCell::new(empty(inner))))
             }
             Ty::Struct(_) => self.default_struct(ty, span)?,
+            Ty::Enum(_) => self.default_enum(ty, span)?,
             _ => return Err(internal(span)),
         })
     }

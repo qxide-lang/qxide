@@ -330,7 +330,7 @@ fn find_command<'p>(
             msg::command_not_public(name),
         )));
     }
-    if matches!(f.ret, Ty::Array(_) | Ty::Struct(_)) {
+    if matches!(f.ret, Ty::Array(_) | Ty::Struct(_) | Ty::Enum(_)) {
         return Err(fail(Diagnostic::new(
             Code::BadCommand,
             f.ret_span,

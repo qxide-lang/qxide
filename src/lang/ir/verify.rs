@@ -97,6 +97,13 @@ impl Checker<'_> {
         }
     }
 
+    fn want_enum(&self, r: Reg) -> V {
+        match self.ty(r)? {
+            IrTy::Enum(_) => Ok(()),
+            got => Err(format!("%{r} is {}, expected an enum", got.name())),
+        }
+    }
+
     fn block(&self, b: BlockId) -> V {
         if (b as usize) < self.f.blocks.len() {
             Ok(())
@@ -241,6 +248,20 @@ impl Checker<'_> {
                 for a in args.iter() {
                     self.ty(*a)?;
                 }
+                self.ty(*dst)?;
+            }
+            Inst::NewEnum { dst, args, .. } => {
+                for a in args.iter() {
+                    self.ty(*a)?;
+                }
+                self.want_enum(*dst)?;
+            }
+            Inst::EnumTag { dst, src, .. } => {
+                self.want_enum(*src)?;
+                self.want(*dst, IrTy::I64)?;
+            }
+            Inst::EnumField { dst, src, .. } => {
+                self.want_enum(*src)?;
                 self.ty(*dst)?;
             }
             Inst::GetField { dst, recv, .. } => {

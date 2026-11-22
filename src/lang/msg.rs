@@ -719,7 +719,55 @@ pub fn command_not_public(name: &str) -> String {
 }
 
 pub fn command_bad_return(name: &str, ty: &str) -> String {
-    format!("command `{name}` has unsupported return type `{ty}`; returning arrays or structs to JavaScript is not supported yet")
+    format!("command `{name}` has unsupported return type `{ty}`; returning arrays, structs, or enums to JavaScript is not supported yet")
+}
+
+pub fn expected_pattern(found: &str) -> String {
+    format!("expected pattern, found {found}")
+}
+
+pub fn unknown_variant(variant: &str, ty: &str) -> String {
+    format!("no variant `{variant}` on enum `{ty}`")
+}
+
+pub fn variant_args(variant: &str, want: usize, got: usize) -> String {
+    format!("variant `{variant}` takes {want} field(s) but {got} were supplied")
+}
+
+pub fn pattern_arity(variant: &str, want: usize, got: usize) -> String {
+    format!("variant `{variant}` has {want} field(s), but pattern binds {got}")
+}
+
+pub fn unreachable_arm() -> String {
+    "match arm is unreachable because an earlier arm already covers it".into()
+}
+
+pub fn pattern_mismatch(ty: &str) -> String {
+    format!("pattern cannot match value of type `{ty}`")
+}
+
+pub fn bad_scrutinee(ty: &str) -> String {
+    format!("a `match` value must be an enum, `int`, `String`, or `boolean`, found `{ty}`")
+}
+
+pub fn non_exhaustive(missing: &str) -> String {
+    format!("non-exhaustive `match`: missing {missing}")
+}
+
+pub fn help_non_exhaustive() -> String {
+    "add arms for the missing cases or a `_` wildcard arm to cover remaining values".into()
+}
+
+pub fn bad_payload_type(ty: &str) -> String {
+    format!("enum variant field cannot have type `{ty}`")
+}
+
+pub fn recursive_shared(name: &str) -> String {
+    format!("enum `{name}` cannot recursively contain itself through an array")
+}
+
+pub fn recursive_enum(name: &str) -> String {
+    format!("first variant of enum `{name}` cannot recursively contain itself because it is used as the default value")
 }
 
 pub fn command_bad_param(name: &str, param: &str, ty: &str) -> String {

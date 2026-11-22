@@ -101,6 +101,8 @@ pub enum Value {
     Array(super::array::ArrayRef),
     // Shared and mutable, like a Java object reference (src/lang/record.rs).
     Struct(Rc<super::record::StructVal>),
+    // Immutable: a variant tag and its payload (src/lang/record.rs).
+    Enum(Rc<super::record::EnumVal>),
     Unit,
 }
 
@@ -268,6 +270,11 @@ impl<'p> Interp<'p, '_> {
                 value,
                 span,
             } => self.set_field(c, f, base, name, *op, value, *span),
+            Stmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.match_stmt(c, f, scrutinee, arms, *span),
             Stmt::Break { .. } => Ok(Flow::Break),
             Stmt::Continue { .. } => Ok(Flow::Continue),
             Stmt::Return { value, .. } => self.return_stmt(c, f, value.as_ref()),
@@ -434,8 +441,94 @@ impl<'p> Interp<'p, '_> {
             ExprKind::NewArray { ty, dims } => self.new_array(c, f, *ty, dims, e.span),
             ExprKind::ArrayLit { ty, elems } => self.array_lit(c, f, *ty, elems, e.span),
             ExprKind::NewStruct { ty, args } => self.new_struct(c, f, *ty, args, e.span),
+            ExprKind::Variant { ty, name, args } => self.variant(c, f, *ty, name, args, e.span),
             ExprKind::Field { recv, name } => self.field(c, f, recv, name, e.span),
         }
+    }
+
+    fn variant(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        ty: Ty,
+        name: &'p Ident,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.expr(c, f, a)?);
+        }
+        let (tag, _) = self
+            .m
+            .layouts()
+            .variant(ty, &name.name)
+            .ok_or_else(|| internal(span))?;
+        self.m.new_enum(ty, tag, vals, span)
+    }
+
+    // `match v { ... }`: the value once, then one step per arm tried (at its pattern) until one
+    // matches; its bindings live in a scope around the arm's block.
+    fn match_stmt(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        scrutinee: &'p Expr,
+        arms: &'p [Arm],
+        span: Span,
+    ) -> R<Flow> {
+        let v = self.expr(c, f, scrutinee)?;
+        for arm in arms {
+            self.m.charge(1, arm.pat.span)?;
+            if !self.pat_matches(&v, &arm.pat)? {
+                continue;
+            }
+            f.scopes.push(Vec::new());
+            if let (PatKind::Variant { binds, .. }, Value::Enum(e)) = (&arm.pat.kind, &v) {
+                let tys = self
+                    .m
+                    .layouts()
+                    .payload(Ty::Enum(e.ty), e.tag)
+                    .ok_or_else(|| internal(arm.pat.span))?;
+                for (i, b) in binds.iter().enumerate() {
+                    if b.name != "_" {
+                        let field = e.fields.get(i).cloned();
+                        let t = tys.get(i).copied();
+                        let (Some(field), Some(t)) = (field, t) else {
+                            f.scopes.pop();
+                            return Err(internal(b.span));
+                        };
+                        f.bind(&b.name, field, t);
+                    }
+                }
+            }
+            let r = self.block(c, f, &arm.body);
+            f.scopes.pop();
+            return r;
+        }
+        Err(internal(span))
+    }
+
+    fn pat_matches(&mut self, v: &Value, p: &Pattern) -> R<bool> {
+        Ok(match (&p.kind, v) {
+            (PatKind::Wild, _) => true,
+            (PatKind::Int(n), Value::Int(x)) => n == x,
+            (PatKind::Bool(b), Value::Bool(x)) => b == x,
+            (PatKind::Str(pieces), Value::Str(_)) => {
+                let lit = self.m.str_lit(pieces, p.span)?;
+                let eq = self.m.str_binary(BinOp::Eq, v.clone(), lit, p.span)?;
+                matches!(eq, Value::Bool(true))
+            }
+            (PatKind::Variant { name, .. }, Value::Enum(e)) => {
+                let (tag, _) = self
+                    .m
+                    .layouts()
+                    .variant(Ty::Enum(e.ty), &name.name)
+                    .ok_or_else(|| internal(p.span))?;
+                tag == e.tag
+            }
+            _ => return Err(internal(p.span)),
+        })
     }
 
     fn new_struct(

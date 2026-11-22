@@ -509,6 +509,28 @@ fn structs_agree_at_every_step_limit() {
     }
 }
 
+// Enums and `match`: same results, errors and step-budget positions in every engine.
+#[test]
+fn enums_agree_at_every_step_limit() {
+    let src = super::super::tests::ENUMS;
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 1000, "{total}");
+    for max in (0..=total + 1).step_by(5).chain([total - 1, total]) {
+        let limits = Limits {
+            max_steps: max,
+            ..Limits::CLI
+        };
+        same_outputs(src, 1, 3, limits);
+    }
+}
+
 // Counts how often elaboration asks whether it was cancelled.
 struct Polls {
     n: Cell<u64>,

@@ -316,6 +316,30 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = self.m.new_struct(*ty, vals, *span)?;
                 fr.set(*dst, v);
             }
+            Inst::NewEnum {
+                dst,
+                ty,
+                tag,
+                args,
+                span,
+            } => {
+                let vals = args.iter().map(|a| fr.get(*a)).collect();
+                let v = self.m.new_enum(*ty, *tag, vals, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::EnumTag { dst, src, span } => {
+                let t = super::super::record::enum_tag(&fr.get(*src), *span)?;
+                fr.set(*dst, Value::Int(i64::from(t)));
+            }
+            Inst::EnumField {
+                dst,
+                src,
+                index,
+                span,
+            } => {
+                let v = super::super::record::enum_field(&fr.get(*src), *index as usize, *span)?;
+                fr.set(*dst, v);
+            }
             Inst::GetField {
                 dst,
                 recv,

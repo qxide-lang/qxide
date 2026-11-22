@@ -1,15 +1,19 @@
-// Values of `struct` types, shared by every engine. Like arrays they are references: assigning
-// or passing a struct shares it, and field stores are visible through every reference. Field
-// layouts belong to one program (`Layouts`), so two programs in one process may declare
-// different structs with the same name. The checker rejects structs that contain themselves
-// (directly or through arrays), so building a default value always terminates.
+// Values of `struct` and `enum` types, shared by every engine. Like arrays, structs are
+// references: assigning or passing a struct shares it, and field stores are visible through every
+// reference. Enum values are immutable: a variant tag and its payload. Layouts belong to one
+// program (`Layouts`), so two programs in one process may declare different types with the same
+// name. The checker rejects structs that contain themselves and enums whose first variant (the
+// default value) contains the enum (directly or through arrays and structs), so building a default
+// value always terminates. Other variants may be recursive (lists, trees): dropping such values
+// is iterative, so a long chain cannot overflow the native stack.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-use super::ast::{BinOp, Program, Ty, TyId};
+use super::array::ArrayData;
+use super::ast::{BinOp, Field, Program, Ty, TyId};
 use super::diag::Span;
 use super::interp::Value;
 use super::machine::{self, internal, Machine, R, STR_BYTE_STEPS};
@@ -26,6 +30,65 @@ impl fmt::Debug for StructVal {
     }
 }
 
+/// A value of an `enum` type: the variant (its index in declaration order) and its payload.
+pub struct EnumVal {
+    pub ty: TyId,
+    pub tag: u32,
+    pub fields: Vec<Value>,
+}
+
+// The tag and the payload, with nested enums shown by tag only (bounded depth); no type ids.
+impl fmt::Debug for EnumVal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.tag)?;
+        let mut l = f.debug_list();
+        for v in &self.fields {
+            match v {
+                Value::Enum(e) => l.entry(&format_args!("#{}", e.tag)),
+                v => l.entry(v),
+            };
+        }
+        l.finish()
+    }
+}
+
+// Unshared containers reachable from the payload are taken apart on a work list instead of by
+// recursive drops (a list of a million `Cons` cells would otherwise exhaust the stack).
+impl Drop for EnumVal {
+    fn drop(&mut self) {
+        if !self.fields.iter().any(is_container) {
+            return;
+        }
+        let mut work = std::mem::take(&mut self.fields);
+        while let Some(v) = work.pop() {
+            match v {
+                Value::Enum(e) => {
+                    if let Ok(mut e) = Rc::try_unwrap(e) {
+                        work.append(&mut e.fields);
+                    }
+                }
+                Value::Struct(s) => {
+                    if let Ok(s) = Rc::try_unwrap(s) {
+                        work.append(&mut s.fields.into_inner());
+                    }
+                }
+                Value::Array(a) => {
+                    if let Ok(a) = Rc::try_unwrap(a) {
+                        if let ArrayData::Other(mut items) = a.into_inner() {
+                            work.append(&mut items);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn is_container(v: &Value) -> bool {
+    matches!(v, Value::Enum(_) | Value::Struct(_) | Value::Array(_))
+}
+
 #[derive(Debug, Default)]
 struct Layout {
     fields: Vec<(String, Ty)>,
@@ -33,10 +96,31 @@ struct Layout {
     index: HashMap<String, usize>,
 }
 
-/// Field names and types of every struct of one program, in declaration order.
+impl Layout {
+    fn new(fields: &[Field]) -> Layout {
+        let fields: Vec<(String, Ty)> =
+            fields.iter().map(|f| (f.name.name.clone(), f.ty)).collect();
+        let mut index = HashMap::new();
+        for (i, (n, _)) in fields.iter().enumerate() {
+            index.entry(n.clone()).or_insert(i);
+        }
+        Layout { fields, index }
+    }
+}
+
+#[derive(Debug, Default)]
+struct EnumLayout {
+    // (variant name, payload layout), in declaration order: the tag is the index.
+    variants: Vec<(String, Layout)>,
+    index: HashMap<String, usize>,
+}
+
+/// Field names and types of every struct of one program, and the variants of every enum, in
+/// declaration order.
 #[derive(Debug, Default)]
 pub struct Layouts {
     map: HashMap<TyId, Layout>,
+    enums: HashMap<TyId, EnumLayout>,
 }
 
 impl Layouts {
@@ -44,21 +128,45 @@ impl Layouts {
         let mut map = HashMap::new();
         for s in &p.structs {
             if let Ty::Struct(id) = Ty::struct_named(&s.name.name) {
-                map.entry(id).or_insert_with(|| {
-                    let fields: Vec<(String, Ty)> = s
-                        .fields
+                map.entry(id).or_insert_with(|| Layout::new(&s.fields));
+            }
+        }
+        let mut enums = HashMap::new();
+        for e in &p.enums {
+            if let Ty::Enum(id) = Ty::enum_named(&e.name.name) {
+                enums.entry(id).or_insert_with(|| {
+                    let variants: Vec<(String, Layout)> = e
+                        .variants
                         .iter()
-                        .map(|f| (f.name.name.clone(), f.ty))
+                        .map(|v| (v.name.name.clone(), Layout::new(&v.fields)))
                         .collect();
                     let mut index = HashMap::new();
-                    for (i, (n, _)) in fields.iter().enumerate() {
+                    for (i, (n, _)) in variants.iter().enumerate() {
                         index.entry(n.clone()).or_insert(i);
                     }
-                    Layout { fields, index }
+                    EnumLayout { variants, index }
                 });
             }
         }
-        Rc::new(Layouts { map })
+        Rc::new(Layouts { map, enums })
+    }
+
+    /// Tag and payload types of variant `name` of enum type `ty`.
+    pub fn variant(&self, ty: Ty, name: &str) -> Option<(u32, Vec<Ty>)> {
+        let Ty::Enum(id) = ty else { return None };
+        let l = self.enums.get(&id)?;
+        let &i = l.index.get(name)?;
+        Some((
+            i as u32,
+            l.variants[i].1.fields.iter().map(|(_, t)| *t).collect(),
+        ))
+    }
+
+    /// Payload types of the variant with tag `tag` of enum type `ty`.
+    pub fn payload(&self, ty: Ty, tag: u32) -> Option<Vec<Ty>> {
+        let Ty::Enum(id) = ty else { return None };
+        let (_, l) = self.enums.get(&id)?.variants.get(tag as usize)?;
+        Some(l.fields.iter().map(|(_, t)| *t).collect())
     }
 
     fn layout(&self, ty: Ty) -> Option<&Layout> {
@@ -128,6 +236,41 @@ impl Machine<'_> {
         Ok(new_value(id, vals))
     }
 
+    /// `Shape.Circle(r)`: the variant with tag `tag` and its payload (`int` widens to `double`),
+    /// charged like a struct with as many fields.
+    pub fn new_enum(&mut self, ty: Ty, tag: u32, vals: Vec<Value>, span: Span) -> R<Value> {
+        let (Ty::Enum(id), Some(tys)) = (ty, self.layouts().payload(ty, tag)) else {
+            return Err(internal(span));
+        };
+        if tys.len() != vals.len() {
+            return Err(internal(span));
+        }
+        self.charge_struct(vals.len(), span)?;
+        let fields = vals
+            .into_iter()
+            .zip(tys)
+            .map(|(v, t)| machine::coerce(v, t))
+            .collect();
+        Ok(Value::Enum(Rc::new(EnumVal {
+            ty: id,
+            tag,
+            fields,
+        })))
+    }
+
+    /// The first variant of an enum, with default payload values (array elements, fields).
+    pub fn default_enum(&mut self, ty: Ty, span: Span) -> R<Value> {
+        let tys = self
+            .layouts()
+            .payload(ty, 0)
+            .ok_or_else(|| internal(span))?;
+        let mut vals = Vec::with_capacity(tys.len());
+        for t in tys {
+            vals.push(self.default_value(t, span)?);
+        }
+        self.new_enum(ty, 0, vals, span)
+    }
+
     /// The index of field `name` of the struct `v` (the tree-walking interpreter looks fields up
     /// by name; the IR resolves them when lowering).
     pub fn field_index(&self, v: &Value, name: &str, span: Span) -> R<usize> {
@@ -173,6 +316,22 @@ impl Machine<'_> {
         };
         s.fields.borrow_mut()[index] = machine::coerce(v, ty);
         Ok(())
+    }
+}
+
+/// The variant tag of an enum value.
+pub fn enum_tag(v: &Value, span: Span) -> R<u32> {
+    match v {
+        Value::Enum(e) => Ok(e.tag),
+        _ => Err(internal(span)),
+    }
+}
+
+/// Payload field `index` of an enum value.
+pub fn enum_field(v: &Value, index: usize, span: Span) -> R<Value> {
+    match v {
+        Value::Enum(e) => e.fields.get(index).cloned().ok_or_else(|| internal(span)),
+        _ => Err(internal(span)),
     }
 }
 

@@ -121,17 +121,23 @@ pub fn link(
         .iter_mut()
         .flat_map(|m| std::mem::take(&mut m.program.fns))
         .collect();
-    // Struct names stay unqualified: they must be unique across the program (v1).
+    // Struct and enum names stay unqualified: they must be unique across the program (v1).
     let structs = l
         .modules
         .iter_mut()
         .flat_map(|m| std::mem::take(&mut m.program.structs))
+        .collect();
+    let enums = l
+        .modules
+        .iter_mut()
+        .flat_map(|m| std::mem::take(&mut m.program.enums))
         .collect();
     (
         l.map,
         Ok(Program {
             imports: Vec::new(),
             structs,
+            enums,
             fns,
         }),
     )
@@ -626,6 +632,14 @@ impl Linker<'_> {
                     self.rewrite_expr(scope, base);
                     self.rewrite_expr(scope, value);
                 }
+                Stmt::Match {
+                    scrutinee, arms, ..
+                } => {
+                    self.rewrite_expr(scope, scrutinee);
+                    for a in arms {
+                        self.rewrite_block(scope, &mut a.body);
+                    }
+                }
                 Stmt::Expr(e) => self.rewrite_expr(scope, e),
             }
         }
@@ -695,7 +709,8 @@ impl Linker<'_> {
             }
             ExprKind::NewArray { dims: items, .. }
             | ExprKind::ArrayLit { elems: items, .. }
-            | ExprKind::NewStruct { args: items, .. } => {
+            | ExprKind::NewStruct { args: items, .. }
+            | ExprKind::Variant { args: items, .. } => {
                 for a in items {
                     self.rewrite_expr(scope, a);
                 }

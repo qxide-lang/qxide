@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::super::ast::{
-    BinOp, Block as AstBlock, Else, Expr, ExprKind, FmtPiece, FnDecl, Ident, IfStmt, Program, Stmt,
-    Ty, UnOp,
+    Arm, BinOp, Block as AstBlock, Else, Expr, ExprKind, FmtPiece, FnDecl, Ident, IfStmt, PatKind,
+    Program, Stmt, Ty, UnOp,
 };
 use super::super::check;
 use super::super::diag::{Code, Diagnostic, Span};
@@ -367,6 +367,11 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     None => self.trap(internal(*span)),
                 }
             }
+            Stmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.match_stmt(scrutinee, arms, *span),
             Stmt::Break { span } => self.loop_exit(false, *span),
             Stmt::Continue { span } => self.loop_exit(true, *span),
             Stmt::Return { value, .. } => self.return_stmt(value.as_ref()),
@@ -385,7 +390,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 IrTy::F64 => IrTy::F64,
                 IrTy::Bool => IrTy::Bool,
                 IrTy::Str => IrTy::Str,
-                t @ (IrTy::Array(_) | IrTy::Struct(_)) => t,
+                t @ (IrTy::Array(_) | IrTy::Struct(_) | IrTy::Enum(_)) => t,
                 _ => IrTy::I64,
             },
         };
@@ -507,6 +512,132 @@ impl<'p, 'a> FnLower<'p, 'a> {
         self.block(body);
         self.loops.pop();
         self.terminate(Term::Jump(head as BlockId));
+        self.switch(exit);
+    }
+
+    // `match`: the value once, then per arm one step at its pattern and a test that branches to
+    // the arm or to the next test, like the interpreter trying arms in order. Enum arms compare
+    // the variant tag; bindings load payload fields into slots of a scope around the arm.
+    fn match_stmt(&mut self, scrutinee: &'p Expr, arms: &'p [Arm], span: Span) {
+        let v = self.expr(scrutinee);
+        let tag = match self.ty(v) {
+            IrTy::Enum(_) => {
+                let d = self.reg(IrTy::I64);
+                self.emit(Inst::EnumTag {
+                    dst: d,
+                    src: v,
+                    span: scrutinee.span,
+                });
+                Some(d)
+            }
+            _ => None,
+        };
+        let exit = self.new_block();
+        for arm in arms {
+            let p = &arm.pat;
+            self.charge(1, p.span);
+            let cond = match (&p.kind, self.ty(v), tag) {
+                (PatKind::Wild, _, _) => None,
+                (PatKind::Int(n), IrTy::I64, _) => {
+                    let k = self.konst(Const::I64(*n));
+                    let d = self.reg(IrTy::Bool);
+                    self.emit(Inst::IntOp {
+                        op: BinOp::Eq,
+                        dst: d,
+                        a: v,
+                        b: k,
+                        span: p.span,
+                    });
+                    Some(d)
+                }
+                (PatKind::Bool(b), IrTy::Bool, _) => {
+                    let k = self.konst(Const::Bool(*b));
+                    let d = self.reg(IrTy::Bool);
+                    self.emit(Inst::BoolOp {
+                        op: BinOp::Eq,
+                        dst: d,
+                        a: v,
+                        b: k,
+                        span: p.span,
+                    });
+                    Some(d)
+                }
+                (PatKind::Str(pieces), IrTy::Str, _) => {
+                    let k = self.str_lit(pieces, p.span);
+                    let d = self.reg(IrTy::Bool);
+                    self.emit(Inst::StrOp {
+                        op: BinOp::Eq,
+                        dst: d,
+                        a: v,
+                        b: k,
+                        span: p.span,
+                    });
+                    Some(d)
+                }
+                (PatKind::Variant { name, .. }, IrTy::Enum(id), Some(tag)) => {
+                    let Some((t, _)) = self.layouts.variant(Ty::Enum(id), &name.name) else {
+                        self.trap(internal(p.span));
+                        break;
+                    };
+                    let k = self.konst(Const::I64(i64::from(t)));
+                    let d = self.reg(IrTy::Bool);
+                    self.emit(Inst::IntOp {
+                        op: BinOp::Eq,
+                        dst: d,
+                        a: tag,
+                        b: k,
+                        span: p.span,
+                    });
+                    Some(d)
+                }
+                _ => {
+                    self.trap(internal(p.span));
+                    break;
+                }
+            };
+            let body = self.new_block();
+            let next = self.new_block();
+            match cond {
+                Some(c) => self.terminate(Term::Br {
+                    cond: c,
+                    then: body as BlockId,
+                    els: next as BlockId,
+                }),
+                None => self.terminate(Term::Jump(body as BlockId)),
+            }
+            self.switch(body);
+            let mut scope = Vec::new();
+            if let (PatKind::Variant { name, binds, .. }, IrTy::Enum(id)) = (&p.kind, self.ty(v)) {
+                let tys = self
+                    .layouts
+                    .variant(Ty::Enum(id), &name.name)
+                    .map(|(_, t)| t)
+                    .unwrap_or_default();
+                for (i, b) in binds.iter().enumerate() {
+                    if b.name == "_" {
+                        continue;
+                    }
+                    let t = IrTy::of(tys.get(i).copied().unwrap_or(Ty::Error));
+                    let r = self.reg(t);
+                    self.emit(Inst::EnumField {
+                        dst: r,
+                        src: v,
+                        index: i as u32,
+                        span: b.span,
+                    });
+                    let slot = self.slot(&b.name, t);
+                    self.emit(Inst::Store { slot, src: r });
+                    scope.push((b.name.as_str(), slot));
+                }
+            }
+            self.scopes.push(scope);
+            self.block(&arm.body);
+            self.scopes.pop();
+            self.terminate(Term::Jump(exit as BlockId));
+            self.switch(next);
+        }
+        // The checker only accepts exhaustive matches.
+        self.trap(internal(span));
         self.switch(exit);
     }
 
@@ -649,6 +780,31 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 self.emit(Inst::NewStruct {
                     dst,
                     ty: *ty,
+                    args: regs.into(),
+                    span: e.span,
+                });
+                dst
+            }
+            ExprKind::Variant { ty, name, args } => {
+                let found = self.layouts.variant(*ty, &name.name);
+                let tys = found.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
+                let mut regs = Vec::with_capacity(args.len());
+                for (a, t) in args
+                    .iter()
+                    .zip(tys.iter().chain(std::iter::repeat(&Ty::Error)))
+                {
+                    let r = self.expr(a);
+                    regs.push(self.widen_to(r, IrTy::of(*t)));
+                }
+                let Some((tag, _)) = found else {
+                    self.trap(internal(e.span));
+                    return self.reg(IrTy::Unit);
+                };
+                let dst = self.reg(IrTy::of(*ty));
+                self.emit(Inst::NewEnum {
+                    dst,
+                    ty: *ty,
+                    tag,
                     args: regs.into(),
                     span: e.span,
                 });

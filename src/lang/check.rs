@@ -1,7 +1,7 @@
 // Static checker: names, types, linear qubit ownership, and `if`-on-`Bit` restrictions.
 // Flow-sensitive over the AST; reports every error it finds instead of stopping at the first.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
@@ -134,6 +134,14 @@ fn scan_block(b: &Block, out: &mut Scan) {
                 scan_expr(base, out);
                 scan_expr(value, out);
             }
+            Stmt::Match {
+                scrutinee, arms, ..
+            } => {
+                scan_expr(scrutinee, out);
+                for a in arms {
+                    scan_block(&a.body, out);
+                }
+            }
             Stmt::Expr(e) => scan_expr(e, out),
         }
     }
@@ -181,7 +189,8 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
         }
         ExprKind::NewArray { dims: items, .. }
         | ExprKind::ArrayLit { elems: items, .. }
-        | ExprKind::NewStruct { args: items, .. } => {
+        | ExprKind::NewStruct { args: items, .. }
+        | ExprKind::Variant { args: items, .. } => {
             for a in items {
                 scan_expr(a, out);
             }
@@ -214,6 +223,8 @@ struct Checker {
     fns: HashMap<String, Sig>,
     // Fields of every struct: types in declaration order, and by name.
     structs: HashMap<Ty, (Vec<Ty>, HashMap<String, Ty>)>,
+    // Variants of every enum in declaration order: (name, payload types).
+    enums: HashMap<Ty, Vec<(String, Vec<Ty>)>>,
     // Functions that cannot run inside an `if` on a `Bit`, with the first reason found.
     unconditional: HashMap<String, (Span, Unconditional)>,
     vars: Vec<Var>,
@@ -232,6 +243,7 @@ pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
     let mut c = Checker {
         fns: HashMap::new(),
         structs: HashMap::new(),
+        enums: HashMap::new(),
         unconditional: HashMap::new(),
         vars: Vec::new(),
         scopes: Vec::new(),
@@ -260,9 +272,11 @@ impl Checker {
     // Struct names are unique, fields are unique and of build-time classical types, and no
     // struct contains itself (directly or through arrays): there is no `null` to end a chain.
     fn struct_decls(&mut self, p: &Program) {
+        // Structs and enums share one namespace of type names.
+        let mut names = HashSet::new();
         for s in &p.structs {
             let ty = Ty::struct_named(&s.name.name);
-            if self.structs.contains_key(&ty) {
+            if !names.insert(s.name.name.as_str()) {
                 self.err(
                     Code::Duplicate,
                     s.name.span,
@@ -300,35 +314,139 @@ impl Checker {
             }
             self.structs.insert(ty, (order, by_name));
         }
+        for e in &p.enums {
+            if !names.insert(e.name.name.as_str()) {
+                self.err(
+                    Code::Duplicate,
+                    e.name.span,
+                    msg::duplicate_def(&e.name.name),
+                );
+                continue;
+            }
+            let mut variants: Vec<(String, Vec<Ty>)> = Vec::new();
+            for v in &e.variants {
+                if variants.iter().any(|(n, _)| *n == v.name.name) {
+                    self.err(
+                        Code::Duplicate,
+                        v.name.span,
+                        msg::duplicate_def(&v.name.name),
+                    );
+                    continue;
+                }
+                let mut seen = HashSet::new();
+                let mut tys = Vec::new();
+                for f in &v.fields {
+                    if !seen.insert(f.name.name.as_str()) {
+                        self.err(
+                            Code::Duplicate,
+                            f.name.span,
+                            msg::duplicate_def(&f.name.name),
+                        );
+                    }
+                    let mut inner = f.ty;
+                    while let Some(e) = inner.elem() {
+                        inner = e;
+                    }
+                    tys.push(if inner.is_element() {
+                        f.ty
+                    } else {
+                        self.err(
+                            Code::BadFieldType,
+                            f.ty_span,
+                            msg::bad_payload_type(inner.name()),
+                        );
+                        Ty::Error
+                    });
+                }
+                variants.push((v.name.name.clone(), tys));
+            }
+            self.enums.insert(Ty::enum_named(&e.name.name), variants);
+        }
         self.struct_cycles(p);
     }
 
-    // One iterative depth-first search over "struct contains struct" edges (through arrays);
-    // each edge that closes a cycle is reported at its field.
+    // Two checks over "contains" edges between the structs and enums (nodes: the structs, then
+    // the enums), each edge a field, through arrays or not:
+    // - default values: struct fields and the payload of each enum's first variant form no cycle
+    //   (one iterative depth-first search; each edge that closes a cycle is reported);
+    // - shared values: a cycle through any variant may only link enums directly. Structs and
+    //   arrays are mutable, so a cycle through one would let a value refer to itself (a reference
+    //   cycle never freed). One error per such strongly connected component.
     fn struct_cycles(&mut self, p: &Program) {
+        let ns = p.structs.len();
         let ids: HashMap<Ty, usize> = p
             .structs
             .iter()
+            .map(|s| Ty::struct_named(&s.name.name))
+            .chain(p.enums.iter().map(|e| Ty::enum_named(&e.name.name)))
             .enumerate()
-            .map(|(i, s)| (Ty::struct_named(&s.name.name), i))
+            .map(|(i, t)| (t, i))
+            .collect::<Vec<_>>()
+            .into_iter()
             .rev()
             .collect();
-        let edges: Vec<Vec<(usize, Span)>> = p
+        // (target, field span, through an array)
+        let edge = |f: &Field| {
+            let mut t = f.ty;
+            let mut array = false;
+            while let Some(e) = t.elem() {
+                t = e;
+                array = true;
+            }
+            ids.get(&t).map(|&v| (v, f.ty_span, array))
+        };
+        let defaults = p.structs.iter().map(|s| s.fields.as_slice()).chain(
+            p.enums
+                .iter()
+                .map(|e| e.variants.first().map_or(&[][..], |v| v.fields.as_slice())),
+        );
+        let edges: Vec<Vec<(usize, Span)>> = defaults
+            .map(|fs| fs.iter().filter_map(edge).map(|(v, s, _)| (v, s)).collect())
+            .collect();
+        let reported = self.default_cycles(p, &edges);
+        let all: Vec<Vec<(usize, Span, bool)>> = p
             .structs
             .iter()
             .map(|s| {
                 s.fields
                     .iter()
-                    .filter_map(|f| {
-                        let mut t = f.ty;
-                        while let Some(e) = t.elem() {
-                            t = e;
-                        }
-                        ids.get(&t).map(|&v| (v, f.ty_span))
-                    })
+                    .filter_map(edge)
+                    .map(|(v, s, _)| (v, s, true))
                     .collect()
             })
+            .chain(p.enums.iter().map(|e| {
+                e.variants
+                    .iter()
+                    .flat_map(|v| v.fields.iter().filter_map(edge))
+                    .collect()
+            }))
             .collect();
+        let comp = components(&all);
+        let done: HashSet<usize> = reported.iter().map(|&u| comp[u]).collect();
+        // The last mutable edge inside each component, in declaration order.
+        let mut last: HashMap<usize, (usize, Span)> = HashMap::new();
+        for (u, es) in all.iter().enumerate() {
+            for &(v, span, mutable) in es {
+                if mutable && comp[u] == comp[v] && !done.contains(&comp[u]) {
+                    last.insert(comp[u], (u, span));
+                }
+            }
+        }
+        let mut found: Vec<(usize, Span)> = last.into_values().collect();
+        found.sort_by_key(|&(_, s)| s.start);
+        for (u, span) in found {
+            let message = match p.structs.get(u) {
+                Some(s) => msg::recursive_struct(&s.name.name),
+                None => msg::recursive_shared(&p.enums[u - ns].name.name),
+            };
+            self.err(Code::BadFieldType, span, message);
+        }
+    }
+
+    // Returns the nodes whose field closed a reported cycle.
+    fn default_cycles(&mut self, p: &Program, edges: &[Vec<(usize, Span)>]) -> Vec<usize> {
+        let ns = p.structs.len();
+        let mut reported = Vec::new();
         // 0: not visited, 1: on the current path, 2: done.
         let mut color = vec![0u8; edges.len()];
         for start in 0..edges.len() {
@@ -351,13 +469,18 @@ impl Checker {
                         stack.push((v, 0));
                     }
                     1 => {
-                        let name = &p.structs[u].name.name;
-                        self.err(Code::BadFieldType, span, msg::recursive_struct(name));
+                        let message = match p.structs.get(u) {
+                            Some(s) => msg::recursive_struct(&s.name.name),
+                            None => msg::recursive_enum(&p.enums[u - ns].name.name),
+                        };
+                        self.err(Code::BadFieldType, span, message);
+                        reported.push(u);
                     }
                     _ => {}
                 }
             }
         }
+        reported
     }
 
     fn signatures(&mut self, p: &Program, require_main: bool) {
@@ -608,6 +731,7 @@ impl Checker {
                         | Ty::String
                         | Ty::Array(_)
                         | Ty::Struct(_)
+                        | Ty::Enum(_)
                         | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
@@ -766,6 +890,11 @@ impl Checker {
                 self.set_field(base, name, *op, value, *span);
                 false
             }
+            Stmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.match_stmt(scrutinee, arms, *span),
             Stmt::Break { span } => self.loop_exit("break", *span),
             Stmt::Continue { span } => self.loop_exit("continue", *span),
             Stmt::Return { value, span } => {
@@ -1146,6 +1275,7 @@ impl Checker {
                 }
                 *ty
             }
+            ExprKind::Variant { ty, name, args } => self.variant(*ty, name, args, e.span),
             ExprKind::Field { recv, name } => {
                 let t = self.expr(recv);
                 self.field_ty(t, name)
@@ -1365,6 +1495,241 @@ impl Checker {
             );
             Ty::Error
         })
+    }
+
+    // `Shape.Circle(r)`: the payload values in declaration order.
+    fn variant(&mut self, ty: Ty, name: &Ident, args: &[Expr], span: Span) -> Ty {
+        let found = self
+            .enums
+            .get(&ty)
+            .and_then(|vs| vs.iter().find(|(n, _)| *n == name.name))
+            .map(|(_, tys)| tys.clone());
+        let Some(tys) = found else {
+            if self.enums.contains_key(&ty) {
+                self.err(
+                    Code::BadPattern,
+                    name.span,
+                    msg::unknown_variant(&name.name, ty.name()),
+                );
+            }
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        };
+        if tys.len() != args.len() {
+            self.err(
+                Code::Arity,
+                span,
+                msg::variant_args(&name.name, tys.len(), args.len()),
+            );
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        }
+        for (a, want) in args.iter().zip(tys) {
+            let found = self.expr(a);
+            self.expect_ty(a.span, want, found);
+        }
+        ty
+    }
+
+    // Arms run like the branches of an `if`/`else if` chain: qubit states merge the same way,
+    // and the statement diverges only if it is exhaustive and every arm diverges.
+    fn match_stmt(&mut self, scrutinee: &Expr, arms: &[Arm], span: Span) -> bool {
+        let t = self.expr(scrutinee);
+        let kind_ok = matches!(
+            t,
+            Ty::Enum(_) | Ty::Int | Ty::String | Ty::Boolean | Ty::Error
+        );
+        if !kind_ok {
+            self.err(
+                Code::BadPattern,
+                scrutinee.span,
+                msg::bad_scrutinee(t.name()),
+            );
+        }
+        let variants = self.enums.get(&t).cloned().unwrap_or_default();
+        let mut covered = vec![false; variants.len()];
+        let mut ints = HashSet::new();
+        let mut texts = HashSet::new();
+        let mut bools = [false; 2];
+        let mut wild = false;
+        let before = self.states();
+        // States after each arm that falls through.
+        let mut ends: Vec<Vec<State>> = Vec::new();
+        let mut first_end: Option<Vec<State>> = None;
+        for arm in arms {
+            let p = &arm.pat;
+            let unreachable = wild;
+            let mut binds: Vec<(&Ident, Ty)> = Vec::new();
+            let mut fits = kind_ok && t != Ty::Error;
+            let dup = match &p.kind {
+                PatKind::Wild => {
+                    wild = true;
+                    false
+                }
+                PatKind::Int(n) if matches!(t, Ty::Int | Ty::Error) => !ints.insert(*n),
+                PatKind::Bool(b) if matches!(t, Ty::Boolean | Ty::Error) => {
+                    std::mem::replace(&mut bools[usize::from(*b)], true)
+                }
+                PatKind::Str(pieces) if matches!(t, Ty::String | Ty::Error) => {
+                    if pieces.contains(&FmtPiece::Hole) {
+                        self.err(Code::StringNotAllowed, p.span, msg::string_not_allowed());
+                        false
+                    } else {
+                        !texts.insert(format!("{pieces:?}"))
+                    }
+                }
+                PatKind::Variant {
+                    qual,
+                    name,
+                    binds: names,
+                } if matches!(t, Ty::Enum(_)) => {
+                    let qual_ok = qual.as_ref().is_none_or(|q| q.name == t.name());
+                    match variants.iter().position(|(n, _)| *n == name.name) {
+                        Some(tag) if qual_ok => {
+                            let tys = &variants[tag].1;
+                            if tys.len() != names.len() {
+                                self.err(
+                                    Code::BadPattern,
+                                    p.span,
+                                    msg::pattern_arity(&name.name, tys.len(), names.len()),
+                                );
+                            }
+                            for (i, b) in names.iter().enumerate() {
+                                binds.push((b, tys.get(i).copied().unwrap_or(Ty::Error)));
+                            }
+                            std::mem::replace(&mut covered[tag], true)
+                        }
+                        Some(_) => {
+                            self.err(Code::BadPattern, p.span, msg::pattern_mismatch(t.name()));
+                            fits = false;
+                            false
+                        }
+                        None => {
+                            if qual_ok {
+                                self.err(
+                                    Code::BadPattern,
+                                    name.span,
+                                    msg::unknown_variant(&name.name, t.name()),
+                                );
+                            } else {
+                                self.err(Code::BadPattern, p.span, msg::pattern_mismatch(t.name()));
+                            }
+                            fits = false;
+                            false
+                        }
+                    }
+                }
+                PatKind::Variant { binds: names, .. } => {
+                    if fits {
+                        self.err(Code::BadPattern, p.span, msg::pattern_mismatch(t.name()));
+                    }
+                    for b in names {
+                        binds.push((b, Ty::Error));
+                    }
+                    fits = false;
+                    false
+                }
+                _ => {
+                    if fits {
+                        self.err(Code::BadPattern, p.span, msg::pattern_mismatch(t.name()));
+                    }
+                    fits = false;
+                    false
+                }
+            };
+            if fits && (unreachable || dup) {
+                self.err(Code::BadPattern, p.span, msg::unreachable_arm());
+            }
+            self.restore(&before);
+            self.scopes.push(Vec::new());
+            for (b, ty) in binds {
+                if b.name == "_" {
+                    continue;
+                }
+                if self
+                    .scopes
+                    .last()
+                    .unwrap()
+                    .iter()
+                    .any(|&id| self.vars[id].name == b.name)
+                {
+                    self.err(Code::Duplicate, b.span, msg::duplicate_def(&b.name));
+                }
+                self.declare(b, ty, false);
+            }
+            let diverges = self.block(&arm.body);
+            self.scopes.pop();
+            let end = self.states();
+            if first_end.is_none() {
+                first_end = Some(end.clone());
+            }
+            if !diverges {
+                ends.push(end);
+            }
+        }
+        let missing: Vec<String> = match t {
+            _ if wild => Vec::new(),
+            Ty::Enum(_) => variants
+                .iter()
+                .zip(&covered)
+                .filter(|(_, c)| !**c)
+                .map(|((n, _), _)| format!("`{n}`"))
+                .collect(),
+            Ty::Boolean => [false, true]
+                .into_iter()
+                .filter(|b| !bools[usize::from(*b)])
+                .map(|b| format!("`{b}`"))
+                .collect(),
+            Ty::Int | Ty::String => vec!["`_`".to_string()],
+            _ => Vec::new(),
+        };
+        let exhaustive = missing.is_empty();
+        if !exhaustive {
+            self.err(
+                Code::NonExhaustive,
+                span,
+                msg::non_exhaustive(&missing.join(", ")),
+            )
+            .help = Some(msg::help_non_exhaustive());
+            // Values no arm matches fall through unchanged.
+            ends.push(before.clone());
+        }
+        match ends.split_first() {
+            None => {
+                self.restore(&first_end.unwrap_or(before));
+                exhaustive
+            }
+            Some((first, rest)) => {
+                self.restore(first);
+                for id in 0..before.len() {
+                    if !self.vars[id].ty.is_quantum() {
+                        continue;
+                    }
+                    let a = first[id];
+                    for s in rest {
+                        let b = s[id];
+                        if a == b {
+                            continue;
+                        }
+                        let (at, merged) = match (a, b) {
+                            (State::Consumed(x), State::Live) => (x, a),
+                            (State::Live, State::Consumed(y)) => (y, b),
+                            // Consumed in both arms at different places.
+                            _ => continue,
+                        };
+                        self.vars[id].state = merged;
+                        let name = self.vars[id].name.clone();
+                        self.err(Code::BranchMismatch, at, msg::branch_mismatch(&name));
+                        break;
+                    }
+                }
+                false
+            }
+        }
     }
 
     // `p.f = v` and `p.f op= v`: like `a[i] = v` with the field's type.
@@ -1850,6 +2215,59 @@ fn propagate(edges: &Edges, marked: &mut HashMap<String, (Span, Unconditional)>)
 
 // Whether two operands can be the same qubit: a whole variable overlaps any of its elements;
 // dynamic indices are left to the runtime check.
+// Strongly connected component of every node (Kosaraju, iterative: chains may be long).
+fn components(edges: &[Vec<(usize, Span, bool)>]) -> Vec<usize> {
+    let n = edges.len();
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some(top) = stack.last_mut() {
+            let (u, k) = *top;
+            match edges[u].get(k) {
+                Some(&(v, _, _)) => {
+                    top.1 += 1;
+                    if !seen[v] {
+                        seen[v] = true;
+                        stack.push((v, 0));
+                    }
+                }
+                None => {
+                    order.push(u);
+                    stack.pop();
+                }
+            }
+        }
+    }
+    let mut rev = vec![Vec::new(); n];
+    for (u, es) in edges.iter().enumerate() {
+        for &(v, _, _) in es {
+            rev[v].push(u);
+        }
+    }
+    let mut comp = vec![usize::MAX; n];
+    for (c, &start) in order.iter().rev().enumerate() {
+        if comp[start] != usize::MAX {
+            continue;
+        }
+        comp[start] = c;
+        let mut stack = vec![start];
+        while let Some(u) = stack.pop() {
+            for &v in &rev[u] {
+                if comp[v] == usize::MAX {
+                    comp[v] = c;
+                    stack.push(v);
+                }
+            }
+        }
+    }
+    comp
+}
+
 fn overlaps(a: (usize, Idx), b: (usize, Idx)) -> bool {
     a.0 == b.0
         && match (a.1, b.1) {

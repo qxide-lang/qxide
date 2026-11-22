@@ -71,6 +71,44 @@ void main() {
 }
 
 // `while`, `break`, `continue` and compound assignment are plain jumps, so such functions compile.
+// `match` on `int` and `boolean` compiles; functions that touch enum values stay interpreted.
+#[test]
+fn int_matches_compile_and_enums_stay_interpreted() {
+    let src = "enum E { A, B(int n) }
+int pick(int n) {
+    match n {
+        0 => {
+            return 10;
+        }
+        -1 => {
+            return 20;
+        }
+        _ => {
+            return n;
+        }
+    }
+}
+int unwrap(E e) {
+    match e {
+        B(n) => {
+            return n;
+        }
+        _ => {
+            return 0;
+        }
+    }
+}
+void main() {
+    println(\"{} {} {} {}\", pick(0), pick(-1), pick(7), unwrap(E.B(3)));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    assert!(jit.compiles(m.index["pick"]));
+    assert!(!jit.compiles(m.index["unwrap"]));
+    assert_eq!(same(src, Limits::CLI), "ok\n10 20 7 3\n");
+}
+
 #[test]
 fn loops_with_break_and_continue_compile() {
     let src = "int collatz(int n) {

@@ -1,0 +1,83 @@
+// Enums with payloads, `match`, and a recursive list. Classical values only.
+enum Shape {
+    Circle(double r),
+    Rect(double w, double h),
+    Empty,
+}
+
+enum IntList {
+    Nil,
+    Cons(int head, IntList tail),
+}
+
+double area(Shape s) {
+    match s {
+        Circle(r) => {
+            return PI * r * r;
+        }
+        Shape.Rect(w, h) => {
+            return w * h;
+        }
+        Empty => {
+            return 0.0;
+        }
+    }
+}
+
+int sum(IntList list) {
+    int total = 0;
+    var rest = list;
+    boolean more = true;
+    while more {
+        match rest {
+            Cons(head, tail) => {
+                total += head;
+                rest = tail;
+            }
+            Nil => {
+                more = false;
+            }
+        }
+    }
+    return total;
+}
+
+String describe(int n) {
+    match n {
+        0 => {
+            return "zero";
+        }
+        1 => {
+            return "one";
+        }
+        _ => {
+            return "many";
+        }
+    }
+}
+
+void main() {
+    Shape[] shapes = {Shape.Circle(1), Shape.Rect(2, 3.5), Shape.Empty};
+    for i in 0..len(shapes) {
+        println("area {} = {}", i, area(shapes[i]));
+    }
+    IntList list = IntList.Nil;
+    for i in 1..101 {
+        list = IntList.Cons(i, list);
+    }
+    println("sum = {}", sum(list));
+    println("{} {} {}", describe(0), describe(1), describe(7));
+
+    // A qubit is measured in every arm.
+    Qubit q = qubit();
+    h(q);
+    match describe(2) {
+        "many" => {
+            Bit b = measure(q);
+            println("measured {}", b);
+        }
+        _ => {
+            discard(q);
+        }
+    }
+}

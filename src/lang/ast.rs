@@ -6,20 +6,20 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use super::diag::Span;
 
 /// A compound type registered in the process-wide interner: an array type (keyed by its
-/// element type) or a struct name. Programs in one process (LSP, parallel tests) share ids
+/// element type) or a struct or enum name. Programs in one process (LSP, parallel tests) share ids
 /// safely: an array id means the same element type everywhere, and struct fields are kept per
-/// program (`record::Layouts`), never here. Ids never appear in output.
+/// program (`record::Layouts`), never here. Structs and enums share one namespace of names. Ids never appear in output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TyId(u32);
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Key {
     Array(Ty),
-    Struct(String),
+    Named(String),
 }
 
 // Append-only: (element type of an array, source name), with a hash index so N types intern in
-// O(N). Bounded by the distinct array types and struct names ever written.
+// O(N). Bounded by the distinct array types and struct and enum names ever written.
 #[derive(Default)]
 struct Interner {
     entries: Vec<(Option<Ty>, &'static str)>,
@@ -46,6 +46,10 @@ fn intern(key: Key, elem: Option<Ty>, name: String) -> TyId {
     TyId(i)
 }
 
+fn named(name: &str) -> TyId {
+    intern(Key::Named(name.to_string()), None, name.to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ty {
     Int,
@@ -67,6 +71,8 @@ pub enum Ty {
     Array(TyId),
     // `Point`: a reference to a value of a `struct` declared in the program.
     Struct(TyId),
+    // `Shape`: an immutable value of an `enum` declared in the program.
+    Enum(TyId),
 }
 
 impl Ty {
@@ -78,11 +84,12 @@ impl Ty {
 
     /// The type of the `struct` named `name`.
     pub fn struct_named(name: &str) -> Ty {
-        Ty::Struct(intern(
-            Key::Struct(name.to_string()),
-            None,
-            name.to_string(),
-        ))
+        Ty::Struct(named(name))
+    }
+
+    /// The type of the `enum` named `name`.
+    pub fn enum_named(name: &str) -> Ty {
+        Ty::Enum(named(name))
     }
 
     /// The element type of an array type.
@@ -93,17 +100,24 @@ impl Ty {
         }
     }
 
-    /// Types arrays and struct fields may hold: build-time classical values, arrays and structs.
+    /// Types arrays, struct fields and enum payloads may hold: build-time classical values,
+    /// arrays, structs and enums.
     pub fn is_element(self) -> bool {
         matches!(
             self,
-            Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Array(_) | Ty::Struct(_)
+            Ty::Int
+                | Ty::Double
+                | Ty::Boolean
+                | Ty::String
+                | Ty::Array(_)
+                | Ty::Struct(_)
+                | Ty::Enum(_)
         )
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Ty::Array(TyId(i)) | Ty::Struct(TyId(i)) => types()
+            Ty::Array(TyId(i)) | Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) => types()
                 .entries
                 .get(i as usize)
                 .map_or("{error}", |(_, n)| *n),
@@ -161,7 +175,22 @@ pub struct Ident {
 pub struct Program {
     pub imports: Vec<Import>,
     pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
     pub fns: Vec<FnDecl>,
+}
+
+/// `enum Shape { Circle(double r), Empty }`
+#[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: Ident,
+    pub variants: Vec<Variant>,
+}
+
+/// One variant of an `enum`: its payload fields are named like parameters.
+#[derive(Debug, Clone)]
+pub struct Variant {
+    pub name: Ident,
+    pub fields: Vec<Field>,
 }
 
 /// `struct Point { double x; double y; }`
@@ -268,7 +297,41 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    // `match e { pattern => { ... } ... }`; `span` is the `match` keyword.
+    Match {
+        scrutinee: Expr,
+        arms: Vec<Arm>,
+        span: Span,
+    },
     Expr(Expr),
+}
+
+#[derive(Debug, Clone)]
+pub struct Arm {
+    pub pat: Pattern,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    pub kind: PatKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum PatKind {
+    // `_`
+    Wild,
+    Int(i64),
+    // A `String` literal (the pieces of its text; a `{}` hole is an error).
+    Str(Vec<FmtPiece>),
+    Bool(bool),
+    // `Circle(r, _)` or `Shape.Circle(r, _)`: `_` bindings are ignored.
+    Variant {
+        qual: Option<Ident>,
+        name: Ident,
+        binds: Vec<Ident>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +420,12 @@ pub enum ExprKind {
     // `new Point(1.0, 2.0)`: the fields in declaration order.
     NewStruct {
         ty: Ty,
+        args: Vec<Expr>,
+    },
+    // `Shape.Circle(2.0)` or `Shape.Empty`: the payload in declaration order.
+    Variant {
+        ty: Ty,
+        name: Ident,
         args: Vec<Expr>,
     },
     // `p.x`

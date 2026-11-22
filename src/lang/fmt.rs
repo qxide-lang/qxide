@@ -87,6 +87,8 @@ struct Printer<'a> {
     cast_close: Vec<bool>,
     // `{` and `}` of array initializers (`{1, 2}`, `new int[]{1}`): laid out like parentheses.
     init_brace: Vec<bool>,
+    // Commas between the variants of an `enum`: one variant per line.
+    enum_comma: Vec<bool>,
     prev: Option<usize>,
     last_end: usize,
     last_was_open: bool,
@@ -123,6 +125,22 @@ impl<'a> Printer<'a> {
                 _ => {}
             }
         }
+        let mut enum_comma = vec![false; toks.len()];
+        for i in 2..toks.len() {
+            if toks[i].tok != Tok::LBrace || toks[i - 2].tok != Tok::Enum {
+                continue;
+            }
+            let mut parens = 0usize;
+            for (j, t) in toks.iter().enumerate().skip(i + 1) {
+                match t.tok {
+                    Tok::LParen => parens += 1,
+                    Tok::RParen => parens = parens.saturating_sub(1),
+                    Tok::Comma if parens == 0 => enum_comma[j] = true,
+                    Tok::RBrace | Tok::LBrace | Tok::Eof => break,
+                    _ => {}
+                }
+            }
+        }
         Self {
             src,
             toks,
@@ -132,6 +150,7 @@ impl<'a> Printer<'a> {
             continued: false,
             cast_close,
             init_brace,
+            enum_comma,
             prev: None,
             last_end: 0,
             last_was_open: false,
@@ -219,10 +238,22 @@ impl<'a> Printer<'a> {
         if self.prev.is_some_and(|p| self.init_brace[p]) {
             return Break::Space;
         }
+        let after_block = |p: usize| {
+            p.checked_sub(1)
+                .is_some_and(|b| self.toks[b].tok == Tok::RBrace && !self.init_brace[b])
+        };
         match self.prev_tok() {
             None => Break::Newline,
             Some(Tok::LBrace | Tok::Semi) => Break::Newline,
-            Some(Tok::RBrace) if *next == Tok::Else => Break::Space,
+            // Enum variants, and `match` arms written with a comma after the block.
+            Some(Tok::Comma)
+                if self
+                    .prev
+                    .is_some_and(|p| self.enum_comma[p] || after_block(p)) =>
+            {
+                Break::Newline
+            }
+            Some(Tok::RBrace) if matches!(next, Tok::Else | Tok::Comma) => Break::Space,
             Some(Tok::RBrace) => Break::Newline,
             Some(_) => Break::Space,
         }
