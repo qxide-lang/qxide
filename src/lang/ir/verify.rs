@@ -219,7 +219,7 @@ impl Checker<'_> {
             Inst::IntOp { op, dst, a, b, .. } => {
                 self.want(*a, IrTy::I64)?;
                 self.want(*b, IrTy::I64)?;
-                if Self::numeric_op(*op) {
+                if Self::numeric_op(*op) || op.is_bitwise() {
                     self.want(*dst, IrTy::I64)?;
                 } else if Self::compare_op(*op) {
                     self.want(*dst, IrTy::Bool)?;
@@ -320,6 +320,25 @@ impl Checker<'_> {
                 }
                 self.ty(*dst)?;
             }
+            Inst::NewNative { dst, args, .. } => {
+                for a in args.iter() {
+                    self.ty(*a)?;
+                }
+                if !matches!(self.ty(*dst)?, IrTy::Native(_)) {
+                    return Err("new of a non-built-in type".into());
+                }
+            }
+            Inst::NativeMethod {
+                dst, recv, args, ..
+            } => {
+                if !matches!(self.ty(*recv)?, IrTy::Native(_)) {
+                    return Err("built-in method on another type".into());
+                }
+                for a in args.iter() {
+                    self.ty(*a)?;
+                }
+                self.ty(*dst)?;
+            }
             Inst::QAlloc { dst, .. } => self.want(*dst, IrTy::Qubit)?,
             Inst::QAllocReg { dst, size, .. } => {
                 self.want(*size, IrTy::I64)?;
@@ -355,7 +374,7 @@ impl Checker<'_> {
                 self.want(*dst, IrTy::I64)?;
                 if !matches!(
                     self.ty(*src)?,
-                    IrTy::Str | IrTy::QReg | IrTy::Bits | IrTy::Array(_)
+                    IrTy::Str | IrTy::QReg | IrTy::Bits | IrTy::Array(_) | IrTy::Native(_)
                 ) {
                     return Err("len of a value without a length".into());
                 }

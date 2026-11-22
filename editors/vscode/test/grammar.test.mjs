@@ -105,6 +105,21 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf(shapes, "T"), "entity.name.type.parameter.qx");
   assert.equal(scopeOf("interface Ordered<T> { int compare(T o); }", "Ordered"), "entity.name.type.qx");
   assert.equal(scopeOf("int interface = 1;", " interface "), "source.qx");
+  const bits = "int f(int x) { x <<= 2; return x >>> 1 ^ ~x & 3 | x >> 2; }";
+  assert.equal(scopeOf(bits, "<<="), "keyword.operator.assignment.compound.qx");
+  assert.equal(scopeOf(bits, ">>>"), "keyword.operator.bitwise.shift.qx");
+  assert.equal(scopeOf(bits, "^"), "keyword.operator.bitwise.qx");
+  assert.equal(scopeOf(bits, "~"), "keyword.operator.bitwise.qx");
+  assert.equal(scopeOf(bits, ">>"), "keyword.operator.bitwise.shift.qx");
+  const coll = "Map<String, int> m = new Map(); List<int> xs = new List(); Random r = new Random(1); m.put(\"a\", r.next_int(6)); for w in \"a b\".split(\" \") {}";
+  assert.equal(scopeOf(coll, "Map"), "support.type.builtin.qx");
+  assert.equal(scopeOf(coll, "List"), "support.type.builtin.qx");
+  assert.equal(scopeOf(coll, "Random"), "support.type.builtin.qx");
+  assert.equal(scopeOf(coll, "put"), "support.function.method.qx");
+  assert.equal(scopeOf(coll, "next_int"), "support.function.method.qx");
+  assert.equal(scopeOf(coll, "split"), "support.function.method.qx");
+  // Nested type arguments close with two `>`, not a shift.
+  assert.equal(scopeOf("Option<Option<int>> o;", ">"), scopeOf("Option<int> o;", ">"));
   assert.equal(scopeOf(src, "helper"), "entity.name.function.call.qx");
   assert.equal(scopeOf(src, "as_int"), "support.function.method.qx");
 });

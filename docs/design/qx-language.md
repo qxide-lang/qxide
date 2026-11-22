@@ -1077,7 +1077,7 @@ MVP 단계의 표준 모듈은 다음과 같다.
 
 - `std.log`: `info`, `warn`, `error`
 - `std.time`: `now_millis`, `now_iso`, `sleep_millis`, `monotonic_millis`
-- `std.io`: `write`, `write_line`, `read_line`, `read_all` (CLI 전용, 19.9절)
+- `std.io`: `write`, `write_line`, `write_err`, `write_err_line`, `read_line`, `read_all` (CLI 전용, 19.9절·19.10절)
 - `std.env`: `get` (CLI 전용, 19.9절)
 - `std.fs`: `read_text`, `write_text`, `append_text`, `exists`, `remove`
 - `std.app`: `set_title`, `set_size`, `close`, `emit` (데스크톱 앱 전용)
@@ -1181,7 +1181,7 @@ int collatz(int n) {
 
 - **설계 결정(D4)**: `docs/design/general-purpose-roadmap.md`의 설계 결정 D4에 따라 순수 함수는 새 전역 내장 함수로 추가하지 않는다. 사용자 함수가 내장 함수 이름을 재사용할 수 없어(`Q0217`) 새 전역 이름이 기존 프로그램을 깨뜨릴 수 있기 때문이다. 수학 함수는 표준 모듈 `std.math`(`import std.math;` 후 `math.sqrt(x)` 형태로 호출)에 두고, 텍스트 함수는 `String` 값의 메서드(`s.trim()`)로 제공하여 전역 이름을 추가하지 않는다.
 - **순수성과 호스트 허용**: `std.math`와 `String` 메서드는 순수 연산으로, 호스트를 거치지 않고 인터프리터 내부에서 실행된다. 따라서 모든 호스트(CLI, 플레이그라운드, REPL, 데스크톱 앱, 의존 패키지)가 권한 없이 `std.math`를 허용하며, 다른 `std` 모듈과 달리(`Q0314`) 측정 비트 조건의 `if` 안에서도 사용할 수 있다.
-- **`std.math` 함수**: 별도 표기가 없는 함수는 모두 `double`을 받고 반환하며, `int` 인수는 `double`로 확장된다. `sqrt`, `cbrt`, `exp`, `log`(자연로그), `log10`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round`(중간값은 0에서 멀어지는 쪽으로 반올림), `trunc`, `abs`, `pow(x, y)`, `hypot(x, y)`, `min`, `max`(Java와 마찬가지로 두 인수 중 하나라도 NaN이면 NaN 반환)를 제공하며, `is_nan`과 `is_finite`는 `boolean`을 반환한다. 정수 함수로는 `abs_int`, `min_int`, `max_int`, `pow_int(base, exponent)`를 제공한다(오버플로는 `Q0401`, 음수 지수는 `Q0706`).
+- **`std.math` 함수**: 별도 표기가 없는 함수는 모두 `double`을 받고 반환하며, `int` 인수는 `double`로 확장된다. `sqrt`, `cbrt`, `exp`, `log`(자연로그), `log10`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round`(중간값은 0에서 멀어지는 쪽으로 반올림), `trunc`, `abs`, `pow(x, y)`, `hypot(x, y)`, `min`, `max`(Java와 마찬가지로 두 인수 중 하나라도 NaN이면 NaN 반환)를 제공하며, `is_nan`과 `is_finite`는 `boolean`을 반환한다. 정수 함수로는 `abs_int`, `min_int`, `max_int`, `pow_int(base, exponent)`를 제공한다(오버플로는 `Q0401`, 음수 지수는 `Q0706`). 2의 보수로 래핑하는 `wrapping_add`, `wrapping_sub`, `wrapping_mul`은 19.10절에서 추가했다.
 - **플랫폼 차이**: `sqrt`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`는 모든 플랫폼에서 같은 결과를 낸다. 나머지 함수는 플랫폼의 부동소수점 라이브러리를 사용하므로 Java의 `Math`와 `StrictMath`처럼 플랫폼 간(예: Windows의 CLI와 WebAssembly 플레이그라운드)에 마지막 자릿수가 다를 수 있다. 단일 빌드의 모든 엔진은 동일한 결과를 낸다.
 - **`String` 메서드**: 기존 `as_int`/`to_binary`와 마찬가지로 `snake_case`를 사용하며, 인덱스는 `len`과 같이 유니코드 문자 단위로 센다. `length()`는 `int`를 반환하고, `substring(start, end)`는 `end` 미포함 범위의 부분 문자열을 반환한다(`0 <= start <= end <= length`를 벗어나면 `Q0403`). `char_at(i)`는 한 글자 `String`을 반환하며 범위를 벗어나면 `Q0403`이 발생한다. `index_of(t)`는 문자 인덱스 또는 `-1`을, `contains(t)`, `starts_with(t)`, `ends_with(t)`는 `boolean`을 반환한다. 또한 `to_upper()`, `to_lower()`, `trim()`, 모든 일치 항목을 치환하는 `replace(from, to)`, `repeat(n)`(음수 `n`은 `Q0706`), 그리고 `parse_int()`와 `parse_double()`(앞뒤 공백은 무시하며 유효하지 않은 텍스트는 새 실행 시간 오류 `Q0419`)을 제공한다. `split`은 배열과 함께 추가된다.
 - **검사 오류**: 알 수 없는 메서드는 `Q0220`, 인수 개수 불일치는 `Q0203`, 인수 타입 불일치는 `Q0204`, 알 수 없는 `std.math` 함수는 `Q0701`로 보고한다.
@@ -1485,3 +1485,51 @@ int main(String[] args) {
 | --- | --- |
 | `Q0206` | `main` 함수가 없거나 허용된 네 가지 시그니처(`void main()`, `int main()`, `void main(String[] args)`, `int main(String[] args)`)가 아님 |
 | `Q0706` | `std` 인수 범위 초과(`sleep_millis`는 `0..60000`) 또는 `int main()`의 종료 코드가 `0..=255` 범위를 벗어남 |
+
+### 19.10 기초 데이터 도구: 비트 연산, 문자열 분할, for-each, List·Map·Random
+
+로드맵 Stage 2의 두 번째 단계(2b)로, 고전 데이터 처리를 위해 비트 연산자와 래핑 정수 산술, 문자열 분할·결합 메서드, for-each 반복문, 그리고 내장 컬렉션·의사 난수 타입(`List<T>`, `Map<K, V>`, `Random`)을 추가한다.
+
+- **비트 연산자와 우선순위**: `int` 전용 비트 연산자 `&`, `|`, `^`, 단항 `~`, `<<`, `>>`(부호를 확장하는 산술 시프트), `>>>`(0으로 채우는 논리 시프트)와 복합 대입 `&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`(배열 원소와 구조체 필드에서도 동작)를 지원한다. `int`가 아닌 타입의 피연산자는 `Q0204` 오류다. 연산자 우선순위는 Java가 아니라 Rust를 따라 느슨한 순서에서 촘촘한 순서로 `||`, `&&`, 비교 연산자(`==`, `!=`, `<`, `<=`, `>`, `>=`, 비결합), `|`, `^`, `&`, 시프트(`<<`, `>>`, `>>>`), `+ -`, `* / %` 순이다. 따라서 `x & 1 == 0`은 `(x & 1) == 0`으로 해석된다(Java에서는 흔한 함정인 `x & (1 == 0)`이 된다). `>>`와 `>>>`는 인접한 `>` 문자로 표기하고 파서가 이를 구분하므로 `Option<Option<int>>`처럼 중첩된 제네릭 타입 인자 목록도 기존대로 두 개의 `>`로 닫힌다.
+- **시프트 범위(`Q0420`)와 래핑 산술**: 시프트 양은 `0..=63` 범위여야 하며, 음수이거나 64 이상이면 새 실행 시간 오류 `Q0420`이 발생한다(Java처럼 시프트 양을 조용히 마스킹하거나 C처럼 미정의 동작으로 두지 않고 qxide의 검사된 `int` 산술과 동일하게 오류로 보고한다). 밀려 나간 비트는 버려지므로 `<<`는 오버플로를 보고하지 않는다. 해시와 생성기 작성을 위해 `std.math`에는 오버플로 오류(`Q0401`) 대신 2의 보수로 래핑하는 `wrapping_add`, `wrapping_sub`, `wrapping_mul`을 추가했다.
+- **`String` 분할·결합 메서드**: `split(sep)`은 Rust의 `split`과 마찬가지로 구분자 사이의 모든 조각을 빈 조각까지 포함해 `String[]`로 반환하며(`"a,,b".split(",")`은 원소 3개, `"".split(",")`은 빈 문자열 원소 1개), 빈 구분자를 넘기면 실행 시간 오류 `Q0706`이 발생한다. `split_whitespace()`는 연속된 유니코드 공백 기준으로 나누고 빈 조각은 버린다. `lines()`는 줄바꿈(`\n`) 기준으로 나누되 각 줄바꿈 앞의 캐리지 리턴(`\r`)을 제거하고, 끝의 마지막 줄바꿈은 빈 줄을 추가하지 않는다. `chars()`는 유니코드 스칼라 값 하나당 한 글자 `String` 원소 하나를 담은 `String[]`을 반환한다(`char_at` 반복문과 달리 선형 시간). `sep.join(parts)`는 수신자 문자열을 원소 사이에 끼워 `String[]`을 결합한다(예: `", ".join(names)`).
+- **for-each 반복문**: `for x in xs { ... }`로 배열이나 `List`를 순회한다(카운팅 루프는 기존처럼 `for i in a..b`를 유지한다). 컬렉션과 그 길이는 루프가 시작할 때 한 번만 평가되므로(숨겨진 참조 사본에 대한 `for i in 0..len(xs)`와 동일), 루프 도중 `List`에 추가된 원소는 방문하지 않으며 원소를 제거하면 뒤이은 원소 읽기가 `Q0403`으로 실패할 수 있다. `x`는 매 반복마다 새 변수로 바인딩된다. `break`, `continue`와 모든 큐비트 규칙은 기존 `for`와 동일하며(본문 안에서 외부 큐비트 소비는 `Q0305`, 본문 안에서 할당한 큐비트는 본문 안에서 소비해야 함), `in` 뒤에 배열이나 `List`가 아닌 값이 오면 `Q0204` 오류가 발생한다.
+- **내장 타입(`List<T>`, `Map<K, V>`, `Random`)과 섀도잉**: 세 타입은 별도 `import` 없이 모든 파일에서 사용할 수 있다. 프로그램이나 파일이 같은 이름의 자체 타입을 선언하면 내장 타입 대신 그 사용자 타입을 사용하므로 `enum List<T>`를 선언한 기존 프로그램도 그대로 동작한다.
+- **`List<T>`**: 배열과 같은 참조 의미론을 갖는 가변 길이 배열이다. `new List<int>()`로 생성하거나 선언된 타입이 타입 인자를 결정하면 `new List()`처럼 생략할 수 있다(`List<int> xs = new List();`). 메서드로 `add(v)`, `get(i)`, `set(i, v)`, `insert(i, v)`(인덱스는 현재 크기와 같을 수 있음), `remove_at(i)`(제거한 원소 반환), `pop()`(`Option<T>` 반환, 비어 있으면 `None`), `clear()`, `size()`, `is_empty()`, `to_array()`(새 `T[]` 반환)를 제공하며, `len(xs)`와 읽기 전용 색인 `xs[i]`도 지원한다. 범위를 벗어난 인덱스는 `Q0403`이다.
+- **`Map<K, V>`**: 삽입 순서를 유지하는 해시 맵이다. `keys()`, `values()`, 그리고 `keys()`에 대한 for-each는 키가 처음 추가된 순서를 그대로 따르므로 모든 엔진과 호스트에서 출력이 같다(기존 키를 다시 `put`하면 기존 자리가 유지되고, `remove` 후 다시 추가하면 맨 뒤로 간다). 키는 값으로 비교하며 `int`, `String`, `boolean`만 허용되고 그 밖의 키 타입은 `Q0230`이다. 메서드로 `put(k, v)`, `get(k)`(`Option<V>` 반환), `get_or(k, fallback)`, `contains_key(k)`, `remove(k)`(`Option<V>` 반환), `clear()`, `size()`, `is_empty()`, `keys()`(새 `K[]` 반환), `values()`(새 `V[]` 반환)를 제공한다.
+- **`Random`**: splitmix64 정수 산술 기반의 시드 의사 난수 생성기로, 같은 시드이면 WebAssembly 플레이그라운드를 포함한 모든 엔진과 호스트에서 동일한 수열을 낸다. `new Random(seed)`로 생성하며, 기각 표본추출로 `0..bound` 균일 분포를 내는 `next_int(bound)`(`bound <= 0`이면 `Q0706`), 53비트 무작위 비트로 `[0, 1)` 균일 분포를 내는 `next_double()`, 그리고 `next_bool()`을 제공한다. 암호학적 용도에는 적합하지 않다. `Random`에는 기본값이 없으므로 `new Random[n]`은 `Q0225` 오류다.
+- **타입 제약, 기본값, 재귀 규칙**: 원소·값·키 타입은 모두 고전 타입이어야 하므로(`List<Qubit>`은 `Q0230`) 큐비트 소유권 규칙은 컬렉션과 만나지 않는다. `List`와 `Map`은 배열 원소, 구조체 필드, 열거형 페이로드, 타입 인자로 쓸 수 있으며 `new T[n]`이나 구조체 기본값에서는 빈 컬렉션으로 시작한다. 구조체나 열거형이 `List`나 `Map`을 거쳐 자기 자신에 도달할 수 있는 경우는 다른 가변 재귀 타입과 마찬가지로 `Q0227`로 거부된다. 컬렉션에 대한 `==` 비교와 `println` 출력은 지원하지 않으므로 원소를 직접 출력해야 한다.
+- **측정 비트 조건 `if` 규칙**: 컬렉션이나 `Random`을 변경하는 메서드(`add`, `set`, `insert`, `remove_at`, `pop`, `clear`, `put`, `remove`, `next_int`, `next_double`, `next_bool`)는 공유 데이터에 대한 저장으로 취급한다. 측정 비트 조건의 `if` 안에서 이 메서드들을 직접 호출하면 `Q0308` 오류가 발생하며, 이 이름의 메서드를 호출하는 함수(해당 분석에서는 수신자 타입을 알지 못하므로 모든 타입에 보수적으로 적용)는 이러한 `if` 안에서 호출할 수 없다(`Q0314`). `get`, `size` 같은 읽기 메서드는 허용된다.
+- **스텝 예산과 JIT**: 각 메서드 호출은 1스텝을 소비한다. 새로 추가되는 `List` 원소와 `Map` 항목은 배열 할당과 마찬가지로 메모리 바이트당 8스텝을 부과해 스텝 예산이 컬렉션 메모리도 함께 제한한다. `insert`와 `remove_at`은 이동하는 원소마다 1스텝을 추가로 부과하고, `keys()`, `values()`, `to_array()`는 배열 할당과 동일하게 과금한다. 두 인터프리터는 모든 스텝 한도에서 동일하게 과금한다. JIT는 컬렉션을 사용하는 함수를 인터프리터에 맡기고, 새 비트 연산자를 포함해 `int`·`double`·`boolean`만 사용하는 함수는 네이티브 코드로 컴파일한다(Cranelift의 `band`, `bor`, `bxor`, `bnot`, `ishl`, `sshr`, `ushr`을 사용하며 동일한 `Q0420` 검사를 수행한다).
+- **`std.io` 표준 오류 출력**: `std.io`에 `write_err(text)`와 `write_err_line(text)`를 추가해 표준 오류(`stderr`)로 즉시 출력한다. 호스트 규칙은 나머지 `std.io`와 동일하게 CLI 전용이다.
+- **예제**: `examples/qx/collections.qx`는 `Map`을 이용한 단어 빈도 계산, `List`, 고정 시드의 `Random` 주사위 굴리기, 비트 플래그를 보여 주며 플레이그라운드에서도 실행된다. `examples/cli/wc.qx`는 `split_whitespace`와 `Map`을 사용하도록 갱신했고, `-f` 옵션을 주면 단어 빈도를 높은 순으로 출력한다(`List`에 삽입해 순서를 유지한다).
+- **2b에서 남긴 항목**: 컬렉션의 `==` 및 출력, 집합(set), 비교자(comparator)를 받는 정렬(제네릭 메서드 필요), `Map` 직접 순회(`keys()` 사용), 그 밖의 타입을 키로 쓰는 `Map`은 이후 단계로 남겼다.
+
+```qx
+void main() {
+    Map<String, int> counts = new Map();
+    for word in "red blue red green blue red".split_whitespace() {
+        counts.put(word, counts.get_or(word, 0) + 1);
+    }
+    List<String> repeated = new List();
+    for word in counts.keys() {
+        if counts.get_or(word, 0) > 1 {
+            repeated.add(word);
+        }
+    }
+    println("repeated: {}", ", ".join(repeated.to_array()));
+
+    Random rng = new Random(42);
+    int mask = 0;
+    for i in 0..4 {
+        mask |= 1 << rng.next_int(8);
+    }
+    println("mask={} low={}", mask, mask & 1 == 1);
+}
+```
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0420` | 시프트 양이 `0..=63` 범위를 벗어남(실행 시간 오류) |
+| `Q0230` | 타입 인자 오류(`Map` 키 타입이 `int`·`String`·`boolean`이 아닌 경우, 내장 타입 `List`·`Map`의 타입 인자 누락 포함) |
+| `Q0706` | 인수 범위 초과(`String.split("")`의 빈 구분자, `Random.next_int(bound)`의 `bound <= 0` 포함) |

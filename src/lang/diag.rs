@@ -117,6 +117,7 @@ codes! {
     SimWorkLimit => "Q0417",
     TooManyDiagnostics => "Q0418",
     ParseNumber => "Q0419",
+    ShiftRange => "Q0420",
     UnknownPackage => "Q0501",
     ModuleNotFound => "Q0502",
     UnknownImport => "Q0503",

@@ -17,6 +17,9 @@ enum Key {
     Array(Ty),
     Named(String),
     Param(String),
+    // `List`, `Map<String, int>`: built-in types and their instances, apart from any program
+    // type of the same name.
+    Native(String),
 }
 
 // Append-only: (element type of an array, source name), with a hash index so N types intern in
@@ -81,6 +84,8 @@ pub enum Ty {
     Param(TyId),
     // `Shape`: a reference to a value of any struct or enum that implements the `interface`.
     Iface(TyId),
+    // `List<int>`, `Map<String, int>`, `Random`: built-in reference types (src/lang/native.rs).
+    Native(TyId),
 }
 
 impl Ty {
@@ -105,6 +110,15 @@ impl Ty {
         Ty::Iface(named(name))
     }
 
+    /// The built-in type named `name` (`List`, `Map`, `Random`), without type arguments.
+    pub fn native(name: &str) -> Ty {
+        Ty::Native(intern(
+            Key::Native(name.to_string()),
+            None,
+            name.to_string(),
+        ))
+    }
+
     /// The type parameter named `name`.
     pub fn param_named(name: &str) -> Ty {
         Ty::Param(intern(Key::Param(name.to_string()), None, name.to_string()))
@@ -115,7 +129,10 @@ impl Ty {
     pub fn instance(base: Ty, args: &[Ty]) -> Ty {
         let names: Vec<&str> = args.iter().map(|a| a.name()).collect();
         let name = format!("{}<{}>", base.name(), names.join(", "));
-        let id = named(&name);
+        let id = match base {
+            Ty::Native(_) => intern(Key::Native(name.clone()), None, name),
+            _ => named(&name),
+        };
         types()
             .insts
             .entry(id.0)
@@ -123,6 +140,7 @@ impl Ty {
         match base {
             Ty::Enum(_) => Ty::Enum(id),
             Ty::Iface(_) => Ty::Iface(id),
+            Ty::Native(_) => Ty::Native(id),
             _ => Ty::Struct(id),
         }
     }
@@ -130,7 +148,7 @@ impl Ty {
     /// The generic base and type arguments of an instance type.
     pub fn generic_args(self) -> Option<(Ty, Vec<Ty>)> {
         match self {
-            Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) | Ty::Iface(TyId(i)) => {
+            Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) | Ty::Iface(TyId(i)) | Ty::Native(TyId(i)) => {
                 types().insts.get(&i).cloned()
             }
             _ => None,
@@ -163,7 +181,7 @@ impl Ty {
         match self {
             Ty::Param(_) => true,
             Ty::Array(_) => self.elem().is_some_and(Ty::has_param),
-            Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) => self
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) | Ty::Native(_) => self
                 .generic_args()
                 .is_some_and(|(_, a)| a.iter().any(|t| t.has_param())),
             _ => false,
@@ -174,7 +192,7 @@ impl Ty {
     pub fn size(self) -> usize {
         match self {
             Ty::Array(_) => 1 + self.elem().map_or(0, Ty::size),
-            Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) => {
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) | Ty::Native(_) => {
                 1 + self
                     .generic_args()
                     .map_or(0, |(_, a)| a.iter().map(|t| t.size()).sum())
@@ -205,6 +223,7 @@ impl Ty {
                 | Ty::Enum(_)
                 | Ty::Param(_)
                 | Ty::Iface(_)
+                | Ty::Native(_)
         )
     }
 
@@ -214,7 +233,8 @@ impl Ty {
             | Ty::Struct(TyId(i))
             | Ty::Enum(TyId(i))
             | Ty::Param(TyId(i))
-            | Ty::Iface(TyId(i)) => types()
+            | Ty::Iface(TyId(i))
+            | Ty::Native(TyId(i)) => types()
                 .entries
                 .get(i as usize)
                 .map_or("{error}", |(_, n)| *n),
@@ -550,6 +570,8 @@ pub enum FmtPiece {
 pub enum UnOp {
     Neg,
     Not,
+    // `~x` on `int`.
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,6 +589,22 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    // Bitwise `&`, `|`, `^` and shifts `<<`, `>>` (arithmetic), `>>>` (logical) on `int`.
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
+}
+
+impl BinOp {
+    pub fn is_bitwise(self) -> bool {
+        matches!(
+            self,
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr | BinOp::UShr
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

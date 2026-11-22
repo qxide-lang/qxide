@@ -15,6 +15,7 @@ use super::super::check;
 use super::super::diag::{Code, Diagnostic, Span};
 use super::super::machine::{internal, Gate1, Rot};
 use super::super::msg;
+use super::super::native;
 use super::super::pure;
 use super::*;
 
@@ -428,7 +429,11 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 IrTy::F64 => IrTy::F64,
                 IrTy::Bool => IrTy::Bool,
                 IrTy::Str => IrTy::Str,
-                t @ (IrTy::Array(_) | IrTy::Struct(_) | IrTy::Enum(_) | IrTy::Iface(_)) => t,
+                t @ (IrTy::Array(_)
+                | IrTy::Struct(_)
+                | IrTy::Enum(_)
+                | IrTy::Iface(_)
+                | IrTy::Native(_)) => t,
                 _ => IrTy::I64,
             },
         };
@@ -849,6 +854,9 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     IrTy::QReg => IrTy::Qubit,
                     IrTy::Bits => IrTy::Bit,
                     t @ IrTy::Array(_) => t.elem().unwrap_or(IrTy::Unit),
+                    IrTy::Native(id) => native::kind(Ty::Native(id))
+                        .and_then(|(_, a)| a.first().copied())
+                        .map_or(IrTy::Unit, IrTy::of),
                     _ => IrTy::Unit,
                 };
                 let dst = self.reg(ty);
@@ -867,6 +875,22 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     dst,
                     ty: *ty,
                     dims,
+                    span: e.span,
+                });
+                dst
+            }
+            ExprKind::NewStruct { ty, args } if matches!(ty, Ty::Native(_)) => {
+                let base = native::kind(*ty).map_or("", |(b, _)| b);
+                let mut regs = Vec::with_capacity(args.len());
+                for (a, t) in args.iter().zip(native::new_params(base)) {
+                    let r = self.expr(a);
+                    regs.push(self.widen_to(r, IrTy::of(t)));
+                }
+                let dst = self.reg(IrTy::of(*ty));
+                self.emit(Inst::NewNative {
+                    dst,
+                    ty: *ty,
+                    args: regs.into(),
                     span: e.span,
                 });
                 dst
@@ -968,6 +992,27 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     });
                     return dst;
                 }
+                if let IrTy::Native(id) = self.ty(v) {
+                    let Some((params, ret, _)) = native::method_sig(Ty::Native(id), &name.name)
+                    else {
+                        self.trap(internal(e.span));
+                        return self.reg(IrTy::Unit);
+                    };
+                    let mut regs = Vec::with_capacity(args.len());
+                    for (a, t) in args.iter().zip(params) {
+                        let r = self.expr(a);
+                        regs.push(self.widen_to(r, IrTy::of(t)));
+                    }
+                    let dst = self.reg(IrTy::of(ret));
+                    self.emit(Inst::NativeMethod {
+                        name: Rc::from(name.name.as_str()),
+                        dst,
+                        recv: v,
+                        args: regs.into(),
+                        span: e.span,
+                    });
+                    return dst;
+                }
                 if let IrTy::Iface(id) = self.ty(v) {
                     let Some((params, ret)) = self.iface_sig(Ty::Iface(id), &name.name) else {
                         self.trap(internal(e.span));
@@ -1020,6 +1065,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 let ty = match op {
                     UnOp::Neg => self.ty(v),
                     UnOp::Not => IrTy::Bool,
+                    UnOp::BitNot => IrTy::I64,
                 };
                 let dst = self.reg(ty);
                 self.emit(Inst::Unary {

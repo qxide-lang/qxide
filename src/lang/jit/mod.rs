@@ -127,7 +127,9 @@ fn supported(f: &Func) -> bool {
                     | Inst::Call { .. } => true,
                     Inst::Unary { op, src, .. } => matches!(
                         (op, reg(*src)),
-                        (UnOp::Neg, IrTy::I64 | IrTy::F64) | (UnOp::Not, IrTy::Bool)
+                        (UnOp::Neg | UnOp::BitNot, IrTy::I64)
+                            | (UnOp::Neg, IrTy::F64)
+                            | (UnOp::Not, IrTy::Bool)
                     ),
                     Inst::Cast { ty, src, .. } => {
                         matches!(ty, Ty::Int | Ty::Double)
@@ -706,6 +708,7 @@ impl Gen<'_, '_> {
                     }
                     (UnOp::Neg, IrTy::F64) => self.b.ins().fneg(x),
                     (UnOp::Not, IrTy::Bool) => self.b.ins().bxor_imm_s(x, 1),
+                    (UnOp::BitNot, IrTy::I64) => self.b.ins().bnot(x),
                     _ => return Err("unary operand".into()),
                 };
                 self.set(*dst, v)?;
@@ -770,6 +773,22 @@ impl Gen<'_, '_> {
                     let r = self.b.ins().srem(x, d);
                     let zero = self.b.ins().iconst(types::I64, 0);
                     self.b.ins().select(minus_one, zero, r)
+                }
+            }
+            BinOp::BitAnd => self.b.ins().band(x, y),
+            BinOp::BitOr => self.b.ins().bor(x, y),
+            BinOp::BitXor => self.b.ins().bxor(x, y),
+            BinOp::Shl | BinOp::Shr | BinOp::UShr => {
+                // The interpreters' rule: an amount outside 0..=63 is `Q0420`.
+                let bad = self.b.ins().icmp_imm_u(IntCC::UnsignedGreaterThan, y, 63);
+                self.fail_if(
+                    bad,
+                    Diagnostic::new(Code::ShiftRange, span, msg::shift_range()),
+                );
+                match op {
+                    BinOp::Shl => self.b.ins().ishl(x, y),
+                    BinOp::Shr => self.b.ins().sshr(x, y),
+                    _ => self.b.ins().ushr(x, y),
                 }
             }
             _ => {

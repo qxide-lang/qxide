@@ -1000,7 +1000,7 @@ void main() {
 
 ## Q0230: invalid type arguments or generic code
 
-A generic type or function violated the rules for type arguments or generic code, such as naming a generic struct or enum without type arguments (`Pair p`), passing the wrong number of type arguments (`Pair<int>` for `Pair<A, B>`), or leaving type arguments that cannot be inferred because neither values nor an expected type fix them (such as `var o = Option.None;`). Type arguments must be classical value types—`int`, `double`, `boolean`, `String`, arrays, structs, enums, or interfaces—rather than `Qubit`, `QReg`, `Bit`, `BitReg`, or `void`, so the qubit ownership rules never meet a generic value. Every type parameter of a generic function must appear in at least one parameter type, because call sites never write type arguments and an unused type parameter could never be inferred. Inside a generic body, a value of a type parameter `T` can only be moved (assigned, passed, returned, or stored): arithmetic, `==`, printing, casts, and methods are rejected because the body is checked once for every possible `T`, except that when `T` has an interface bound (`<T extends Shape>`), that interface's methods may be called on a `T` (see Q0232). Finally, because generic code is copied once per set of type arguments before it runs, a generic function that calls itself with an ever larger type (such as `f(new Box(x))` inside `f`) stops at 1000 instances or at types with more than 64 type constructors, reported at the call or construction that asked for the next instance.
+A generic type or function violated the rules for type arguments or generic code, such as naming a generic struct or enum without type arguments (`Pair p`), passing the wrong number of type arguments (`Pair<int>` for `Pair<A, B>`), or leaving type arguments that cannot be inferred because neither values nor an expected type fix them (such as `var o = Option.None;`). Type arguments must be classical value types—`int`, `double`, `boolean`, `String`, arrays, structs, enums, or interfaces—rather than `Qubit`, `QReg`, `Bit`, `BitReg`, or `void`, so the qubit ownership rules never meet a generic value. Every type parameter of a generic function must appear in at least one parameter type, because call sites never write type arguments and an unused type parameter could never be inferred. Inside a generic body, a value of a type parameter `T` can only be moved (assigned, passed, returned, or stored): arithmetic, `==`, printing, casts, and methods are rejected because the body is checked once for every possible `T`, except that when `T` has an interface bound (`<T extends Shape>`), that interface's methods may be called on a `T` (see Q0232). Finally, because generic code is copied once per set of type arguments before it runs, a generic function that calls itself with an ever larger type (such as `f(new Box(x))` inside `f`) stops at 1000 instances or at types with more than 64 type constructors, reported at the call or construction that asked for the next instance. The built-in `List<T>` and `Map<K, V>` types also require their type arguments (written in `new` or given by the declared type), and a `Map` key type must be `int`, `String`, or `boolean`.
 
 Erroneous code example:
 
@@ -1968,6 +1968,30 @@ void main() {
 }
 ```
 
+## Q0420: shift amount out of range
+
+A bitwise shift (`<<`, `>>`, `>>>`, or the compound forms `<<=`, `>>=`, `>>>=`) received a shift amount outside the valid range `0..=63` for a 64-bit `int`. This is a run-time error raised while the program executes rather than by `qxide check`. Unlike Java, which silently masks the shift amount, or C, where an out-of-range shift is undefined behavior, `.qx` reports the invalid shift explicitly to match its checked `int` arithmetic. Bits shifted past either end of the 64-bit integer are simply dropped, so `<<` never reports integer overflow.
+
+Erroneous code example:
+
+```qx
+void main() {
+    int k = 64;
+    int v = 1 << k;  // error[Q0420]
+    println("{}", v);
+}
+```
+
+To fix it, keep the shift amount within `0..=63`, for example by using a valid count such as `3` (or reducing a nonnegative count with `k % 64` when wrap-around is intended).
+
+```qx
+void main() {
+    int k = 3;
+    int v = 1 << k;
+    println("{}", v);
+}
+```
+
 ## Q0501: unknown package in an import
 
 The first segment of an `import` path names a package that is neither the current package nor a dependency declared in `[dependencies]` in `qxide.toml`. Package names with hyphens, such as `bell-utils`, are imported using underscores (`bell_utils`). Requiring every external package to be declared in `qxide.toml` keeps builds reproducible and ensures dependencies are explicitly resolved before compilation.
@@ -2449,6 +2473,8 @@ fs.write_text("notes/secrets.txt", "x");
 A standard library function received an argument outside its allowed range, such as passing a negative duration or a value greater than 60000 milliseconds to `time.sleep_millis`. Enforcing argument bounds prevents invalid runtime operations and protects execution from unbounded waits or resource exhaustion.
 
 This error is also reported when `int main()` returns a value outside `0..=255`. Portable process exit codes are restricted to the range `0..=255`, so returning a negative number or a value above `255` fails at run time with exit code 1 instead of being truncated silently.
+
+This run-time error is also reported for `String.split("")` when given an empty separator (use `chars()` to split a string into individual characters) and for `Random.next_int(bound)` when the bound is zero or less.
 
 Erroneous code example:
 

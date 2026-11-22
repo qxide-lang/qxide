@@ -33,6 +33,8 @@ public int monotonic_millis() { return 0; }
         "io",
         "public void write(String text) {}
 public void write_line(String text) {}
+public void write_err(String text) {}
+public void write_err_line(String text) {}
 public Option<String> read_line() { return Option.None; }
 public String read_all() { return \"\"; }
 ",
@@ -92,6 +94,9 @@ public int abs_int(int x) { return 0; }
 public int min_int(int a, int b) { return 0; }
 public int max_int(int a, int b) { return 0; }
 public int pow_int(int base, int exponent) { return 0; }
+public int wrapping_add(int a, int b) { return 0; }
+public int wrapping_sub(int a, int b) { return 0; }
+public int wrapping_mul(int a, int b) { return 0; }
 ",
     ),
     (
@@ -643,14 +648,24 @@ fn terminal(function: &str, text: &str) -> StdResult {
         )
     };
     match function {
-        "write" | "write_line" => {
-            let mut out = std::io::stdout().lock();
-            let nl: &[u8] = if function == "write_line" { b"\n" } else { b"" };
+        "write" | "write_line" | "write_err" | "write_err_line" => {
+            let nl: &[u8] = if function.ends_with("_line") {
+                b"\n"
+            } else {
+                b""
+            };
+            let err = function.starts_with("write_err");
+            let mut out: Box<dyn Write> = if err {
+                Box::new(std::io::stderr().lock())
+            } else {
+                Box::new(std::io::stdout().lock())
+            };
             out.write_all(text.as_bytes())
                 .and_then(|()| out.write_all(nl))
                 .and_then(|()| out.flush())
                 .map_err(|e| {
-                    StdError::new(StdErrorKind::Io, msg::std_io("stdout", &e.to_string()))
+                    let name = if err { "stderr" } else { "stdout" };
+                    StdError::new(StdErrorKind::Io, msg::std_io(name, &e.to_string()))
                 })?;
             Ok(HostValue::Unit)
         }

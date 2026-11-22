@@ -90,13 +90,21 @@ fn drop_values(mut work: Vec<Value>) {
                     }
                 }
             }
+            Value::Native(n) => {
+                if let Ok(mut n) = Rc::try_unwrap(n) {
+                    work.append(&mut n.take_values());
+                }
+            }
             _ => {}
         }
     }
 }
 
 fn is_container(v: &Value) -> bool {
-    matches!(v, Value::Enum(_) | Value::Struct(_) | Value::Array(_))
+    matches!(
+        v,
+        Value::Enum(_) | Value::Struct(_) | Value::Array(_) | Value::Native(_)
+    )
 }
 
 #[derive(Debug, Default)]

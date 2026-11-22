@@ -4,6 +4,7 @@ use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::lexer::{Tok, Token};
 use super::msg;
+use super::native;
 
 use std::collections::HashSet;
 
@@ -27,6 +28,8 @@ pub struct Parser {
     generics: HashSet<String>,
     // Type parameters in scope (of the generic declaration being parsed).
     tparams: Vec<String>,
+    // Numbers the hidden variables of `for x in xs` loops.
+    fresh: usize,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
@@ -70,6 +73,13 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
             generics.insert(name.to_string());
         }
     }
+    // Built-in `List<T>`, `Map<K, V>` and `Random` (src/lang/native.rs), unless the file
+    // declares its own type of that name.
+    for name in native::GENERIC {
+        if !structs.contains(*name) && !enums.contains(*name) && !ifaces.contains(*name) {
+            generics.insert(name.to_string());
+        }
+    }
     let mut p = Parser {
         toks,
         pos: 0,
@@ -79,6 +89,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         ifaces,
         generics,
         tparams: Vec::new(),
+        fresh: 0,
     };
     let mut imports = Vec::new();
     while p.peek() == &Tok::Import {
@@ -389,7 +400,7 @@ impl Parser {
             t => return Err(self.unexpected(msg::expected_type(&t.describe()))),
         };
         // `new Point(1.0, 2.0)`
-        if matches!(elem, Ty::Struct(_)) && self.peek() == &Tok::LParen {
+        if matches!(elem, Ty::Struct(_) | Ty::Native(_)) && self.peek() == &Tok::LParen {
             self.bump();
             let (args, end) = self.call_args()?;
             return Ok(Expr {
@@ -599,6 +610,7 @@ impl Parser {
             .or_else(|| self.structs.contains(name).then(|| Ty::struct_named(name)))
             .or_else(|| self.enums.contains(name).then(|| Ty::enum_named(name)))
             .or_else(|| self.ifaces.contains(name).then(|| Ty::iface_named(name)))
+            .or_else(|| native::TYPES.contains(&name).then(|| Ty::native(name)))
     }
 
     fn is_type_name(&self, name: &str) -> bool {
@@ -607,6 +619,7 @@ impl Parser {
             || self.enums.contains(name)
             || self.ifaces.contains(name)
             || self.tparams.iter().any(|p| p == name)
+            || native::TYPES.contains(&name)
     }
 
     // `match e { pattern => { ... } ... }` (a comma after an arm is allowed).
@@ -734,7 +747,7 @@ impl Parser {
                 }
                 Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
                 Tok::Match => stmts.push(self.match_stmt()?),
-                Tok::For => stmts.push(self.for_stmt()?),
+                Tok::For => stmts.extend(self.for_stmt()?),
                 Tok::While => {
                     let span = self.bump().span;
                     let cond = self.expr()?;
@@ -880,20 +893,78 @@ impl Parser {
         Ok(IfStmt { cond, then, els })
     }
 
-    fn for_stmt(&mut self) -> PResult<Stmt> {
+    // `for i in a..b { }`, or `for x in xs { }` over the elements of an array or `List`, which is
+    // read as `var #it = xs; for #i in 0..len(#it) { var x = #it[#i]; ... }` (hidden names no
+    // program can write): the collection is evaluated once, and so is its length.
+    fn for_stmt(&mut self) -> PResult<Vec<Stmt>> {
         self.bump();
         let var = self.name()?;
         self.expect(Tok::In)?;
         let start = self.expr()?;
+        if self.peek() != &Tok::DotDot {
+            let mut body = self.block()?;
+            let at = start.span;
+            let n = self.fresh;
+            self.fresh += 1;
+            let it = format!("#it{n}");
+            let idx = format!("#i{n}");
+            let var_expr = |name: &str| Expr {
+                kind: ExprKind::Var(name.to_string()),
+                span: at,
+            };
+            let ident = |name: &str| Ident {
+                name: name.to_string(),
+                span: at,
+            };
+            let elem = Stmt::Decl {
+                is_final: false,
+                ty: None,
+                ty_span: var.span,
+                name: var,
+                init: Expr {
+                    kind: ExprKind::Index {
+                        base: Box::new(var_expr(&it)),
+                        index: Box::new(var_expr(&idx)),
+                    },
+                    span: at,
+                },
+            };
+            body.stmts.insert(0, elem);
+            let len = Expr {
+                kind: ExprKind::Call {
+                    name: ident("len"),
+                    args: vec![var_expr(&it)],
+                },
+                span: at,
+            };
+            return Ok(vec![
+                Stmt::Decl {
+                    is_final: true,
+                    ty: None,
+                    ty_span: at,
+                    name: ident(&it),
+                    init: start,
+                },
+                Stmt::For {
+                    var: ident(&idx),
+                    start: Expr {
+                        kind: ExprKind::Int(0),
+                        span: at,
+                    },
+                    end: len,
+                    body,
+                },
+            ]);
+        }
         self.expect(Tok::DotDot)?;
         let end = self.expr()?;
         let body = self.block()?;
-        Ok(Stmt::For {
+        Ok(vec![Stmt::For {
             var,
             start,
             end,
             body,
-        })
+        }])
     }
 
     pub fn expr(&mut self) -> PResult<Expr> {
@@ -903,9 +974,25 @@ impl Parser {
         e
     }
 
-    // Precedence climbing; level 0 is `||`, the highest binary level is `* / %`.
+    // `>>` and `>>>` are adjacent `>` tokens (they also close nested type arguments): the number
+    // of `>` written together from the current token, at most 3.
+    fn gt_run(&self) -> usize {
+        let mut n = 0;
+        while n < 3 && self.peek_at(n) == &Tok::Gt {
+            let i = (self.pos + n).min(self.toks.len() - 1);
+            if n > 0 && self.toks[i - 1].span.end != self.toks[i].span.start {
+                break;
+            }
+            n += 1;
+        }
+        n
+    }
+
+    // Precedence climbing, loosest first: `||`, `&&`, comparisons, `|`, `^`, `&`, shifts,
+    // `+ -`, `* / %`. Bitwise operators bind tighter than comparisons (as in Rust, unlike Java),
+    // so `x & 1 == 0` compares the masked value.
     fn binary(&mut self, level: usize) -> PResult<Expr> {
-        const LEVELS: usize = 5;
+        const LEVELS: usize = 9;
         if level == LEVELS {
             return self.unary();
         }
@@ -921,13 +1008,19 @@ impl Parser {
                 (2, Tok::NotEq) => BinOp::Ne,
                 (2, Tok::Lt) => BinOp::Lt,
                 (2, Tok::Le) => BinOp::Le,
-                (2, Tok::Gt) => BinOp::Gt,
+                (2, Tok::Gt) if self.gt_run() == 1 => BinOp::Gt,
                 (2, Tok::Ge) => BinOp::Ge,
-                (3, Tok::Plus) => BinOp::Add,
-                (3, Tok::Minus) => BinOp::Sub,
-                (4, Tok::Star) => BinOp::Mul,
-                (4, Tok::Slash) => BinOp::Div,
-                (4, Tok::Percent) => BinOp::Rem,
+                (3, Tok::Pipe) => BinOp::BitOr,
+                (4, Tok::Caret) => BinOp::BitXor,
+                (5, Tok::Amp) => BinOp::BitAnd,
+                (6, Tok::Shl) => BinOp::Shl,
+                (6, Tok::Gt) if self.gt_run() == 2 => BinOp::Shr,
+                (6, Tok::Gt) if self.gt_run() == 3 => BinOp::UShr,
+                (7, Tok::Plus) => BinOp::Add,
+                (7, Tok::Minus) => BinOp::Sub,
+                (8, Tok::Star) => BinOp::Mul,
+                (8, Tok::Slash) => BinOp::Div,
+                (8, Tok::Percent) => BinOp::Rem,
                 _ => {
                     self.depth -= grown;
                     return Ok(lhs);
@@ -935,7 +1028,14 @@ impl Parser {
             };
             self.enter()?;
             grown += 1;
-            self.bump();
+            let width = match op {
+                BinOp::Shr => 2,
+                BinOp::UShr => 3,
+                _ => 1,
+            };
+            for _ in 0..width {
+                self.bump();
+            }
             let rhs = self.binary(level + 1)?;
             let span = lhs.span.to(rhs.span);
             lhs = Expr {
@@ -988,6 +1088,7 @@ impl Parser {
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Bang => UnOp::Not,
+            Tok::Tilde => UnOp::BitNot,
             _ => return self.postfix(),
         };
         self.enter()?;
@@ -1201,6 +1302,12 @@ fn compound_op(t: &Tok) -> Option<BinOp> {
         Tok::StarEq => BinOp::Mul,
         Tok::SlashEq => BinOp::Div,
         Tok::PercentEq => BinOp::Rem,
+        Tok::AmpEq => BinOp::BitAnd,
+        Tok::PipeEq => BinOp::BitOr,
+        Tok::CaretEq => BinOp::BitXor,
+        Tok::ShlEq => BinOp::Shl,
+        Tok::ShrEq => BinOp::Shr,
+        Tok::UShrEq => BinOp::UShr,
         _ => return None,
     })
 }

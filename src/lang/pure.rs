@@ -62,13 +62,25 @@ pub fn parse_result(ok: Ty) -> Ty {
     Ty::instance(Ty::enum_named("Result"), &[ok, Ty::String])
 }
 
-pub fn string_method(name: &str) -> Option<(&'static str, &'static [Ty], Ty)> {
+/// Methods of `String` values that take or return `String[]`.
+pub const STRING_ARRAY_METHODS: &[&str] = &["split", "split_whitespace", "lines", "chars", "join"];
+
+/// Name, parameter types and result type of the `String` method `name`.
+pub fn string_method(name: &str) -> Option<(&'static str, Vec<Ty>, Ty)> {
+    let texts = || Ty::array_of(Ty::String);
+    if let Some(&n) = STRING_ARRAY_METHODS.iter().find(|n| **n == name) {
+        return Some(match n {
+            "split" => (n, vec![Ty::String], texts()),
+            "join" => (n, vec![texts()], Ty::String),
+            _ => (n, vec![], texts()),
+        });
+    }
     STRING_METHODS
         .iter()
         .find(|(n, _, _)| *n == name)
         .map(|&(n, p, r)| match try_parse_ok(n) {
-            Some(ok) => (n, p, parse_result(ok)),
-            None => (n, p, r),
+            Some(ok) => (n, p.to_vec(), parse_result(ok)),
+            None => (n, p.to_vec(), r),
         })
 }
 
@@ -168,6 +180,10 @@ pub fn math(function: &str, args: &[HostValue], span: Span) -> R<HostValue> {
                 .map(HostValue::Int)
                 .ok_or_else(|| overflow(span))
         }
+        // Two's-complement arithmetic that wraps instead of stopping (hashes, PRNGs).
+        ("wrapping_add", 2) => Ok(HostValue::Int(n(0)?.wrapping_add(n(1)?))),
+        ("wrapping_sub", 2) => Ok(HostValue::Int(n(0)?.wrapping_sub(n(1)?))),
+        ("wrapping_mul", 2) => Ok(HostValue::Int(n(0)?.wrapping_mul(n(1)?))),
         _ => Err(internal(span)),
     }
 }
@@ -341,6 +357,61 @@ impl Machine<'_> {
                     .variant(ty, variant)
                     .ok_or_else(|| internal(span))?;
                 self.new_enum(ty, tag, vec![payload], span)
+            }
+            // Pieces between separators, empty ones included (`"a,,b"` gives three), like Rust's
+            // `split`; an empty separator is an error.
+            "split" => {
+                let sep = text(0)?;
+                self.charge_text(sep.len(), span)?;
+                if sep.is_empty() {
+                    return Err(Diagnostic::new(
+                        Code::StdArgument,
+                        span,
+                        msg::empty_separator(),
+                    ));
+                }
+                let n = s.matches(&*sep).count() + 1;
+                self.charge_texts(n, s.len() - (n - 1) * sep.len(), span)?;
+                Ok(self.texts(s.split(&*sep)))
+            }
+            // Runs of Unicode white space separate the pieces; none are empty.
+            "split_whitespace" => {
+                let n = s.split_whitespace().count();
+                self.charge_texts(n, s.len(), span)?;
+                Ok(self.texts(s.split_whitespace()))
+            }
+            // Lines end at a line feed (a carriage return before it is dropped); a final line feed
+            // adds no empty line.
+            "lines" => {
+                let n = s.lines().count();
+                self.charge_texts(n, s.len(), span)?;
+                Ok(self.texts(s.lines()))
+            }
+            // One one-character `String` per Unicode scalar value.
+            "chars" => {
+                let n = s.chars().count();
+                self.charge_texts(n, s.len(), span)?;
+                Ok(self.texts(s.chars().map(String::from)))
+            }
+            // `", ".join(parts)`: the parts with the receiver between them.
+            "join" => {
+                let Some(Value::Array(parts)) = args.first() else {
+                    return Err(internal(span));
+                };
+                let parts = parts.borrow();
+                let n = parts.len();
+                let mut size = s.len().saturating_mul(n.saturating_sub(1));
+                let mut pieces = Vec::with_capacity(n);
+                for i in 0..n {
+                    let Value::Str(p) = parts.get(i) else {
+                        return Err(internal(span));
+                    };
+                    size = size.saturating_add(p.len());
+                    pieces.push(p);
+                }
+                self.charge_text(size, span)?;
+                let out = pieces.iter().map(|p| &**p).collect::<Vec<&str>>().join(&s);
+                Ok(Value::Str(Rc::from(out)))
             }
             _ => Err(internal(span)),
         }

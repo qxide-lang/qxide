@@ -82,8 +82,9 @@ fn angle_brackets(toks: &[Token]) -> Vec<bool> {
             }
         }
     }
-    // The prelude's `Result<T, E>` and `Option<T>`, unless the file declares its own.
-    for n in parser::PRELUDE_TYPES {
+    // The prelude's `Result<T, E>` and `Option<T>` and the built-in `List<T>` and `Map<K, V>`,
+    // unless the file declares its own.
+    for n in parser::PRELUDE_TYPES.iter().chain(super::native::GENERIC) {
         if !declared.contains(n) {
             generics.insert(n);
         }
@@ -425,7 +426,15 @@ impl<'a> Printer<'a> {
         {
             return false;
         }
-        if matches!(prev, Tok::Minus | Tok::Bang) && self.is_unary(p) {
+        if (matches!(prev, Tok::Minus | Tok::Bang) && self.is_unary(p)) || *prev == Tok::Tilde {
+            return false;
+        }
+        // `a >> b`, `a >>> b`: the `>` of one shift operator stay together.
+        if *prev == Tok::Gt
+            && *tok == Tok::Gt
+            && !self.angle[i]
+            && self.toks[p].span.end == self.toks[i].span.start
+        {
             return false;
         }
         // `Pair<int, String>`, `new Pair<int, String>(1, "a")`, `<T> T first(T[] a)`.

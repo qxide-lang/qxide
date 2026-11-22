@@ -163,7 +163,12 @@ fn add_prelude(map: &mut SourceMap, p: &mut Program) {
         .iter()
         .copied()
         .filter(|n| !declared(p, n))
-        .filter(|n| map.mentions(n) || (*n == "Result" && map.mentions("try_parse_")))
+        .filter(|n| {
+            map.mentions(n)
+                || (*n == "Result" && map.mentions("try_parse_"))
+                // `get`, `pop` and `remove` of `List` and `Map` return an `Option`.
+                || (*n == "Option" && (map.mentions("List") || map.mentions("Map")))
+        })
         .collect();
     if wanted.is_empty() {
         return;

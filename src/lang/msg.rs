@@ -278,6 +278,30 @@ pub fn negative_repeat(k: i64) -> String {
     format!("string repeat count `{k}` cannot be negative")
 }
 
+pub fn empty_separator() -> String {
+    "cannot split string with an empty separator; use `chars()` to split into characters".into()
+}
+
+pub fn random_bound(bound: i64) -> String {
+    format!("invalid bound for `next_int`: bound must be positive, got {bound}")
+}
+
+pub fn map_key(ty: &str) -> String {
+    format!("invalid key type `{ty}`: `Map` keys must be `int`, `String`, or `boolean`")
+}
+
+pub fn native_needs_option(method: &str) -> String {
+    format!("cannot use method `{method}` because user-defined `Option` does not match built-in `Option<T>`")
+}
+
+pub fn for_each_needs_collection(found: &str) -> String {
+    format!("expected an array or `List` in `for` loop, found `{found}`; use `for i in a..b` for a counting loop")
+}
+
+pub fn shift_range() -> String {
+    "shift amount out of bounds: must be in the range 0 to 63".into()
+}
+
 pub fn parse_number(text: &str, ty: &str) -> String {
     format!("cannot parse `{text}` as `{ty}`")
 }

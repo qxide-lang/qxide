@@ -536,6 +536,7 @@ impl<'h> Machine<'h> {
             Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
             Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
             Value::Array(a) => Ok(Value::Int(a.borrow().len() as i64)),
+            Value::Native(n) => Ok(Value::Int(super::native::len(&n, span)? as i64)),
             _ => Err(internal(span)),
         }
     }
@@ -793,6 +794,7 @@ pub fn index(b: Value, i: i64, span: Span) -> R<Value> {
         Value::QReg(v) => Ok(Value::Qubit(v[checked_index(i, v.len(), span)?])),
         Value::Bits(v) => Ok(Value::Bit(v[checked_index(i, v.len(), span)?])),
         Value::Array(a) => super::array::get(&a, i, span),
+        Value::Native(n) => super::native::index(&n, i, span),
         _ => Err(internal(span)),
     }
 }
@@ -837,6 +839,7 @@ pub fn unary(op: super::ast::UnOp, v: Value, span: Span) -> R<Value> {
             .ok_or_else(|| Diagnostic::new(Code::Overflow, span, msg::overflow())),
         (UnOp::Neg, Value::Double(v)) => Ok(Value::Double(-v)),
         (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+        (UnOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
         _ => Err(internal(span)),
     }
 }
@@ -879,6 +882,20 @@ pub fn int_op(op: BinOp, a: i64, b: i64, at: Span) -> R<Value> {
         Le => Value::Bool(a <= b),
         Gt => Value::Bool(a > b),
         Ge => Value::Bool(a >= b),
+        BitAnd => Value::Int(a & b),
+        BitOr => Value::Int(a | b),
+        BitXor => Value::Int(a ^ b),
+        // Bits shifted out are dropped; a shift amount outside 0..=63 is an error (`Q0420`).
+        Shl | Shr | UShr => {
+            let Some(k) = u32::try_from(b).ok().filter(|k| *k < 64) else {
+                return Err(Diagnostic::new(Code::ShiftRange, at, msg::shift_range()));
+            };
+            Value::Int(match op {
+                Shl => a << k,
+                Shr => a >> k,
+                _ => ((a as u64) >> k) as i64,
+            })
+        }
         And | Or => return Err(internal(at)),
     })
 }
@@ -910,6 +927,6 @@ pub fn double_op(op: BinOp, a: f64, b: f64, at: Span) -> R<Value> {
         Le => Value::Bool(a <= b),
         Gt => Value::Bool(a > b),
         Ge => Value::Bool(a >= b),
-        And | Or => return Err(internal(at)),
+        _ => return Err(internal(at)),
     })
 }

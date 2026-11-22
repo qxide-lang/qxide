@@ -168,6 +168,17 @@ impl Mono<'_> {
             while let Some(e) = t.elem() {
                 t = e;
             }
+            // `List<T>` and `Map<K, V>` declare nothing themselves, but their type arguments
+            // and the `Option` their `get`, `pop` and `remove` return are needed.
+            if let Some((base, args)) = super::native::kind(t) {
+                if self.types_done.insert(t) {
+                    if let (true, Some(&elem)) = (base != "Random", args.last()) {
+                        stack.push(super::native::option_of(elem));
+                    }
+                    stack.extend(args);
+                }
+                continue;
+            }
             let Some((base, args)) = t.generic_args() else {
                 continue;
             };

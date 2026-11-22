@@ -332,7 +332,7 @@ fn find_command<'p>(
     }
     if matches!(
         f.ret,
-        Ty::Array(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_)
+        Ty::Array(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) | Ty::Native(_)
     ) {
         return Err(fail(Diagnostic::new(
             Code::BadCommand,

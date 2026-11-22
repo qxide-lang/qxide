@@ -391,6 +391,27 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = self.m.str_method(name, fr.get(*recv), vals, *span)?;
                 fr.set(*dst, v);
             }
+            Inst::NewNative {
+                dst,
+                ty,
+                args,
+                span,
+            } => {
+                let vals = args.iter().map(|a| fr.get(*a)).collect();
+                let v = self.m.new_native(*ty, vals, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::NativeMethod {
+                name,
+                dst,
+                recv,
+                args,
+                span,
+            } => {
+                let vals = args.iter().map(|a| fr.get(*a)).collect();
+                let v = self.m.native_method(name, fr.get(*recv), vals, *span)?;
+                fr.set(*dst, v);
+            }
             Inst::QAlloc { dst, span } => {
                 let v = self.m.qubit(c, *span)?;
                 fr.set(*dst, v);

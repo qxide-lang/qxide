@@ -22,6 +22,7 @@ mod link;
 mod machine;
 mod mono;
 mod msg;
+mod native;
 mod parser;
 mod pure;
 mod record;

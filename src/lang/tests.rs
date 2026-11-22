@@ -12,6 +12,7 @@ const TELEPORT_FN: &str = include_str!("../../examples/qx/teleport_fn.qx");
 pub(super) const GENERICS: &str = include_str!("../../examples/qx/generics.qx");
 pub(super) const ERRORS: &str = include_str!("../../examples/qx/errors.qx");
 pub(super) const INTERFACES: &str = include_str!("../../examples/qx/interfaces.qx");
+pub(super) const COLLECTIONS: &str = include_str!("../../examples/qx/collections.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -2625,4 +2626,153 @@ fn recursion_through_interfaces() {
 fn interface_calls_on_generic_types() {
     let src = "interface Shape {\n    double area();\n}\n\ninterface Holder<T> {\n    T get();\n}\n\nstruct Wrap<T> implements Shape, Holder<T> {\n    T v;\n    double k;\n\n    double area() {\n        return this.k;\n    }\n\n    T get() {\n        return this.v;\n    }\n}\n\nvoid main() {\n    Shape a = new Wrap(5, 2.5);\n    Shape b = new Wrap(\"s\", 1);\n    Holder<String> h = new Wrap(\"held\", 0);\n    Option<Shape> maybe = Option.Some(a);\n    println(\"{} {} {} {}\", a.area(), b.area(), h.get(), maybe.unwrap_or(b).area());\n}\n";
     assert_eq!(run_ok(src, 1), "2.5 1.0 held 2.5\n");
+}
+
+#[test]
+fn collections_example() {
+    assert_eq!(
+        run_ok(COLLECTIONS, 1),
+        "the x3\n9 distinct words\njumps, brown, quick\nmost frequent face: 112 rolls\nflags 41 has 3 bits set, bit 5 is true\nlast long word: jumps\n"
+    );
+}
+
+// Bit operators on `int`: Rust's precedence (tighter than comparisons), arithmetic `>>`,
+// logical `>>>`, and shift amounts outside 0..=63 are a run-time error.
+#[test]
+fn bitwise_operators() {
+    let src = main_body("    int x = 12;\n    println(\"{} {} {} {} {} {}\", x & 10, x | 3, x ^ 5, ~x, x << 2, -16 >> 2);\n    println(\"{} {} {}\", -1 >>> 60, x & 1 == 0, 1 | 2 ^ 3 & 4 << 1);\n    int y = 1;\n    y <<= 10;\n    y |= 5;\n    y >>= 1;\n    y >>>= 1;\n    y ^= 3;\n    y &= 255;\n    int[] a = {6};\n    a[0] &= 3;\n    println(\"{} {}\", y, a[0]);");
+    assert_eq!(run_ok(&src, 1), "8 15 9 -13 48 -4\n15 true 3\n2 2\n");
+    // `>>` still closes nested type arguments.
+    ok("void main() {\n    Option<Option<int>> o = Option.Some(Option.Some(1));\n    int k = 8 >> 1 >>> 1;\n}\n");
+    assert_eq!(
+        runtime_error(&main_body("    int k = 64;\n    int v = 1 << k;")),
+        ("Q0420", 3, 13)
+    );
+    assert_eq!(
+        runtime_error(&main_body("    int k = -1;\n    int v = 8 >> k;")),
+        ("Q0420", 3, 13)
+    );
+    assert_eq!(
+        codes(&main_body(
+            "    double d = 1.5 & 1;\n    boolean b = true | false;\n    int n = ~2.0;"
+        )),
+        ["Q0204", "Q0204", "Q0204", "Q0204"]
+    );
+    // Wrapping arithmetic for hashes and generators; plain `*` still stops on overflow.
+    let src = "import std.math;\n\nvoid main() {\n    println(\"{} {}\", math.wrapping_mul(9223372036854775807, 3), math.wrapping_add(9223372036854775807, 1));\n}\n";
+    assert_eq!(run_ok(src, 1), "9223372036854775805 -9223372036854775808\n");
+}
+
+#[test]
+fn string_split_join_lines_and_chars() {
+    let src = main_body("    String[] p = \"a,,b\".split(\",\");\n    println(\"{} {}\", len(p), \"|\".join(p));\n    String t = \" one  two\\tthree \\nfour\\nfive\\n\";\n    println(\"{} {}\", len(t.split_whitespace()), \"/\".join(t.lines()));\n    println(\"{} {}\", \"-\".join(\"héllo\".chars()), len(\"\".split(\",\")));\n    println(\"[{}]\", \", \".join(new String[0]));");
+    assert_eq!(
+        run_ok(&src, 1),
+        "3 a||b\n5  one  two\tthree /four/five\nh-é-l-l-o 1\n[]\n"
+    );
+    assert_eq!(
+        runtime_error(&main_body("    String[] p = \"abc\".split(\"\");")),
+        ("Q0706", 2, 18)
+    );
+}
+
+// `for x in xs` over arrays and Lists: the collection and its length are read once, and the loop
+// follows the rules of `for` (break, continue, qubits).
+#[test]
+fn for_each_loops() {
+    let src = main_body("    int[][] grid = {{1, 2}, {3, 4}};\n    int total = 0;\n    for row in grid {\n        for v in row {\n            if v == 2 {\n                continue;\n            }\n            if v == 4 {\n                break;\n            }\n            total += v;\n        }\n    }\n    List<String> names = new List();\n    names.add(\"a\");\n    names.add(\"b\");\n    String joined = \"\";\n    for n in names {\n        joined += n;\n    }\n    println(\"{} {}\", total, joined);");
+    assert_eq!(run_ok(&src, 1), "4 ab\n");
+    assert_eq!(
+        codes(&main_body("    Qubit q = qubit();\n    int[] a = {1, 2};\n    for v in a {\n        discard(q);\n    }")),
+        ["Q0302", "Q0305"]
+    );
+    assert_eq!(
+        codes(&main_body(
+            "    int[] a = {1, 2};\n    for v in a {\n        Qubit q = qubit();\n    }"
+        )),
+        ["Q0302"]
+    );
+    assert_eq!(codes(&main_body("    for v in 5 {\n    }")), ["Q0204"]);
+}
+
+#[test]
+fn lists_maps_and_random() {
+    let src = "struct Body {\n    double mass;\n    List<double> trail;\n}\n\nvoid main() {\n    List<int> xs = new List<int>();\n    for i in 0..5 {\n        xs.add(i * i);\n    }\n    xs.set(0, 100);\n    xs.insert(1, 7);\n    int removed = xs.remove_at(2);\n    println(\"{} {} {} {}\", xs.size(), removed, xs[0], xs.pop().unwrap_or(-1));\n    xs.clear();\n    println(\"{} {}\", xs.is_empty(), xs.pop().is_none());\n    Map<int, double> m = new Map();\n    m.put(3, 1);\n    m.put(1, 2.5);\n    m.put(3, 4);\n    println(\"{} {} {}\", m.get(3).unwrap_or(0), m.remove(1).is_some(), m.contains_key(1));\n    var keys = m.keys();\n    println(\"{} {}\", len(keys), len(m.values()));\n    Body b = new Body(1.5, new List());\n    b.trail.add(2);\n    Body[] bodies = new Body[2];\n    bodies[1].trail.add(3.5);\n    println(\"{} {} {}\", b.trail.get(0), bodies[1].trail.size(), bodies[0].trail.is_empty());\n    List<List<String>> nested = new List();\n    nested.add(new List());\n    nested.get(0).add(\"deep\");\n    println(\"{}\", nested.get(0).get(0));\n}\n";
+    assert_eq!(
+        run_ok(src, 1),
+        "5 1 100 16\ntrue true\n4.0 true false\n1 1\n2.0 1 true\ndeep\n"
+    );
+    // Insertion order survives removals and re-insertions.
+    let order = main_body("    Map<String, int> m = new Map();\n    for i in 0..40 {\n        m.put(\"k\" + i, i);\n    }\n    for i in 0..35 {\n        m.remove(\"k\" + i);\n    }\n    m.put(\"k0\", 0);\n    println(\"{}\", \",\".join(m.keys()));");
+    assert_eq!(run_ok(&order, 1), "k35,k36,k37,k38,k39,k0\n");
+    assert_eq!(
+        runtime_error(&main_body(
+            "    List<int> xs = new List();\n    int v = xs.get(0);"
+        )),
+        ("Q0403", 3, 13)
+    );
+}
+
+// The same seed gives the same numbers on every engine and host (splitmix64).
+#[test]
+fn random_is_seeded_and_uniform_in_range() {
+    let src = main_body("    Random a = new Random(7);\n    Random b = new Random(7);\n    boolean same = true;\n    int low = 0;\n    for i in 0..2000 {\n        int x = a.next_int(10);\n        same = same && x == b.next_int(10);\n        if x < 5 {\n            low += 1;\n        }\n    }\n    double d = a.next_double();\n    println(\"{} {} {} {}\", same, low > 900 && low < 1100, d >= 0.0 && d < 1.0, new Random(1).next_int(1000000));");
+    let out = run_ok(&src, 1);
+    assert!(out.starts_with("true true true "), "{out}");
+    assert_eq!(out, run_ok(&src, 1));
+    assert_eq!(
+        runtime_error(&main_body(
+            "    Random r = new Random(1);\n    int v = r.next_int(0);"
+        )),
+        ("Q0706", 3, 13)
+    );
+}
+
+#[test]
+fn collection_errors() {
+    // Keys must compare by value; type arguments come from `new` or the declared type.
+    assert_eq!(
+        codes(&main_body(
+            "    Map<double, int> m = new Map<double, int>();"
+        )),
+        ["Q0230", "Q0230"]
+    );
+    assert_eq!(codes(&main_body("    var xs = new List();")), ["Q0230"]);
+    assert_eq!(
+        codes(&main_body("    List xs = new List<int>();")),
+        ["Q0230"]
+    );
+    assert_eq!(
+        codes(&main_body("    List<Qubit> xs = new List();")),
+        ["Q0230"]
+    );
+    assert_eq!(codes(&main_body("    Random r = new Random();")), ["Q0203"]);
+    assert_eq!(
+        codes(&main_body(
+            "    List<int> xs = new List();\n    xs.push(1);"
+        )),
+        ["Q0220"]
+    );
+    assert_eq!(
+        codes(&main_body(
+            "    List<int> xs = new List();\n    xs.add(\"a\");"
+        )),
+        ["Q0204"]
+    );
+    assert_eq!(
+        codes(&main_body("    Random[] rs = new Random[2];")),
+        ["Q0225"]
+    );
+    // Changing a shared collection under a measured bit is like storing into an array.
+    let bit = |stmt: &str| {
+        format!("void touch(List<int> xs) {{\n    xs.add(1);\n}}\n\nvoid main() {{\n    List<int> xs = new List();\n    Qubit q = qubit();\n    if measure(q) {{\n        {stmt}\n    }}\n}}\n")
+    };
+    assert_eq!(codes(&bit("xs.add(2);")), ["Q0308"]);
+    assert_eq!(codes(&bit("touch(xs);")), ["Q0314"]);
+    ok(&bit("int n = xs.size();"));
+    // A program's own `List` replaces the built-in one.
+    assert_eq!(
+        run_ok("enum List<T> {\n    Nil,\n    Cons(T head, List<T> tail)\n}\n\nvoid main() {\n    List<int> l = List.Cons(1, List.Nil);\n    println(\"ok\");\n}\n", 1),
+        "ok\n"
+    );
 }

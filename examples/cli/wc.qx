@@ -1,38 +1,25 @@
 // A small `wc`: counts the lines, words and characters of standard input and prints them as
 // soon as the input ends. Run it with `qxide run examples/cli/wc.qx < notes.txt`, or pass
-// `-l` or `-w` after `--` to print only the line or word count.
+// `-l` or `-w` after `--` to print only the line or word count. With `-f`, it also lists each
+// word with its count, most frequent first.
 import std.io;
-import std.log;
-
-boolean is_space(String c) {
-    return c == " " || c == "\t";
-}
-
-int words_in(String line) {
-    int words = 0;
-    boolean in_word = false;
-    for i in 0..line.length() {
-        boolean space = is_space(line.char_at(i));
-        if !space && !in_word {
-            words += 1;
-        }
-        in_word = !space;
-    }
-    return words;
-}
 
 int main(String[] args) {
     String only = "";
-    for i in 0..len(args) {
-        match args[i] {
+    boolean freq = false;
+    for arg in args {
+        match arg {
             "-l" => {
                 only = "lines";
             }
             "-w" => {
                 only = "words";
             }
+            "-f" => {
+                freq = true;
+            }
             _ => {
-                log.error("wc: unknown option " + args[i]);
+                io.write_err_line("wc: unknown option " + arg);
                 return 2;
             }
         }
@@ -40,13 +27,17 @@ int main(String[] args) {
     int lines = 0;
     int words = 0;
     int chars = 0;
+    Map<String, int> counts = new Map();
     boolean more = true;
     while more {
         match io.read_line() {
             Some(text) => {
                 lines += 1;
-                words += words_in(text);
                 chars += text.length() + 1;
+                for word in text.split_whitespace() {
+                    words += 1;
+                    counts.put(word, counts.get_or(word, 0) + 1);
+                }
             }
             None => {
                 more = false;
@@ -59,6 +50,20 @@ int main(String[] args) {
         io.write_line("" + words);
     } else {
         io.write_line(lines + " " + words + " " + chars);
+    }
+    if freq {
+        // Highest count first; words with the same count keep their first-seen order.
+        List<String> order = new List();
+        for word in counts.keys() {
+            int at = order.size();
+            while at > 0 && counts.get_or(order.get(at - 1), 0) < counts.get_or(word, 0) {
+                at -= 1;
+            }
+            order.insert(at, word);
+        }
+        for word in order {
+            io.write_line(counts.get_or(word, 0) + " " + word);
+        }
     }
     return 0;
 }

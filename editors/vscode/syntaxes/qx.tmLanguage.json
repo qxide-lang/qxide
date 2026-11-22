@@ -128,7 +128,8 @@
       "patterns": [
         { "name": "storage.type.primitive.qx", "match": "\\b(int|double|boolean|void)\\b" },
         { "name": "storage.type.quantum.qx", "match": "\\b(Bit|BitReg|Qubit|QReg)\\b" },
-        { "name": "support.type.prelude.qx", "match": "\\b(Result|Option)\\b" }
+        { "name": "support.type.prelude.qx", "match": "\\b(Result|Option)\\b" },
+        { "name": "support.type.builtin.qx", "match": "\\b(List|Map|Random)\\b" }
       ]
     },
     "constants": {
@@ -152,7 +153,7 @@
       "captures": { "1": { "name": "support.function.builtin.qx" } }
     },
     "method": {
-      "match": "(\\.)\\s*(as_int|to_binary|length|substring|char_at|index_of|contains|starts_with|ends_with|to_upper|to_lower|trim|replace|repeat|parse_int|parse_double|try_parse_int|try_parse_double)\\b",
+      "match": "(\\.)\\s*(as_int|to_binary|length|substring|char_at|index_of|contains|starts_with|ends_with|to_upper|to_lower|trim|replace|repeat|parse_int|parse_double|try_parse_int|try_parse_double|split|split_whitespace|lines|chars|join|add|get|set|insert|remove_at|pop|clear|size|is_empty|to_array|put|get_or|contains_key|remove|keys|values|next_int|next_double|next_bool)\\b",
       "captures": {
         "1": { "name": "punctuation.accessor.qx" },
         "2": { "name": "support.function.method.qx" }
@@ -167,8 +168,11 @@
         { "name": "keyword.operator.range.qx", "match": "\\.\\." },
         { "name": "keyword.operator.try.qx", "match": "\\?" },
         { "name": "keyword.operator.arrow.qx", "match": "->|=>" },
+        { "name": "keyword.operator.assignment.compound.qx", "match": ">>>=|>>=|<<=|[&|^]=" },
+        { "name": "keyword.operator.bitwise.shift.qx", "match": "<<|(?<=\\s)>>>?" },
         { "name": "keyword.operator.comparison.qx", "match": "==|!=|<=|>=|<|>" },
         { "name": "keyword.operator.logical.qx", "match": "&&|\\|\\||!" },
+        { "name": "keyword.operator.bitwise.qx", "match": "[&|^~]" },
         { "name": "keyword.operator.assignment.compound.qx", "match": "[-+*/%]=" },
         { "name": "keyword.operator.assignment.qx", "match": "=" },
         { "name": "keyword.operator.arithmetic.qx", "match": "[-+*/%]" }

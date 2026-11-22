@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::msg;
+use super::native;
 use super::pure;
 
 pub const BUILTINS: &[&str] = &[
@@ -293,6 +294,11 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
             scan_expr(index, out);
         }
         ExprKind::Method { recv, args, name } => {
+            // `List`, `Map` and `Random` are shared references: a method that changes one may
+            // change the caller's data (any method of such a name counts, as types are unknown).
+            if native::MUTATORS.contains(&name.name.as_str()) && out.op.is_none() {
+                out.op = Some((e.span, format!("x.{}(...)", name.name)));
+            }
             // Resolved per method name by `conditional_safety`: the call may run any method
             // of that name (its receiver's type is not known here).
             out.calls.push((format!(".{}", name.name), e.span));
@@ -369,6 +375,8 @@ struct Checker {
     scopes: Vec<Vec<usize>>,
     // Condition spans of the enclosing `if`-on-`Bit` statements.
     bit_ifs: Vec<Span>,
+    // Collections of `for x in xs` loops already reported as not iterable (by span start).
+    for_each_bad: HashSet<usize>,
     // Qubits lent to calls whose arguments are still being checked, as (variable, use site).
     held: Vec<(usize, Span)>,
     loops: Vec<Loop>,
@@ -423,6 +431,7 @@ impl Checker {
             vars: Vec::new(),
             scopes: Vec::new(),
             bit_ifs: Vec::new(),
+            for_each_bad: HashSet::new(),
             held: Vec::new(),
             loops: Vec::new(),
             ret: Ty::Void,
@@ -706,6 +715,7 @@ impl Checker {
         }
         match t {
             Ty::Iface(_) => false,
+            Ty::Native(_) => native::kind(t).is_none_or(|(b, _)| native::has_default(b)),
             Ty::Struct(_) => self
                 .field_types(t)
                 .is_none_or(|fs| fs.iter().all(|&f| self.has_default(f, depth + 1))),
@@ -1262,6 +1272,7 @@ impl Checker {
                         | Ty::Enum(_)
                         | Ty::Param(_)
                         | Ty::Iface(_)
+                        | Ty::Native(_)
                         | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
@@ -1780,7 +1791,12 @@ impl Checker {
                     Ty::QReg => Ty::Qubit,
                     Ty::BitReg => Ty::Bit,
                     Ty::Array(_) => b.elem().unwrap_or(Ty::Error),
+                    Ty::Native(_) if native::kind(b).is_some_and(|(k, _)| k == "List") => {
+                        native::kind(b).map_or(Ty::Error, |(_, a)| a[0])
+                    }
                     Ty::Error => Ty::Error,
+                    // Reported once, at the collection of a `for x in xs` loop.
+                    _ if self.for_each_bad.contains(&base.span.start) => Ty::Error,
                     other => {
                         self.err(
                             Code::NotIndexable,
@@ -1821,6 +1837,7 @@ impl Checker {
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
                 match t {
+                    Ty::Native(_) => return self.native_method(t, name, args, e.span),
                     Ty::Struct(_) | Ty::Enum(_) => {
                         return self.user_method(t, recv.span, name, args, e.span)
                     }
@@ -1910,6 +1927,10 @@ impl Checker {
                         self.expect_ty(expr.span, Ty::Boolean, t);
                         Ty::Boolean
                     }
+                    UnOp::BitNot => {
+                        self.expect_ty(expr.span, Ty::Int, t);
+                        Ty::Int
+                    }
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
@@ -1951,6 +1972,16 @@ impl Checker {
                         self.expect_ty(lhs.span, Ty::Boolean, l);
                         self.expect_ty(rhs.span, Ty::Boolean, r);
                         Ty::Boolean
+                    }
+                    BitAnd | BitOr | BitXor | Shl | Shr | UShr => {
+                        self.expect_ty(lhs.span, Ty::Int, l);
+                        self.expect_ty(rhs.span, Ty::Int, r);
+                        // One report per mistake: a wrong operand does not also mistype the result.
+                        if l == Ty::Int && r == Ty::Int {
+                            Ty::Int
+                        } else {
+                            Ty::Error
+                        }
                     }
                     Eq | Ne => {
                         if matches!(l, Ty::Boolean | Ty::String) {
@@ -1994,6 +2025,27 @@ impl Checker {
         let mut t = t;
         while let Some(e) = t.elem() {
             t = e;
+        }
+        if let Some((base, args)) = native::kind(t) {
+            let want = native::arity(base);
+            if args.is_empty() && want > 0 {
+                self.err(Code::TypeArgs, span, msg::needs_type_args(base))
+                    .help = Some(msg::help_needs_type_args(base));
+                return false;
+            }
+            if args.len() != want {
+                self.err(
+                    Code::TypeArgs,
+                    span,
+                    msg::type_args_count(base, want, args.len()),
+                );
+                return false;
+            }
+            if base == "Map" && !native::key_ok(args[0]) {
+                self.err(Code::TypeArgs, span, msg::map_key(args[0].name()));
+                return false;
+            }
+            return args.into_iter().all(|a| self.type_arg_ok(a, span));
         }
         // A monomorphized program declares its instances as ordinary types.
         if self.declared.contains(&t) && !self.gparams.contains_key(&t) {
@@ -2150,6 +2202,9 @@ impl Checker {
 
     // `new Point(1.0, 2.0)`: the field values in declaration order.
     fn new_struct(&mut self, ty: Ty, args: &[Expr], span: Span, hint: Option<Ty>) -> Ty {
+        if let Some((base, targs)) = native::kind(ty) {
+            return self.new_native(ty, base, targs.is_empty(), args, span, hint);
+        }
         let generic = self.gparams.contains_key(&ty);
         let fields = if generic {
             self.structs.get(&ty).map(|(order, _)| order.clone())
@@ -2592,6 +2647,17 @@ impl Checker {
             None => v,
             Some(_) if v == Ty::Error || elem == Ty::Error => Ty::Error,
             Some(BinOp::Add) if elem == Ty::String => Ty::String,
+            Some(op) if op.is_bitwise() => {
+                self.expect_ty(value.span, Ty::Int, v);
+                if elem != Ty::Int {
+                    self.err(
+                        Code::TypeMismatch,
+                        value.span,
+                        msg::type_mismatch(Ty::Int.name(), elem.name()),
+                    );
+                }
+                return;
+            }
             Some(_) if elem.is_numeric() && v.is_numeric() => {
                 if elem == Ty::Double || v == Ty::Double {
                     Ty::Double
@@ -2611,10 +2677,123 @@ impl Checker {
         self.expect_ty(value.span, elem, found);
     }
 
+    // `new List<int>()`, `new Map<String, int>()` (the type arguments may come from the declared
+    // type: `List<int> xs = new List();`) or `new Random(seed)`.
+    fn new_native(
+        &mut self,
+        ty: Ty,
+        base: &'static str,
+        bare: bool,
+        args: &[Expr],
+        span: Span,
+        hint: Option<Ty>,
+    ) -> Ty {
+        let params = native::new_params(base);
+        let mut ty = ty;
+        // A declared type is checked where it is written.
+        let mut from_hint = false;
+        if bare && native::arity(base) > 0 {
+            let same = |h: &Ty| native::kind(*h).is_some_and(|(b, a)| b == base && !a.is_empty());
+            match hint.filter(same) {
+                Some(h) => {
+                    self.inferred.types.insert(key(span), h);
+                    ty = h;
+                    from_hint = true;
+                }
+                None => {
+                    self.err(Code::TypeArgs, span, msg::cannot_infer(base)).help =
+                        Some(msg::help_cannot_infer(base));
+                    for a in args {
+                        self.expr(a);
+                    }
+                    return Ty::Error;
+                }
+            }
+        }
+        if !from_hint && !self.generic_ok(ty, span) {
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        }
+        if params.len() != args.len() {
+            self.err(
+                Code::Arity,
+                span,
+                msg::arity(base, params.len(), args.len()),
+            );
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        }
+        for (a, want) in args.iter().zip(params) {
+            let found = self.expr_hint(a, want);
+            self.expect_ty(a.span, want, found);
+        }
+        ty
+    }
+
+    // `xs.add(1)`, `m.get("a")`, `rng.next_int(6)`: methods of the built-in types.
+    fn native_method(&mut self, t: Ty, name: &Ident, args: &[Expr], span: Span) -> Ty {
+        let sig = native::method_sig(t, &name.name);
+        let Some((params, ret, mutates)) = sig.clone().filter(|(p, _, _)| p.len() == args.len())
+        else {
+            match sig {
+                Some((params, _, _)) => {
+                    self.err(
+                        Code::Arity,
+                        span,
+                        msg::arity(&name.name, params.len(), args.len()),
+                    );
+                }
+                None => {
+                    self.err(
+                        Code::UnknownMethod,
+                        name.span,
+                        msg::unknown_method(&name.name, t.name()),
+                    );
+                }
+            }
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        };
+        for (a, want) in args.iter().zip(params) {
+            let found = self.expr_hint(a, want);
+            self.expect_ty(a.span, want, found);
+        }
+        if mutates && !self.bit_ifs.is_empty() {
+            self.err(
+                Code::ForbiddenInBitIf,
+                span,
+                msg::forbidden_in_bit_if(&format!("x.{}(...)", name.name)),
+            );
+        }
+        // `get`, `pop` and `remove` return the prelude's `Option`.
+        if ret
+            .generic_args()
+            .is_some_and(|(b, _)| b.name() == "Option")
+            && !ret.has_param()
+        {
+            let shaped = self.try_shape(ret).is_some_and(|(k, _, _)| k == "Option");
+            if !shaped {
+                self.err(
+                    Code::BadTry,
+                    name.span,
+                    msg::native_needs_option(&name.name),
+                );
+                return Ty::Error;
+            }
+        }
+        ret
+    }
+
     // `s.substring(0, 3)` and the other methods of `String` (src/lang/pure.rs).
     fn string_method(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {
         let sig = pure::string_method(&name.name);
-        let Some((_, params, ret)) = sig.filter(|(_, p, _)| p.len() == args.len()) else {
+        let Some((_, params, ret)) = sig.clone().filter(|(_, p, _)| p.len() == args.len()) else {
             match sig {
                 Some((_, params, _)) => {
                     self.err(
@@ -2636,7 +2815,7 @@ impl Checker {
             }
             return Ty::Error;
         };
-        for (a, want) in args.iter().zip(params) {
+        for (a, want) in args.iter().zip(params.iter()) {
             let found = self.expr(a);
             self.expect_ty(a.span, *want, found);
         }
@@ -2956,10 +3135,22 @@ impl Checker {
                 if self.arity(name, args, 1, span) {
                     let t = self.expr(&args[0]);
                     self.forbid_temp(&args[0], t);
-                    if !matches!(
-                        t,
-                        Ty::QReg | Ty::BitReg | Ty::String | Ty::Array(_) | Ty::Error
-                    ) {
+                    let list = native::kind(t).is_some_and(|(k, _)| k == "List");
+                    // `for x in xs` reads `len(#it)` of a hidden variable (`parser::for_stmt`).
+                    let for_each = matches!(&args[0].kind, ExprKind::Var(n) if n.starts_with('#'));
+                    if for_each && !list && !matches!(t, Ty::Array(_) | Ty::Error) {
+                        self.err(
+                            Code::TypeMismatch,
+                            args[0].span,
+                            msg::for_each_needs_collection(t.name()),
+                        );
+                        self.for_each_bad.insert(args[0].span.start);
+                    } else if !list
+                        && !matches!(
+                            t,
+                            Ty::QReg | Ty::BitReg | Ty::String | Ty::Array(_) | Ty::Error
+                        )
+                    {
                         self.err(
                             Code::TypeMismatch,
                             args[0].span,

@@ -46,6 +46,8 @@ pub enum IrTy {
     Enum(TyId),
     // A struct or enum value seen through an interface; calls dispatch on its run-time type.
     Iface(TyId),
+    // A `List`, `Map` or `Random` (src/lang/native.rs).
+    Native(TyId),
 }
 
 impl IrTy {
@@ -65,6 +67,7 @@ impl IrTy {
             Ty::Struct(id) => IrTy::Struct(id),
             Ty::Enum(id) => IrTy::Enum(id),
             Ty::Iface(id) => IrTy::Iface(id),
+            Ty::Native(id) => IrTy::Native(id),
             // Monomorphization leaves no type parameter in a lowered program.
             Ty::Void | Ty::Error | Ty::Param(_) => IrTy::Unit,
         }
@@ -95,6 +98,7 @@ impl IrTy {
             IrTy::Struct(id) => Ty::Struct(id).name(),
             IrTy::Enum(id) => Ty::Enum(id).name(),
             IrTy::Iface(id) => Ty::Iface(id).name(),
+            IrTy::Native(id) => Ty::Native(id).name(),
         }
     }
 
@@ -293,6 +297,21 @@ pub enum Inst {
     /// A method of a `String` value (src/lang/pure.rs), charged per byte.
     StrMethod {
         name: &'static str,
+        dst: Reg,
+        recv: Reg,
+        args: Box<[Reg]>,
+        span: Span,
+    },
+    // `new List<int>()`, `new Map<K, V>()`, `new Random(seed)`.
+    NewNative {
+        dst: Reg,
+        ty: Ty,
+        args: Box<[Reg]>,
+        span: Span,
+    },
+    // A method of a `List`, `Map` or `Random` (`Machine::native_method`).
+    NativeMethod {
+        name: Rc<str>,
         dst: Reg,
         recv: Reg,
         args: Box<[Reg]>,
@@ -512,6 +531,12 @@ fn op_name(op: BinOp) -> &'static str {
         BinOp::Ge => "ge",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::BitAnd => "band",
+        BinOp::BitOr => "bor",
+        BinOp::BitXor => "bxor",
+        BinOp::Shl => "shl",
+        BinOp::Shr => "shr",
+        BinOp::UShr => "ushr",
     }
 }
 
@@ -595,6 +620,7 @@ impl Func {
                 let n = match op {
                     UnOp::Neg => "neg",
                     UnOp::Not => "not",
+                    UnOp::BitNot => "bnot",
                 };
                 format!("{} = {n}.{} {}", r(*dst), ty(*dst), r(*src))
             }
@@ -718,6 +744,23 @@ impl Func {
                     .map(|a| r(*a))
                     .collect();
                 format!("{} = str.{name} {}", r(*dst), args.join(", "))
+            }
+            Inst::NewNative { dst, ty, args, .. } => {
+                let args: Vec<String> = args.iter().map(|a| r(*a)).collect();
+                format!("{} = new {}({})", r(*dst), ty.name(), args.join(", "))
+            }
+            Inst::NativeMethod {
+                name,
+                dst,
+                recv,
+                args,
+                ..
+            } => {
+                let args: Vec<String> = std::iter::once(recv)
+                    .chain(args.iter())
+                    .map(|a| r(*a))
+                    .collect();
+                format!("{} = native.{name} {}", r(*dst), args.join(", "))
             }
             Inst::Call {
                 func, dst, args, ..

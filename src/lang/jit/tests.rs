@@ -439,3 +439,28 @@ void main() { println(\"{} {}\", sum(10), sq(7)); }";
     assert_eq!(format!("{:?}", e.output), format!("{:?}", want.output));
     assert_eq!(e.usage.steps, want.usage.steps);
 }
+
+// Bit operators compile to native instructions; a shift amount outside 0..=63 stops the run at
+// the same place with the same error as in the interpreters.
+#[test]
+fn bit_operators_compile() {
+    let src = "int mix(int x, int k) { return (x << 3 ^ x >>> 2 | ~x & 255) >> k; }
+int pop(int x) { int n = 0; int v = x; while v != 0 { n += v & 1; v = v >>> 1; } return n; }
+void main() {
+    println(\"{} {} {} {}\", mix(12345, 1), mix(-7, 63), pop(-1), pop(1 << 40));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in ["mix", "pop"] {
+        assert!(jit.compiles(m.index[f]), "{f}");
+    }
+    assert_eq!(same(src, Limits::CLI), "ok\n50915 -1 64 1\n");
+    let bad = "int sh(int x, int k) { return x << k; }
+void main() {
+    println(\"{}\", sh(1, 3) + sh(1, 64));
+}
+";
+    let out = same(bad, Limits::CLI);
+    assert!(out.contains("Q0420"), "{out}");
+}

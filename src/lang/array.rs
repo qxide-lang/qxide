@@ -34,7 +34,7 @@ impl ArrayData {
         }
     }
 
-    fn get(&self, i: usize) -> Value {
+    pub(super) fn get(&self, i: usize) -> Value {
         match self {
             ArrayData::Int(v) => Value::Int(v[i]),
             ArrayData::Double(v) => Value::Double(v[i]),
@@ -52,7 +52,11 @@ impl ArrayData {
             (ArrayData::Bool(a), Value::Bool(b)) => a[i] = b,
             (
                 ArrayData::Other(a),
-                v @ (Value::Str(_) | Value::Array(_) | Value::Struct(_) | Value::Enum(_)),
+                v @ (Value::Str(_)
+                | Value::Array(_)
+                | Value::Struct(_)
+                | Value::Enum(_)
+                | Value::Native(_)),
             ) => a[i] = v,
             _ => return Err(internal(span)),
         }
@@ -97,6 +101,7 @@ impl Machine<'_> {
             }
             Ty::Struct(_) => self.default_struct(ty, span)?,
             Ty::Enum(_) => self.default_enum(ty, span)?,
+            Ty::Native(_) => self.default_native(ty, span)?,
             _ => return Err(internal(span)),
         })
     }
@@ -104,6 +109,19 @@ impl Machine<'_> {
     fn charge_elems(&mut self, n: usize, elem: Ty, span: Span) -> R<()> {
         let bytes = (n as u64).saturating_mul(elem_bytes(elem));
         self.charge(bytes.saturating_mul(STR_BYTE_STEPS), span)
+    }
+
+    /// Charges a new `String[]` of `n` elements holding `bytes` bytes of text in all.
+    pub fn charge_texts(&mut self, n: usize, bytes: usize, span: Span) -> R<()> {
+        self.charge_elems(n, Ty::String, span)?;
+        self.charge_text(bytes, span)
+    }
+
+    /// A new `String[]` of `parts` (charged by the caller with `charge_texts`).
+    pub fn texts<S: AsRef<str>>(&self, parts: impl Iterator<Item = S>) -> Value {
+        array(ArrayData::Other(
+            parts.map(|p| Value::Str(Rc::from(p.as_ref()))).collect(),
+        ))
     }
 
     /// `new T[d1][d2]...`: `ty` is the array type, `dims` the given lengths (outermost first).

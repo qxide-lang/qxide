@@ -231,6 +231,9 @@ impl Scopes {
             }
             s.block(&f.body, i);
         }
+        // The hidden variables of `for x in xs` loops (`parser::for_stmt`) are not shown.
+        s.locals.retain(|l| !l.name.starts_with('#'));
+        s.uses.retain(|u| !u.name.starts_with('#'));
         s
     }
 
@@ -894,7 +897,11 @@ impl Analysis {
         for (name, _) in CONSTANTS {
             push(name, ItemKind::Constant, Some("double".to_string()));
         }
-        for t in TYPES.iter().chain(parser::PRELUDE_TYPES) {
+        for t in TYPES
+            .iter()
+            .chain(parser::PRELUDE_TYPES)
+            .chain(super::native::TYPES)
+        {
             push(t, ItemKind::Type, None);
         }
         for k in KEYWORDS {

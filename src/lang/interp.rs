@@ -103,6 +103,8 @@ pub enum Value {
     Array(super::array::ArrayRef),
     // Shared and mutable, like a Java object reference (src/lang/record.rs).
     Struct(Rc<super::record::StructVal>),
+    // `List`, `Map` and `Random`: shared references (src/lang/native.rs).
+    Native(Rc<super::native::NativeVal>),
     // Immutable: a variant tag and its payload (src/lang/record.rs).
     Enum(Rc<super::record::EnumVal>),
     Unit,
@@ -609,6 +611,9 @@ impl<'p> Interp<'p, '_> {
         for a in args {
             vals.push(self.expr(c, f, a)?);
         }
+        if let Ty::Native(_) = ty {
+            return self.m.new_native(ty, vals, span);
+        }
         self.m.new_struct(ty, vals, span)
     }
 
@@ -723,6 +728,13 @@ impl<'p> Interp<'p, '_> {
                 vals.push(self.expr(c, f, a)?);
             }
             return self.m.str_method(&name.name, v, vals, span);
+        }
+        if let Value::Native(_) = v {
+            let mut vals = Vec::with_capacity(args.len());
+            for a in args {
+                vals.push(self.expr(c, f, a)?);
+            }
+            return self.m.native_method(&name.name, v, vals, span);
         }
         // A call on an interface value: the method of the value's own type.
         if let Some(t) = dyn_type(&v) {

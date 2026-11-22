@@ -737,6 +737,12 @@ fn process_io_args_stdin_env_and_exit_code() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "3 3 15\n");
     let out = qxide_io(&["run", &wc, "--", "-w"], &[], "one two\n");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "2\n");
+    // `-f`: word counts, highest first, ties in first-seen order.
+    let out = qxide_io(&["run", &wc, "--", "-f"], &[], "b a b\n c  a b\n");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "2 6 14\n3 b\n2 a\n1 c\n"
+    );
     let out = qxide_io(&["run", &wc, "--", "-q"], &[], "");
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8(out.stderr).unwrap().contains("-q"));
