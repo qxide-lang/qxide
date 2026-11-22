@@ -247,6 +247,10 @@ std.log    info(String msg)  warn(String msg)  error(String msg)
 std.time   int now_millis()               // Unix time in milliseconds
            String now_iso()               // UTC, "2026-11-21T02:03:04.005Z"
            sleep_millis(int ms)           // 0..=60000, cancellable
+           int monotonic_millis()         // since a fixed point in the process
+std.io     write(String text)  write_line(String text)    // CLI only: immediate stdout
+           Option<String> read_line()  String read_all()  // CLI only: stdin, 16 MiB cap
+std.env    Option<String> get(String name)                // CLI only
 std.fs     String read_text(String path)
            write_text(String path, String text)
            append_text(String path, String text)
@@ -267,6 +271,8 @@ std.http   String get(String url)             // https, [app] http_hosts  (permi
 ### Hosts and permissions
 
 Every standard-library call passes through the `Host` trait supplied by the embedder, which enforces the module availability and permission set for that host.
+
+`std.io` and `std.env` reach the terminal and the environment of the user who started `qxide run`, so only `qxide run` and `qxide check` offer them. Every other host (app runtime, `qxide repl`, playground) reports `Q0702`; they are not valid `[app]` `permissions` entries, and dependencies cannot import them (`Q0703`). They are not listed in the table below.
 
 | Host | `std.log` | `std.time` | `std.fs` | `std.app` | `std.http` | `std.qxide` |
 | --- | --- | --- | --- | --- | --- | --- |

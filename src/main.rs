@@ -24,7 +24,8 @@ fn usage() -> String {
         "Usage: qxide <COMMAND>
 
 Commands:
-  run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, random seed, printed to stderr)
+  run [FILE] [--shots N] [--seed S] [-- ARGS...]
+                                     Run a .qx program and simulate it (default: 1 shot, random seed, printed to stderr)
   run [FILE] --backend ibm:DEVICE    {}
                                      {}
   check [FILE]                       Check a .qx program for errors without running it
@@ -388,9 +389,15 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     // `run --backend PROVIDER:DEVICE` (src/qpu): a quantum computer service instead of the simulator.
     let (mut backend, mut dry_run, mut yes) = (None, false, false);
     let (mut max_seconds, mut device_config) = (None, None);
+    // `run f.qx -- a b`: everything after `--` goes to `main(String[] args)`.
+    let mut program_args = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let parsed = match (cmd, arg.as_str()) {
+            ("run", "--") => {
+                program_args.extend(rest.by_ref().cloned());
+                Ok(())
+            }
             ("run" | "qasm", "--engine") => {
                 parse_engine(arg, rest.next().map(String::as_str)).map(|e| engine = Some(e))
             }
@@ -504,9 +511,9 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                 "check" => lang::check_input(&input).map(|()| {
                     let mut line = format!("{path}: ok");
                     line.push('\n');
-                    (line, false)
+                    (line, false, 0)
                 }),
-                "qasm" => lang::qasm_input(&input).map(|out| (out, false)),
+                "qasm" => lang::qasm_input(&input).map(|out| (out, false, 0)),
                 _ if backend.is_some() => {
                     let spec = backend.as_deref().unwrap_or_default();
                     let exported = lang::export_input(&input)?;
@@ -514,21 +521,25 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                         .and_then(|p| {
                             qpu::run(&exported, &*p, shots, &settings, &mut qpu::TerminalUi)
                         })
-                        .map(|out| (out, false))
+                        .map(|out| (out, false, 0))
                         .map_err(|e| lang::Failure(format!("qxide: {e}\n")))
                 }
-                _ => lang::run_input_report(&input, shots, seed, &mut lang::cli_host(data_root))
-                    .map(|r| (r.text, r.simulated)),
+                _ => {
+                    let mut host = lang::cli_host(data_root);
+                    host.args = program_args;
+                    lang::run_input_report(&input, shots, seed, &mut host)
+                        .map(|r| (r.text, r.simulated, r.exit_code))
+                }
             }
         });
     match worker.map(|h| h.join()) {
-        Ok(Ok(Ok((out, simulated)))) => {
+        Ok(Ok(Ok((out, simulated, code)))) => {
             // Only a run whose output depended on the random seed needs it to be reproducible.
             if simulated && announce {
                 eprint!("{}", lang::seed_note(seed));
             }
             print!("{out}");
-            ExitCode::SUCCESS
+            ExitCode::from(code)
         }
         Ok(Ok(Err(lang::Failure(diags)))) => {
             eprint!("{diags}");

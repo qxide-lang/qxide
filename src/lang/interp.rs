@@ -62,6 +62,8 @@ pub struct OpCounts {
 
 pub struct Elaborated {
     pub circuit: Circuit,
+    // What `int main()` returned: the process exit code of `qxide run` (0 for `void main()`).
+    pub exit_code: u8,
     pub output: Vec<OutPiece>,
     // Every measurement result in order, i.e. the circuit's classical register `c[0..]`.
     pub measured: Vec<Bit>,
@@ -195,6 +197,12 @@ pub fn elaborate_call(
     };
     let f = *it.fns.get(name).ok_or_else(|| internal(Span::default()))?;
     let mut c = Circuit::new();
+    // `main(String[] args)` receives the host's arguments.
+    let args = if name == "main" && args.is_empty() && f.params.len() == 1 {
+        vec![it.m.main_args(f.name.span)?]
+    } else {
+        args
+    };
     let ret = it.call_fn(&mut c, f, args, f.name.span)?;
     Ok((it.m.finish(c), ret))
 }

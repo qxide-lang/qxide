@@ -157,9 +157,18 @@ fn build_input(
 ) {
     let (map, program) = front_input(input, true);
     let built = program.and_then(|program| {
-        let elaborated = engine::elaborate_call(&program, "main", Vec::new(), host, limits)
-            .map(|(e, _)| e)
-            .map_err(|d| vec![d])?;
+        let (mut elaborated, ret) =
+            engine::elaborate_call(&program, "main", Vec::new(), host, limits)
+                .map_err(|d| vec![d])?;
+        if let interp::Value::Int(n) = ret {
+            elaborated.exit_code = u8::try_from(n).map_err(|_| {
+                vec![Diagnostic::new(
+                    Code::StdArgument,
+                    main_span(&program),
+                    msg::exit_code_range(n),
+                )]
+            })?;
+        }
         Ok((program, elaborated))
     });
     (map, built)
@@ -707,6 +716,8 @@ pub struct RunOut {
     pub rows: Vec<(Vec<bool>, u64)>,
     /// Whether it simulated, and so drew outcomes from the seed.
     pub simulated: bool,
+    /// What `int main()` returned (0 for `void main()`).
+    pub exit_code: u8,
 }
 
 /// `run_input_with` with unrendered diagnostics, for editors.
@@ -718,7 +729,12 @@ fn run_diag(
     host: &mut dyn Host,
 ) -> (SourceMap, Result<RunOut, Vec<Diagnostic>>) {
     let (map, built) = build_input(input, host, &limits);
-    let run = built.and_then(|(program, e)| run_built(&program, &e, shots, seed, limits, host));
+    let run = built.and_then(|(program, e)| {
+        run_built(&program, &e, shots, seed, limits, host).map(|r| RunOut {
+            exit_code: e.exit_code,
+            ..r
+        })
+    });
     (map, run)
 }
 
@@ -731,6 +747,7 @@ fn run_built(
     host: &mut dyn Host,
 ) -> Result<RunOut, Vec<Diagnostic>> {
     let done = |text: String, simulated: bool| RunOut {
+        exit_code: 0,
         text,
         rows: Vec::new(),
         simulated,
@@ -804,6 +821,7 @@ fn run_built(
         text: s,
         rows,
         simulated: true,
+        exit_code: 0,
     })
 }
 

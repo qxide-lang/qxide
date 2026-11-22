@@ -26,6 +26,20 @@ public void error(String message) {}
         "public int now_millis() { return 0; }
 public String now_iso() { return \"\"; }
 public void sleep_millis(int ms) {}
+public int monotonic_millis() { return 0; }
+",
+    ),
+    (
+        "io",
+        "public void write(String text) {}
+public void write_line(String text) {}
+public Option<String> read_line() { return Option.None; }
+public String read_all() { return \"\"; }
+",
+    ),
+    (
+        "env",
+        "public Option<String> get(String name) { return Option.None; }
 ",
     ),
     (
@@ -166,6 +180,17 @@ pub fn module_source(name: &str) -> Option<&'static str> {
     MODULES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
 
+/// Std functions that return the prelude's `Option<String>`: the host answers with the text
+/// (`Some`) or `HostValue::Unit` (`None`).
+pub fn returns_option(module: &str, function: &str) -> bool {
+    matches!((module, function), ("io", "read_line") | ("env", "get"))
+}
+
+// Process-level modules: they reach the terminal and the environment of the user who started
+// `qxide run`, so only the CLI offers them (never the playground, the REPL or a desktop app,
+// and never to dependencies; see `link::std_import`).
+const PROCESS_MODULES: [&str; 2] = ["io", "env"];
+
 /// Whether code may import a standard module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -187,6 +212,7 @@ const IN_PLAYGROUND: &str = "the playground";
 const IN_REPL: &str = "the REPL";
 const GRANT_CLI_FS: &str = "`--allow fs`";
 const GRANT_APP: &str = "`[app] permissions` in `qxide.toml`";
+const IN_APP: &str = "a desktop app";
 
 impl Permissions {
     // Pure modules (`std.math`) have no effects, so every host allows them.
@@ -203,10 +229,11 @@ impl Permissions {
         }
     }
 
-    /// `qxide run`/`check`: logging and the clock always, files with `--allow fs`.
+    /// `qxide run`/`check`: logging, the clock, the terminal and the environment always, files
+    /// with `--allow fs`.
     pub fn cli(allow_fs: bool) -> Self {
         Self::with(|m| match m {
-            "log" | "time" => Access::Allowed,
+            "log" | "time" | "io" | "env" => Access::Allowed,
             "fs" if allow_fs => Access::Allowed,
             "fs" => Access::Denied(GRANT_CLI_FS),
             _ => Access::Unavailable(IN_CLI),
@@ -234,7 +261,9 @@ impl Permissions {
     #[allow(dead_code)]
     pub fn app(granted: &[String]) -> Self {
         Self::with(|m| {
-            if m == "log" || granted.iter().any(|g| g == m) {
+            if PROCESS_MODULES.contains(&m) {
+                Access::Unavailable(IN_APP)
+            } else if m == "log" || granted.iter().any(|g| g == m) {
                 Access::Allowed
             } else {
                 Access::Denied(GRANT_APP)
@@ -252,7 +281,7 @@ impl Permissions {
     /// Permission names accepted in `[app] permissions`.
     #[allow(dead_code)]
     pub fn known(name: &str) -> bool {
-        module_source(name).is_some()
+        module_source(name).is_some() && !PROCESS_MODULES.contains(&name)
     }
 }
 
@@ -342,6 +371,8 @@ pub struct NativeStd {
     pub cancel: Option<Arc<AtomicBool>>,
     /// `std.http`; `None` where the host has no network access.
     pub http: Option<HttpAccess>,
+    /// The arguments after `--` of `qxide run`, passed to `main(String[] args)`.
+    pub args: Vec<String>,
 }
 
 /// An HTTP response as the transport read it; the body is at most `MAX_HTTP_BYTES + 1` bytes.
@@ -393,6 +424,7 @@ impl NativeStd {
             log,
             cancel: None,
             http: None,
+            args: Vec::new(),
         }
     }
 
@@ -446,6 +478,16 @@ impl NativeStd {
             ("time", "now_millis") => Ok(HostValue::Int(now_millis())),
             ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
             ("time", "sleep_millis") => self.sleep(int_arg(args, 0)),
+            ("time", "monotonic_millis") => Ok(HostValue::Int(monotonic_millis())),
+            ("io", f) => terminal(f, str_arg(args, 0)),
+            ("env", "get") => {
+                Ok(std::env::var(str_arg(args, 0)).map_or(HostValue::Unit, HostValue::Str))
+            }
+            ("process", "arg_count") => Ok(HostValue::Int(self.args.len() as i64)),
+            ("process", "arg") => Ok(usize::try_from(int_arg(args, 0))
+                .ok()
+                .and_then(|i| self.args.get(i))
+                .map_or(HostValue::Unit, |a| HostValue::Str(a.clone()))),
             ("fs", f) => self.fs(f, args),
             ("http", "get") => self.http_get(str_arg(args, 0)),
             _ => Err(StdError::new(
@@ -551,6 +593,7 @@ impl Host for NoEffects {
             ("time", "now_millis") => Ok(HostValue::Int(now_millis())),
             ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
             ("time", "sleep_millis") => Ok(HostValue::Unit),
+            ("time", "monotonic_millis") => Ok(HostValue::Int(monotonic_millis())),
             _ => Err(StdError::new(
                 StdErrorKind::Unavailable,
                 msg::std_unavailable(&format!("std.{module}.{function}"), self.what),
@@ -580,6 +623,89 @@ impl Host for LogOnly {
             StdErrorKind::Unavailable,
             msg::std_unavailable(&format!("std.{module}"), "this host"),
         ))
+    }
+}
+
+// `std.io` on the process's own stdin and stdout. Output is written and flushed at once, so it
+// appears while the program runs (before any `println` output, which is rendered per shot).
+fn terminal(function: &str, text: &str) -> StdResult {
+    use std::io::{BufRead, Read, Write};
+    let io =
+        |e: std::io::Error| StdError::new(StdErrorKind::Io, msg::std_io("stdin", &e.to_string()));
+    let utf8 = |bytes: Vec<u8>| {
+        String::from_utf8(bytes)
+            .map_err(|_| StdError::new(StdErrorKind::Io, msg::std_not_utf8("stdin")))
+    };
+    let too_large = || {
+        StdError::new(
+            StdErrorKind::Io,
+            msg::std_file_too_large("stdin", MAX_READ_BYTES >> 20),
+        )
+    };
+    match function {
+        "write" | "write_line" => {
+            let mut out = std::io::stdout().lock();
+            let nl: &[u8] = if function == "write_line" { b"\n" } else { b"" };
+            out.write_all(text.as_bytes())
+                .and_then(|()| out.write_all(nl))
+                .and_then(|()| out.flush())
+                .map_err(|e| {
+                    StdError::new(StdErrorKind::Io, msg::std_io("stdout", &e.to_string()))
+                })?;
+            Ok(HostValue::Unit)
+        }
+        "read_line" => {
+            let mut buf = Vec::new();
+            std::io::stdin()
+                .lock()
+                .take(MAX_READ_BYTES + 1)
+                .read_until(b'\n', &mut buf)
+                .map_err(io)?;
+            if buf.is_empty() {
+                return Ok(HostValue::Unit);
+            }
+            if buf.len() as u64 > MAX_READ_BYTES {
+                return Err(too_large());
+            }
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+                if buf.last() == Some(&b'\r') {
+                    buf.pop();
+                }
+            }
+            utf8(buf).map(HostValue::Str)
+        }
+        "read_all" => {
+            let mut buf = Vec::new();
+            std::io::stdin()
+                .lock()
+                .take(MAX_READ_BYTES + 1)
+                .read_to_end(&mut buf)
+                .map_err(io)?;
+            if buf.len() as u64 > MAX_READ_BYTES {
+                return Err(too_large());
+            }
+            utf8(buf).map(HostValue::Str)
+        }
+        _ => Err(StdError::new(
+            StdErrorKind::Unavailable,
+            msg::std_unavailable(&format!("std.io.{function}"), "this host"),
+        )),
+    }
+}
+
+/// Milliseconds since the first call in this process: only differences are meaningful.
+pub fn monotonic_millis() -> i64 {
+    // `Instant` is not available on wasm32-unknown-unknown (the playground has no `std.time`).
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = *START.get_or_init(std::time::Instant::now);
+        i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX)
     }
 }
 
@@ -1078,6 +1204,19 @@ mod tests {
             Permissions::repl(),
         ] {
             assert!(matches!(host.access("http"), Some(Access::Unavailable(_))));
+        }
+        // The terminal and the environment: only the CLI offers them, and an app cannot be
+        // granted them.
+        for m in PROCESS_MODULES {
+            assert_eq!(cli.access(m), Some(Access::Allowed));
+            for host in [
+                Permissions::playground(),
+                Permissions::repl(),
+                Permissions::app(&[m.to_string()]),
+            ] {
+                assert!(matches!(host.access(m), Some(Access::Unavailable(_))));
+            }
+            assert!(!Permissions::known(m));
         }
         assert_eq!(app.access("shell"), None);
         assert!(matches!(

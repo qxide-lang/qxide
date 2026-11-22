@@ -66,6 +66,8 @@ void main() {
 
 Run the program with `qxide run`: a single shot prints the program's output, while `--shots N` executes N shots. Without `--seed`, each `qxide run` picks a fresh random seed so counts differ from run to run and prints the seed used to `stderr` as a single `seed: S (pass --seed S to reproduce)` line; passing `--seed S` reproduces the exact same output and prints no seed line. When nothing printed depends on measurement outcomes (for example, a single shot that prints no measured bit or a program with no measurements), no simulation runs and no seed is printed.
 
+For command-line programs, anything after `--` is passed to `main(String[] args)` and an `int main()` return value sets the process exit code. In the CLI, `std.io` and `std.env` also provide standard input, immediate standard output, and environment variables, as in `qxide run examples/cli/wc.qx -- -w < notes.txt`.
+
 ```text
 $ qxide run examples/qx/bell.qx
 seed: 12059043656824605579 (pass --seed 12059043656824605579 to reproduce)

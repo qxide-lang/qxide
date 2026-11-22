@@ -476,6 +476,12 @@ fn dependencies_may_only_import_std_log() {
     assert_eq!(e, vec![("Q0703", path("bell_utils/src/lib.qx"), 2, 1)]);
     let ok = "import std.log;\n\npublic void note() {\n    log.info(\"x\");\n}\n";
     assert_eq!(errs(entry, &[("bell_utils/src/lib.qx", ok)]), vec![]);
+    // Nor may they reach the terminal or the environment.
+    for module in ["io", "env"] {
+        let lib = format!("import std.{module};\n\npublic void note() {{}}\n");
+        let e = errs(entry, &[("bell_utils/src/lib.qx", &lib)]);
+        assert_eq!(e, vec![("Q0703", path("bell_utils/src/lib.qx"), 1, 1)]);
+    }
     // Pure modules have no effects, so dependencies may use them too.
     let math = "import std.math;\n\npublic void note() {\n    double d = math.sqrt(2.0);\n}\n";
     assert_eq!(errs(entry, &[("bell_utils/src/lib.qx", math)]), vec![]);

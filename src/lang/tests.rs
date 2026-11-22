@@ -121,6 +121,102 @@ fn removed_rust_syntax_points_to_the_new_form() {
     assert_eq!(codes("int f() { 1 }\nvoid main() {}"), ["Q0105"]);
 }
 
+// A scripted terminal for `std.io`, `std.env` and `main(String[] args)`: stdin lines, captured
+// writes and fixed arguments. Under `cfg(test)` every run goes through both engines, the second
+// replaying the first one's host calls.
+#[derive(Default)]
+struct Term {
+    args: Vec<String>,
+    input: Vec<String>,
+    env: Vec<(String, String)>,
+    out: String,
+}
+
+impl Host for Term {
+    fn call(
+        &mut self,
+        module: &str,
+        function: &str,
+        args: Vec<stdlib::HostValue>,
+    ) -> stdlib::StdResult {
+        use stdlib::HostValue as V;
+        let text = |i: usize| match args.get(i) {
+            Some(V::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        Ok(match (module, function) {
+            ("process", "arg_count") => V::Int(self.args.len() as i64),
+            ("process", "arg") => match args.first() {
+                Some(V::Int(i)) => V::Str(self.args[*i as usize].clone()),
+                _ => V::Unit,
+            },
+            ("io", "write") => {
+                self.out.push_str(&text(0));
+                V::Unit
+            }
+            ("io", "write_line") => {
+                self.out.push_str(&text(0));
+                self.out.push('\n');
+                V::Unit
+            }
+            ("io", "read_line") if self.input.is_empty() => V::Unit,
+            ("io", "read_line") => V::Str(self.input.remove(0)),
+            ("io", "read_all") => V::Str(std::mem::take(&mut self.input).join("\n")),
+            ("env", "get") => self
+                .env
+                .iter()
+                .find(|(k, _)| *k == text(0))
+                .map_or(V::Unit, |(_, v)| V::Str(v.clone())),
+            _ => return stdlib::LogOnly::default().call(module, function, args),
+        })
+    }
+}
+
+// Runs `src` on `term`: the exit code and the deferred `println` output of one shot.
+fn run_term(src: &str, term: &mut Term) -> Result<(u8, String), Vec<&'static str>> {
+    let (_, built) = build_input(&Input::file("t.qx", src), term, &Limits::CLI);
+    match built {
+        Ok((_, e)) => Ok((e.exit_code, render_output(&e.output, None))),
+        Err(d) => Err(d.iter().map(|d| d.code.as_str()).collect()),
+    }
+}
+
+#[test]
+fn process_io_args_env_and_exit_code() {
+    let src = "import std.io;\nimport std.env;\n\nint main(String[] args) {\n    println(\"deferred\");\n    io.write(\"args \" + len(args));\n    io.write_line(\" first \" + args[0]);\n    int total = 0;\n    boolean more = true;\n    while more {\n        match io.read_line() {\n            Some(line) => {\n                total += line.parse_int();\n            }\n            None => {\n                more = false;\n            }\n        }\n    }\n    io.write_line(\"sum \" + total);\n    io.write_line(env.get(\"HOME\").unwrap_or(\"?\") + \" \" + env.get(\"NOPE\").unwrap_or(\"unset\"));\n    return total % 7;\n}\n";
+    let mut term = Term {
+        args: vec!["a".into(), "b c".into()],
+        input: vec!["4".into(), "5".into()],
+        env: vec![("HOME".into(), "/h".into())],
+        ..Term::default()
+    };
+    assert_eq!(run_term(src, &mut term), Ok((2, "deferred\n".to_string())));
+    assert_eq!(term.out, "args 2 first a\nsum 9\n/h unset\n");
+    // `void main(String[] args)` on a host without arguments gets an empty array.
+    let mut term = Term::default();
+    let none = "import std.io;\n\nvoid main(String[] args) {\n    io.write_line(\"n=\" + len(args) + \" \" + io.read_all().length());\n}\n";
+    assert_eq!(run_term(none, &mut term), Ok((0, String::new())));
+    assert_eq!(term.out, "n=0 0\n");
+    // Exit codes are 0..=255.
+    let bad = "int main() {\n    return 256;\n}\n";
+    assert_eq!(run_term(bad, &mut Term::default()), Err(vec!["Q0706"]));
+    let neg = "int main() {\n    return -1;\n}\n";
+    assert_eq!(run_term(neg, &mut Term::default()), Err(vec!["Q0706"]));
+    // Terminal effects are unconditional: not inside an `if` on a measured bit.
+    assert_eq!(
+        codes_cli("import std.io;\n\nvoid main() {\n    Qubit q = qubit();\n    h(q);\n    Bit b = measure(q);\n    if b {\n        io.write_line(\"x\");\n    }\n}\n"),
+        ["Q0314"]
+    );
+}
+
+// Checker codes with the CLI's permissions (`std.io` and `std.env` allowed).
+fn codes_cli(src: &str) -> Vec<&'static str> {
+    match front_input(&Input::file("t.qx", src), true).1 {
+        Ok(_) => Vec::new(),
+        Err(d) => d.iter().map(|d| d.code.as_str()).collect(),
+    }
+}
+
 #[test]
 fn java_style_declarations_and_functions() {
     let src = "int add(int a, int b) {\n    return a + b;\n}\n\ndouble half(double x) {\n    return x / 2;\n}\n\nvoid main() {\n    final int n = 3;\n    double d = n;\n    d = d * 2;\n    boolean big = add(n, 4) > 6;\n    println(\"{} {} {} {} {}\", add(n, 4), half(n), d, big, 7 / 2);\n}\n";
@@ -129,7 +225,7 @@ fn java_style_declarations_and_functions() {
     assert_eq!(codes(&main_body("int x = 1.5;")), ["Q0204"]);
     assert_eq!(codes(&main_body("void x = 1;")), ["Q0204"]);
     assert_eq!(codes("void f(void v) {}\nvoid main() {}"), ["Q0204"]);
-    assert_eq!(codes("int main() {\n    return 0;\n}"), ["Q0206"]);
+    assert_eq!(codes("double main() {\n    return 0.0;\n}"), ["Q0206"]);
     assert_eq!(codes(&main_body("boolean b = 1 == true;")), ["Q0204"]);
     // Doubles follow IEEE 754: division by zero is not an error.
     assert_eq!(
@@ -343,6 +439,14 @@ fn types_and_names() {
     assert_eq!(codes("void f(int a, int a) {}\nvoid main() {}"), ["Q0205"]);
     assert_eq!(codes("void helper() {}"), ["Q0206"]);
     assert_eq!(codes("void main(int x) {}"), ["Q0206"]);
+    // `main` may return the exit code and take the command-line arguments.
+    ok("int main() {\n    return 0;\n}");
+    ok("void main(String[] args) {}");
+    ok("int main(String[] args) {\n    return len(args);\n}");
+    assert_eq!(codes("void main(int[] args) {}"), ["Q0206"]);
+    assert_eq!(codes("void main(String[] a, String[] b) {}"), ["Q0206"]);
+    assert_eq!(codes("String main() {\n    return \"\";\n}"), ["Q0206"]);
+    assert_eq!(codes("int main() {}"), ["Q0213"]);
     assert_eq!(codes("void h() {}\nvoid main() {}"), ["Q0217"]);
     // Qubit parameters and quantum return types are supported; Q0219 is retired.
     ok("void f(Qubit q) {}\nvoid main() {}");

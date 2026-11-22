@@ -94,8 +94,12 @@ pub fn missing_main() -> String {
     "missing `void main()` entry point".into()
 }
 
+pub fn exit_code_range(n: i64) -> String {
+    format!("`main` returned {n}; exit codes must be between 0 and 255")
+}
+
 pub fn main_signature() -> String {
-    "function `main` must take no parameters and return nothing".into()
+    "function `main` must have signature `void main()`, `int main()`, `void main(String[] args)`, or `int main(String[] args)`".into()
 }
 
 pub fn immutable_assign(name: &str) -> String {

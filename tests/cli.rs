@@ -691,6 +691,62 @@ fn qxide_engine_env(args: &[&str], env: Option<&str>, input: &str) -> std::proce
     child.wait_with_output().unwrap()
 }
 
+// Runs `qxide` with `input` on stdin and extra environment variables.
+fn qxide_io(args: &[&str], env: &[(&str, &str)], input: &str) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut c = Command::new(env!("CARGO_BIN_EXE_qxide"));
+    c.args(args)
+        .envs(env.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("run qxide");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+// Stage 2a: `main(String[] args)` gets the arguments after `--`, `int main()` is the exit code,
+// `std.io` reads stdin and writes at once (before the per-shot `println` output), `std.env`
+// reads the environment.
+#[test]
+fn process_io_args_stdin_env_and_exit_code() {
+    let src = "import std.io;\nimport std.env;\n\nint main(String[] args) {\n    println(\"deferred\");\n    io.write_line(\"args \" + len(args) + \" \" + args[1]);\n    String text = io.read_all();\n    io.write_line(\"read \" + text.trim());\n    io.write_line(env.get(\"QX_CLI_TEST\").unwrap_or(\"unset\"));\n    return 7;\n}\n";
+    let path = tmp_qx("process_io.qx", src);
+    for engine in ["ast", "ir"] {
+        let out = qxide_io(
+            &["run", &path, "--engine", engine, "--", "--shots", "x y"],
+            &[("QX_CLI_TEST", "set")],
+            "hello\n",
+        );
+        assert_eq!(out.status.code(), Some(7), "{out:?}");
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "args 2 x y\nread hello\nset\ndeferred\n"
+        );
+    }
+    // The word-count example reads stdin and fails with exit code 2 on an unknown option.
+    let wc = format!("{}/examples/cli/wc.qx", env!("CARGO_MANIFEST_DIR"));
+    let out = qxide_io(&["run", &wc], &[], "one two\n\nthree\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "3 3 15\n");
+    let out = qxide_io(&["run", &wc, "--", "-w"], &[], "one two\n");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "2\n");
+    let out = qxide_io(&["run", &wc, "--", "-q"], &[], "");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8(out.stderr).unwrap().contains("-q"));
+    // Out-of-range exit codes are a run-time error (exit code 1).
+    let bad = tmp_qx("exit_256.qx", "int main() {\n    return 256;\n}\n");
+    let out = qxide_io(&["run", &bad], &[], "");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8(out.stderr).unwrap().contains("Q0706"));
+}
+
 // The typed IR interpreter (`--engine ir`, docs/design/qx-ir.md) prints exactly what the
 // tree-walking interpreter prints, chosen by the flag, the environment variable, or both (`dual`).
 #[test]

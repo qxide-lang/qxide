@@ -1,0 +1,64 @@
+// A small `wc`: counts the lines, words and characters of standard input and prints them as
+// soon as the input ends. Run it with `qxide run examples/cli/wc.qx < notes.txt`, or pass
+// `-l` or `-w` after `--` to print only the line or word count.
+import std.io;
+import std.log;
+
+boolean is_space(String c) {
+    return c == " " || c == "\t";
+}
+
+int words_in(String line) {
+    int words = 0;
+    boolean in_word = false;
+    for i in 0..line.length() {
+        boolean space = is_space(line.char_at(i));
+        if !space && !in_word {
+            words += 1;
+        }
+        in_word = !space;
+    }
+    return words;
+}
+
+int main(String[] args) {
+    String only = "";
+    for i in 0..len(args) {
+        match args[i] {
+            "-l" => {
+                only = "lines";
+            }
+            "-w" => {
+                only = "words";
+            }
+            _ => {
+                log.error("wc: unknown option " + args[i]);
+                return 2;
+            }
+        }
+    }
+    int lines = 0;
+    int words = 0;
+    int chars = 0;
+    boolean more = true;
+    while more {
+        match io.read_line() {
+            Some(text) => {
+                lines += 1;
+                words += words_in(text);
+                chars += text.length() + 1;
+            }
+            None => {
+                more = false;
+            }
+        }
+    }
+    if only == "lines" {
+        io.write_line("" + lines);
+    } else if only == "words" {
+        io.write_line("" + words);
+    } else {
+        io.write_line(lines + " " + words + " " + chars);
+    }
+    return 0;
+}

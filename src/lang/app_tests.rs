@@ -103,6 +103,15 @@ fn std_permissions_per_host() {
     assert_eq!(err_codes(fs, Permissions::cli(false)), ["Q0703"]);
     assert_eq!(err_codes(fs, Permissions::playground()), ["Q0702"]);
     assert_eq!(err_codes(fs, Permissions::app(&[])), ["Q0703"]);
+    for module in ["io", "env"] {
+        let src = format!("import std.{module};\nvoid main() {{}}\n");
+        assert_eq!(err_codes(&src, Permissions::playground()), ["Q0702"]);
+        assert_eq!(err_codes(&src, Permissions::repl()), ["Q0702"]);
+        assert_eq!(
+            err_codes(&src, Permissions::app(&[module.into()])),
+            ["Q0702"]
+        );
+    }
     let app = "import std.app;\nvoid main() {\n    app.close();\n}\n";
     assert_eq!(err_codes(app, Permissions::cli(true)), ["Q0702"]);
     let unknown = "import std.net;\nvoid main() {}\n";

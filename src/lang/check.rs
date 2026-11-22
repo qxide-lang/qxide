@@ -1032,7 +1032,14 @@ impl Checker {
                 let at = p.fns.first().map_or(Span::default(), |f| f.name.span);
                 self.err(Code::BadMain, at, msg::missing_main());
             }
-            Some(f) if !f.params.is_empty() || f.ret != Ty::Void => {
+            // `void main()`, `int main()` (the exit code), optionally with `String[] args`.
+            Some(f)
+                if !matches!(f.ret, Ty::Void | Ty::Int)
+                    || f.params.len() > 1
+                    || f.params.first().is_some_and(|p| {
+                        p.ty != Ty::array_of(Ty::String) || p.consume.is_some()
+                    }) =>
+            {
                 self.err(Code::BadMain, f.name.span, msg::main_signature());
             }
             Some(_) => {}

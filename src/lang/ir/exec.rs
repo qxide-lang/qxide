@@ -54,6 +54,12 @@ pub fn run_with(
     };
     let mut c = Circuit::new();
     let span = module.funcs[id as usize].span;
+    // `main(String[] args)` receives the host's arguments.
+    let args = if name == "main" && args.is_empty() && module.funcs[id as usize].params.len() == 1 {
+        vec![x.m.main_args(span)?]
+    } else {
+        args
+    };
     let ret = x.call(&mut c, id, args, span)?;
     Ok((x.m.finish(c), ret))
 }

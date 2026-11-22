@@ -406,9 +406,9 @@ void main() {
 }
 ```
 
-## Q0206: missing or invalid `void main()` entry point
+## Q0206: missing or invalid `main` entry point
 
-This error occurs when a `.qx` program does not define a `main` function, or defines `main` with a signature other than `void main()`. Every `.qx` program builds a single quantum circuit starting from the `void main()` entry point. Without a valid `void main()` function, the compiler has no starting point for executing the program with `qxide run` or exporting it with `qxide qasm`.
+This error occurs when a `.qx` program does not define a `main` function, or defines `main` with a signature other than one of the four allowed forms: `void main()`, `int main()`, `void main(String[] args)`, or `int main(String[] args)`. Every `.qx` program needs a single entry point for running with `qxide run` or exporting with `qxide qasm`, where an `int` return type supplies the process exit code and a `String[] args` parameter receives the arguments passed after `--`.
 
 Erroneous code example:
 
@@ -418,7 +418,7 @@ void start() {  // error[Q0206]
 }
 ```
 
-To fix it, rename `start` to `main` so the program defines the required `void main()` entry point.
+To fix it, rename `start` to `main` using one of the four allowed signatures, such as `void main()` (or `int main(String[] args)` when you need command-line arguments and a custom exit code).
 
 ```qx
 void main() {
@@ -2447,6 +2447,8 @@ fs.write_text("notes/secrets.txt", "x");
 ## Q0706: standard function argument out of range
 
 A standard library function received an argument outside its allowed range, such as passing a negative duration or a value greater than 60000 milliseconds to `time.sleep_millis`. Enforcing argument bounds prevents invalid runtime operations and protects execution from unbounded waits or resource exhaustion.
+
+This error is also reported when `int main()` returns a value outside `0..=255`. Portable process exit codes are restricted to the range `0..=255`, so returning a negative number or a value above `255` fails at run time with exit code 1 instead of being truncated silently.
 
 Erroneous code example:
 

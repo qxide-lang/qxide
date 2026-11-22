@@ -11,7 +11,7 @@ use super::ast::{BinOp, FmtPiece, Ty};
 use super::diag::{Code, Diagnostic, Span};
 use super::interp::{piece_bytes, BitsFmt, Elaborated, OpCounts, OutPiece, Usage, Value};
 use super::record::Layouts;
-use super::stdlib::{Host, HostValue, StdErrorKind};
+use super::stdlib::{Host, HostValue, StdError, StdErrorKind};
 use super::{msg, Limits};
 
 pub const MAX_CALL_DEPTH: usize = 200;
@@ -53,6 +53,19 @@ enum Rec {
     Measure,
     Reset,
     If,
+}
+
+fn std_error(e: StdError, span: Span) -> Diagnostic {
+    let code = match e.kind {
+        StdErrorKind::Unavailable => Code::StdUnavailable,
+        StdErrorKind::Io => Code::StdIo,
+        StdErrorKind::Path => Code::StdPath,
+        StdErrorKind::Argument => Code::StdArgument,
+        StdErrorKind::Http => Code::StdHttp,
+        StdErrorKind::Url => Code::StdUrl,
+        StdErrorKind::Cancelled => Code::Cancelled,
+    };
+    Diagnostic::new(code, span, e.message)
 }
 
 fn digits(n: usize) -> u64 {
@@ -197,6 +210,7 @@ impl<'h> Machine<'h> {
     pub fn finish(self, circuit: Circuit) -> Elaborated {
         Elaborated {
             circuit,
+            exit_code: 0,
             output: self.output,
             measured: self.measured,
             slots: self.slots,
@@ -631,8 +645,27 @@ impl<'h> Machine<'h> {
         let result = if super::pure::is_pure_module(module) {
             Ok(super::pure::math(function, &vals, span)?)
         } else {
+            // Text written to the terminal is charged per byte, like text the program builds.
+            if module == "io" {
+                if let Some(HostValue::Str(s)) = vals.first() {
+                    self.charge_text(s.len(), span)?;
+                }
+            }
             self.host.call(module, function, vals)
         };
+        // `Option<String>` results: the host answers with the text or `Unit` for `None`.
+        if super::stdlib::returns_option(module, function) {
+            let some = match result {
+                Ok(HostValue::Unit) => None,
+                Ok(HostValue::Str(s)) => {
+                    self.charge_text(s.len(), span)?;
+                    Some(Value::Str(s.into()))
+                }
+                Ok(_) => return Err(internal(span)),
+                Err(e) => return Err(std_error(e, span)),
+            };
+            return self.option_string(some, span);
+        }
         match result {
             Ok(HostValue::Unit) => Ok(Value::Unit),
             Ok(HostValue::Int(n)) => Ok(Value::Int(n)),
@@ -644,19 +677,37 @@ impl<'h> Machine<'h> {
                 self.charge_text(s.len(), span)?;
                 Ok(Value::Str(s.into()))
             }
-            Err(e) => {
-                let code = match e.kind {
-                    StdErrorKind::Unavailable => Code::StdUnavailable,
-                    StdErrorKind::Io => Code::StdIo,
-                    StdErrorKind::Path => Code::StdPath,
-                    StdErrorKind::Argument => Code::StdArgument,
-                    StdErrorKind::Http => Code::StdHttp,
-                    StdErrorKind::Url => Code::StdUrl,
-                    StdErrorKind::Cancelled => Code::Cancelled,
-                };
-                Err(Diagnostic::new(code, span, e.message))
+            Err(e) => Err(std_error(e, span)),
+        }
+    }
+
+    // `Option.Some(text)` or `Option.None` of the prelude's `Option<String>`.
+    fn option_string(&mut self, v: Option<Value>, span: Span) -> R<Value> {
+        let ty = Ty::instance(Ty::enum_named("Option"), &[Ty::String]);
+        let variant = if v.is_some() { "Some" } else { "None" };
+        let (tag, _) = self
+            .layouts()
+            .variant(ty, variant)
+            .ok_or_else(|| internal(span))?;
+        self.new_enum(ty, tag, v.into_iter().collect(), span)
+    }
+
+    /// The `String[] args` of `main`: the arguments the host was given (`qxide run f.qx -- a b`),
+    /// none on hosts without any. Their text is charged like text the program builds.
+    pub fn main_args(&mut self, span: Span) -> R<Value> {
+        let n = match self.host.call("process", "arg_count", Vec::new()) {
+            Ok(HostValue::Int(n)) => n,
+            _ => 0,
+        };
+        let mut vals = Vec::new();
+        for i in 0..n {
+            if let Ok(HostValue::Str(s)) = self.host.call("process", "arg", vec![HostValue::Int(i)])
+            {
+                self.charge_text(s.len(), span)?;
+                vals.push(Value::Str(s.into()));
             }
         }
+        self.array_lit(Ty::array_of(Ty::String), vals, span)
     }
 
     fn emit(&mut self, piece: OutPiece, at: Span) -> R<()> {

@@ -608,7 +608,7 @@ $ qxide run bits.qx --shots 1000
 | `Q0410` | 64비트를 초과하는 레지스터에 `as_int()` 호출 |
 
 - `Q0104`: `double` 리터럴의 범위 초과도 포함한다.
-- `Q0206`: `void main()` 누락 또는 잘못된 `main` 시그니처를 의미한다.
+- `Q0206`: `main` 누락 또는 잘못된 `main` 시그니처를 의미한다(허용 형태는 19.9절).
 - `Q0207`: `final` 변수에 대한 재할당을 의미한다(도움말: `final` 제거).
 - `Q0204`: 변수나 매개변수 타입으로 `void`를 사용한 경우도 포함한다.
 - `Q0218`: `to_binary()` 또는 `as_int()` 결과를 변수에 저장하려는 경우도 포함한다.
@@ -1076,7 +1076,9 @@ qxide 라이브러리 자체는 분기 안의 `measure`만 거부해 패닉을 �
 MVP 단계의 표준 모듈은 다음과 같다.
 
 - `std.log`: `info`, `warn`, `error`
-- `std.time`: `now_millis`, `now_iso`, `sleep_millis`
+- `std.time`: `now_millis`, `now_iso`, `sleep_millis`, `monotonic_millis`
+- `std.io`: `write`, `write_line`, `read_line`, `read_all` (CLI 전용, 19.9절)
+- `std.env`: `get` (CLI 전용, 19.9절)
 - `std.fs`: `read_text`, `write_text`, `append_text`, `exists`, `remove`
 - `std.app`: `set_title`, `set_size`, `close`, `emit` (데스크톱 앱 전용)
 - `std.qxide`: `check`, `run`, `qasm`, `format` (`qxide` 권한이 있는 앱 전용, 즉 Qxide Studio)
@@ -1091,10 +1093,10 @@ MVP 단계의 표준 모듈은 다음과 같다.
 
 | 호스트 | 허용 범위 |
 | --- | --- |
-| `qxide run` / `qxide check` | `std.log`(stderr 출력)와 `std.time`은 항상 허용된다. `std.fs`는 `--allow fs` 지정 시에만 허용되며 `qxide.toml` 옆의 `data/` 또는 `./data`를 루트로 한다. `std.app`과 `std.qxide`는 사용할 수 없다(`Q0702`). |
+| `qxide run` / `qxide check` | `std.log`(stderr 출력), `std.time`, `std.io`, `std.env`는 항상 허용된다. `std.fs`는 `--allow fs` 지정 시에만 허용되며 `qxide.toml` 옆의 `data/` 또는 `./data`를 루트로 한다. `std.app`과 `std.qxide`는 사용할 수 없다(`Q0702`). |
 | `qxide qasm` | `std.log`는 폐기되며 `std.time`은 동작한다. 내보내기에 부수 효과가 없도록 `std.fs`와 `std.app` 호출은 `Q0702`로 거부된다. |
-| `qxide repl` 및 플레이그라운드 | 둘 다 `std.log`만 허용된다. 플레이그라운드는 stderr에 `info: ...` 형식으로 출력하지만, REPL은 매 입력마다 전체 세션을 다시 실행하므로 호출은 허용하되 출력하지 않는다. |
-| 데스크톱 앱 | `std.log`는 항상 허용되며, 그 외 모듈은 `[app] permissions`에 나열된 경우에만 허용된다. 의존성은 `std.log`만 사용할 수 있다. |
+| `qxide repl` 및 플레이그라운드 | 둘 다 `std.log`만 허용된다(`std.io`, `std.env`는 `Q0702`). 플레이그라운드는 stderr에 `info: ...` 형식으로 출력하지만, REPL은 매 입력마다 전체 세션을 다시 실행하므로 호출은 허용하되 출력하지 않는다. |
+| 데스크톱 앱 | `std.log`는 항상 허용되며, 그 외 모듈은 `[app] permissions`에 나열된 경우에만 허용된다. `std.io`와 `std.env`는 허가할 수 없다(`Q0702`). 의존성은 `std.log`만 사용할 수 있다. |
 
 ### 17.5 신규 오류 코드
 
@@ -1105,7 +1107,7 @@ MVP 단계의 표준 모듈은 다음과 같다.
 | `Q0703` | 허용되지 않은 모듈(`--allow` 또는 `[app] permissions` 미지정, 또는 의존성이 `std.log` 외의 모듈을 import함) |
 | `Q0704` | 파일 작업 실패(파일 없음, 16 MiB 초과, UTF-8 아님, I/O 오류) |
 | `Q0705` | 허용되지 않은 경로(절대 경로, 드라이브/UNC 경로, `..`, 예약 장치명, 심볼릭 링크 탈출) |
-| `Q0706` | `std` 인수 범위 초과(`sleep_millis`는 `0..60000`) |
+| `Q0706` | `std` 인수 범위 초과(`sleep_millis`는 `0..60000`), `int main()`의 종료 코드가 `0..=255` 밖 |
 | `Q0707` | HTTP 요청 실패(네트워크 오류, 2xx 외 상태 코드, 16 MiB 초과, UTF-8 아님) |
 | `Q0708` | 허용되지 않은 URL(https 아님 또는 `[app] http_hosts`에 없는 호스트) |
 | `Q0711` | 알 수 없는 앱 커맨드 |
@@ -1443,3 +1445,43 @@ void main() {
 | 코드 | 의미 |
 | --- | --- |
 | `Q0232` | 인터페이스 미구현(빠진 메서드, 시그니처 불일치), 인터페이스가 아닌 `implements`/`extends` 대상, 제약을 만족하지 않는 타입 인자 |
+
+### 19.9 프로세스 입출력: 인자, 종료 코드, `std.io`, `std.env`
+
+로드맵 Stage 2의 첫 번째 단계(2a)로, `.qx`로 명령줄 도구를 작성할 수 있도록 `main` 인자·종료 코드와 표준 모듈 `std.io`, `std.env`, 그리고 단조 시계 함수를 추가한다.
+
+- **`main` 시그니처와 인자**: `main`은 `void main()`, `int main()`, `void main(String[] args)`, `int main(String[] args)` 네 가지 형태만 허용하며, 그 외의 시그니처는 `Q0206` 오류다. `qxide run prog.qx -- a b c`처럼 `--` 뒤에 적은 인자는 모두 `main(String[] args)`에 전달되며, `--` 뒤의 `--shots` 같은 플래그도 `qxide` 옵션이 아니라 프로그램 인자로 넘어간다. 인자를 전달하지 않는 실행 환경(플레이그라운드, REPL, 데스크톱 앱)에서는 빈 배열이 전달된다.
+- **종료 코드**: `int main()`의 반환값은 `qxide run`의 프로세스 종료 코드가 된다. 반환값은 `0..=255` 범위여야 하며, 범위를 벗어나면 실행 시간 오류 `Q0706`을 보고하고 종료 코드 `1`로 종료한다. `void main()`은 종료 코드 `0`으로 끝난다. 별도의 `exit()` 함수는 두지 않는데, 프로그램이 항상 `main`의 반환을 통해 끝나야 모든 실행 경로에서 큐비트를 소비해야 한다는 검사기 규칙을 그대로 지킬 수 있기 때문이다.
+- **`std.io`와 출력 순서**: 새 표준 모듈 `std.io`는 `io.write(String text)`, `io.write_line(String text)`, `io.read_line()`, `io.read_all()`을 제공한다. `write`와 `write_line`은 고전 코드가 실행되는 동안 매 호출마다 버퍼를 비워(flush) 표준 출력으로 즉시 내보내므로 고전 명령줄 도구가 출력을 스트리밍할 수 있다(내장 `println`이 샷별 지연 출력이므로 이름을 `write`/`write_line`으로 구분했다). `read_line()`은 프렐류드 `Option<String>`을 반환하며 줄 끝의 `\n` 또는 `\r\n`을 제거하고 입력 끝에서는 `None`을 돌려준다. `read_all()`은 남은 표준 입력 전체를 `String`으로 읽는다. `std.io` 출력은 프로그램 전개(elaboration) 시점에 나타나므로 시뮬레이션 뒤에 렌더링되는 샷별 `println` 출력보다 먼저 나오며, `--shots N > 1`에서는 모든 즉시 출력 뒤에 다중 샷 표가 이어진다. 다른 `std` 호출과 마찬가지로 빌드 시점 효과이므로 `--shots`와 무관하게 실행당 한 번만 수행되며 측정 비트 조건의 `if` 안에서는 호출할 수 없다(`Q0314`).
+- **`std.env`**: 새 표준 모듈 `std.env`는 `env.get(String name)`을 제공하며, 환경 변수가 설정되어 있지 않거나 유효한 유니코드가 아니면 `None`, 그 외에는 값을 담은 `Option<String>`을 반환한다. 다른 `std` 호출과 마찬가지로 빌드 시점 효과이며 측정 비트 조건의 `if` 안에서는 호출할 수 없다(`Q0314`).
+- **단조 시계(`std.time.monotonic_millis`)**: `std.time`에 추가된 `time.monotonic_millis()`는 프로세스 내 고정 기준점으로부터 흐른 밀리초를 반환한다. 절대 시각이 아니라 두 호출의 차이를 구해 경과 시간을 재는 용도이며, 기존의 `now_millis()`는 계속 벽시계(wall-clock) 유닉스 시각을 반환한다.
+- **스텝 예산과 16 MiB 한도**: `io.read_line()`과 `io.read_all()`의 읽기는 최대 16 MiB로 제한되며, 한도를 넘기거나 입력이 유효한 UTF-8이 아니면 `Q0704` 오류가 발생한다. `io.write`와 `io.write_line`으로 출력하는 텍스트는 프로그램이 만드는 문자열과 마찬가지로 바이트당 스텝 예산이 부과된다.
+- **예제(`examples/cli/wc.qx`)**: 표준 입력의 줄·단어·문자 수를 세는 소형 `wc` 도구 예제를 `examples/cli/wc.qx`에 추가했다. `--` 뒤에 `-l`이나 `-w`를 넘기면 해당 항목만 출력하며, 알 수 없는 옵션은 `std.log`로 오류를 기록하고 종료 코드 `2`를 반환한다(`qxide run examples/cli/wc.qx -- -w < notes.txt`). 브라우저 플레이그라운드와 Studio에서는 `std.io`를 제공하지 않으므로 기존 `examples/qx/`가 아니라 `examples/cli/`에 둔다.
+- **호스트와 권한**: `std.io`와 `std.env`는 `qxide run`을 실행한 사용자의 터미널과 환경 변수에 닿으므로 CLI(`qxide run`/`qxide check`)에서만 제공한다. 플레이그라운드, REPL, 데스크톱 앱에서는 사용할 수 없고(`Q0702`), 앱은 `[app] permissions`로도 이 두 모듈을 허가받을 수 없다. 의존성 패키지는 다른 효과 모듈과 마찬가지로 이 두 모듈을 import할 수 없다(`Q0703`). `std.time.monotonic_millis`는 `std.time`의 기존 허용 범위를 따른다.
+- **후속 단계(2b·2c)로 남긴 항목**: 명령줄 인자로 넘긴 임의 경로의 파일 읽기(`qxide run wc.qx -- file.txt`)는 2a 범위에 포함하지 않았다(`std.fs`는 기존처럼 `data/` 폴더 범위 안에 머문다). 문자열 `split`, 컬렉션, 비트 연산자, PRNG는 2b에서, 경로 처리·`std.fs` 확장·JSON은 2c에서 다룬다.
+
+```qx
+import std.io;
+
+int main(String[] args) {
+    int lines = 0;
+    boolean more = true;
+    while more {
+        match io.read_line() {
+            Some(line) => {
+                lines += 1;
+            }
+            None => {
+                more = false;
+            }
+        }
+    }
+    io.write_line("lines: " + lines);
+    return 0;
+}
+```
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0206` | `main` 함수가 없거나 허용된 네 가지 시그니처(`void main()`, `int main()`, `void main(String[] args)`, `int main(String[] args)`)가 아님 |
+| `Q0706` | `std` 인수 범위 초과(`sleep_millis`는 `0..60000`) 또는 `int main()`의 종료 코드가 `0..=255` 범위를 벗어남 |
