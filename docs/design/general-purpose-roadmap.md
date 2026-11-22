@@ -196,9 +196,18 @@
 
 ### Stage 3 — 실행 방식
 
-- 내용: 독립 실행 파일을 생성하는 `qxide build`(1차는 인터프리터 + 프로그램 번들링 방식임을 명시하고, 이후 고전 코드용 `cranelift-object` 기반 Cranelift AOT로 확장), 배열/수학에 대한 JIT 커버리지 확대, lowering 캐싱.
-- 완료 기준: `qxide build app.qx -o app.exe`로 생성한 프로그램이 `qxide` CLI 없이 실행된다.
-- 테스트 기준: Windows/Linux/macOS CI에서 빌드 및 실행 테스트.
+- **3a `qxide build` 번들 실행 파일**
+  - 내용: 실행 중인 `qxide` 바이너리 사본 끝에 검사 완료된 프로그램(소스, 패키지 정보, 실행 옵션, 32바이트 트레일러)을 덧붙여 단일 실행 파일을 생성하는 `qxide build` 구현(네이티브 컴파일이 아닌 인터프리터 번들 방식, `docs/design/qx-build.md`).
+  - 완료 기준: `qxide build app.qx -o app.exe`로 생성한 실행 파일이 `qxide` CLI, 원본 소스 파일, 패키지 캐시 없이 실행된다.
+  - 테스트 기준: CLI 통합 테스트(원본 소스를 삭제한 상태에서 다른 디렉터리에서 실행, 인자/표준 입력/종료 코드, 고정 `--seed`/`--shots`, 덮어쓰기 규칙, 손상된 파일 거부), 경로 의존성이 있는 패키지 빌드·실행 테스트, 페이로드 단위 테스트. Windows 로컬에서만 실행했으며 Linux/macOS CI는 추후 검증 대상이다.
+- **3b Cranelift AOT 네이티브 컴파일**
+  - 내용: 고전 코드를 Cranelift(`cranelift-object`)로 사전 컴파일하고 시스템 링커와 양자용 런타임 라이브러리를 링크해 네이티브 실행 파일을 생성한다(미착수).
+  - 완료 기준: 사전 컴파일된 고전 코드와 양자 런타임이 링크된 네이티브 실행 파일이 생성·실행된다.
+  - 테스트 기준: Windows/Linux/macOS CI에서 AOT 빌드·링크·실행 테스트 및 기존 엔진과의 결과 동등성 검증.
+- **3c JIT 커버리지 확대 및 lowering 캐싱**
+  - 내용: 배열·수학·문자열·구조체에 대한 JIT 컴파일 지원 확대와 lowering 결과 캐싱(미착수).
+  - 완료 기준: 확장된 고전 기능이 JIT에서 네이티브로 실행되며 `ast`/`ir`과 동일한 결과와 스텝 과금을 유지한다.
+  - 테스트 기준: dual-engine 동등성 테스트, 경계·오류 테스트 및 실측 벤치마크 비교.
 
 ### Stage 4 — 상호 운용
 
@@ -235,7 +244,8 @@
 | 2a | 완료 (커밋 `149994c`, 설계 문서 `qx-language.md` 19.9절) |
 | 2b | 완료 (커밋 `17143a1`, 설계 문서 `qx-language.md` 19.10절) |
 | 2c | 미착수 |
-| Stage 3 | 미착수 |
+| 3a | 완료 (설계 문서 `qx-build.md`, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
+| 3b~3c | 미착수 (Cranelift AOT, JIT 커버리지 확대·lowering 캐싱) |
 | Stage 4 | 미착수 |
 | Stage 5 | 미착수 |
 | Stage 6 | 미착수 |

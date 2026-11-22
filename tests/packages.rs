@@ -878,3 +878,43 @@ fn registry_text_is_printed_without_terminal_escapes() {
     assert_eq!(out.status.code(), Some(1), "{err}");
     assert!(err.contains("error[Q0609]"), "{err}");
 }
+
+// `qxide build` in a project bundles the dependencies' module files too: the executable runs
+// after the project and its path dependency are gone.
+#[test]
+fn build_bundles_package_dependencies() {
+    let env = Env::new("build");
+    let lib = env.lib("mathx", "0.1.0", "");
+    std::fs::write(
+        lib.join("src/lib.qx"),
+        "public int twice(int x) {\n    return 2 * x;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("src/extra.qx"),
+        "public int three() {\n    return 3;\n}\n",
+    )
+    .unwrap();
+    let main = "import mathx.twice;\nimport mathx.extra.three;\n\nvoid main() {\n    println(\"{}\", twice(three()));\n}\n";
+    let app = env.app("demo", main);
+    let m =
+        read(&app.join("qxide.toml")) + "\n[dependencies]\nmathx = { path = \"../mathx-0.1.0\" }\n";
+    std::fs::write(app.join("qxide.toml"), m).unwrap();
+    env.ok(&app, &["install"]);
+    assert_eq!(env.ok(&app, &["run"]), "6\n");
+    env.ok(&app, &["build"]);
+    // Named after the package, not `main`.
+    let exe = app.join(format!("demo{}", std::env::consts::EXE_SUFFIX));
+    let moved = env
+        .root
+        .join(format!("moved{}", std::env::consts::EXE_SUFFIX));
+    std::fs::rename(&exe, &moved).unwrap();
+    std::fs::remove_dir_all(&lib).unwrap();
+    std::fs::remove_dir_all(&app).unwrap();
+    let out = Command::new(&moved)
+        .current_dir(&env.root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "6\n");
+}

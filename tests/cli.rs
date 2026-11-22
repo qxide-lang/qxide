@@ -841,3 +841,168 @@ fn engine_values_are_checked() {
         assert!(String::from_utf8(jit.stderr).unwrap().contains("jit"));
     }
 }
+
+// Runs a bundled executable from `cwd` with `input` on stdin.
+fn run_exe(
+    exe: &std::path::Path,
+    cwd: &std::path::Path,
+    args: &[&str],
+    input: &str,
+) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(exe)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run bundled program");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn exe_name(stem: &str) -> String {
+    format!("{stem}{}", std::env::consts::EXE_SUFFIX)
+}
+
+// Stage 3a: `qxide build` writes one executable that runs the checked program with the options
+// fixed at build time and every command-line argument as `main`'s `args`, without the sources.
+#[test]
+fn build_writes_an_executable_that_runs_without_the_sources() {
+    let dir = fresh_dir("build_basic");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+    let src = "import std.io;\n\nint main(String[] args) {\n    println(\"deferred {}\", len(args));\n    String text = io.read_all();\n    io.write_line(\"read \" + text.trim());\n    for a in args {\n        io.write_line(a);\n    }\n    return 3;\n}\n";
+    let entry = dir.join("src/tool.qx");
+    std::fs::write(&entry, src).unwrap();
+    let entry_s = entry.to_str().unwrap();
+    for engine in ["ast", "ir"] {
+        let out_path = dir.join(format!("tool-{engine}"));
+        let built = |o: &str| qxide(&["build", entry_s, "-o", o, "--engine", engine]);
+        let out = built(out_path.to_str().unwrap());
+        assert!(out.status.success(), "{out:?}");
+        // `-o tool-ast` gets `.exe` on Windows.
+        let exe = dir.join(exe_name(&format!("tool-{engine}")));
+        assert!(exe.is_file(), "{}", exe.display());
+        // Building again replaces the earlier output.
+        assert!(built(exe.to_str().unwrap()).status.success());
+        let moved = dir.join("elsewhere").join(exe_name(&format!("t-{engine}")));
+        std::fs::rename(&exe, &moved).unwrap();
+        std::fs::rename(&entry, dir.join("src/gone.qx")).unwrap();
+        // `--` and flags that `qxide run` would take are ordinary arguments here.
+        let out = run_exe(
+            &moved,
+            &dir.join("elsewhere"),
+            &["--", "--shots", "x y"],
+            "hi\n",
+        );
+        std::fs::rename(dir.join("src/gone.qx"), &entry).unwrap();
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert!(out.stderr.is_empty(), "{out:?}");
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "read hi\n--\n--shots\nx y\ndeferred 3\n"
+        );
+    }
+    // Without `-o` the output is named after the file, in the current directory.
+    let out = Command::new(env!("CARGO_BIN_EXE_qxide"))
+        .args(["build", "src/tool.qx"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(dir.join(exe_name("tool")).is_file());
+}
+
+#[test]
+fn build_refuses_programs_with_errors_and_unsafe_outputs() {
+    let dir = fresh_dir("build_errors");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.qx");
+    std::fs::write(&bad, "void main() {\n    Qubit q = qubit();\n}\n").unwrap();
+    let out_path = dir.join(exe_name("bad"));
+    let out = qxide(&[
+        "build",
+        bad.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains("error[Q0302]"));
+    assert!(!out_path.exists());
+    // Never over a source file, a directory, or the input itself.
+    let good = dir.join("good.qx");
+    std::fs::write(&good, "void main() {\n    println(\"ok\");\n}\n").unwrap();
+    let good_s = good.to_str().unwrap();
+    for target in [bad.to_str().unwrap(), good_s, dir.to_str().unwrap()] {
+        let out = qxide(&["build", good_s, "-o", target]);
+        assert_eq!(out.status.code(), Some(1), "{target}");
+    }
+    assert!(std::fs::read_to_string(&bad).unwrap().contains("qubit()"));
+    // Usage errors exit with 2.
+    for args in [
+        vec!["build", good_s, "--backend", "ibm:x"],
+        vec!["build", good_s, "-o"],
+        vec!["build", good_s, "--engine", "dual"],
+    ] {
+        assert_eq!(qxide(&args).status.code(), Some(2), "{args:?}");
+    }
+}
+
+#[test]
+fn damaged_bundles_fail_cleanly() {
+    let dir = fresh_dir("build_damaged");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("seeded.qx");
+    let program =
+        "void main() {\n    Qubit q = qubit();\n    h(q);\n    println(\"{}\", measure(q));\n}\n";
+    std::fs::write(&src, program).unwrap();
+    let exe = dir.join(exe_name("seeded"));
+    let out = qxide(&[
+        "build",
+        src.to_str().unwrap(),
+        "-o",
+        exe.to_str().unwrap(),
+        "--seed",
+        "4",
+        "--shots",
+        "3",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    // `--seed` and `--shots` are fixed at build time: the output of `qxide run` with them.
+    let first = run_exe(&exe, &dir, &[], "");
+    assert!(first.status.success(), "{first:?}");
+    let run = qxide(&["run", src.to_str().unwrap(), "--seed", "4", "--shots", "3"]);
+    assert_eq!(first.stdout, run.stdout);
+    assert_eq!(run_exe(&exe, &dir, &[], "").stdout, first.stdout);
+    let bytes = std::fs::read(&exe).unwrap();
+    let n = bytes.len();
+    // A changed payload byte, or a payload cut short under an intact trailer.
+    let mut flipped = bytes.clone();
+    flipped[n - 40] ^= 1;
+    let mut cut = bytes[..n - 60].to_vec();
+    cut.extend_from_slice(&bytes[n - 32..]);
+    for (name, data) in [("flipped", flipped), ("cut", cut)] {
+        let path = dir.join(exe_name(name));
+        std::fs::write(&path, data).unwrap();
+        let out = run_exe(&path, &dir, &[], "");
+        assert_eq!(out.status.code(), Some(1), "{name}: {out:?}");
+        assert!(out.stdout.is_empty());
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(err.contains("cannot be loaded"), "{name}: {err}");
+    }
+    // Without its trailer the file is a plain `qxide` again.
+    let plain = dir.join(exe_name("plain"));
+    std::fs::write(&plain, &bytes[..n - 1]).unwrap();
+    let out = run_exe(&plain, &dir, &["--version"], "");
+    assert!(String::from_utf8(out.stdout).unwrap().starts_with("qxide "));
+}

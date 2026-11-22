@@ -68,6 +68,8 @@ Run the program with `qxide run`: a single shot prints the program's output, whi
 
 For command-line programs, anything after `--` is passed to `main(String[] args)` and an `int main()` return value sets the process exit code. In the CLI, `std.io` and `std.env` also provide standard input, immediate standard output, and environment variables, as in `qxide run examples/cli/wc.qx -- -w < notes.txt`.
 
+`qxide build` packages a `.qx` program or package project into a standalone executable (`qxide build examples/cli/wc.qx -o wc.exe`, then `wc.exe -f < notes.txt`), so the resulting binary runs without the `qxide` CLI, source files, or package cache. Rather than compiling ahead of time to native code, it bundles the checked sources, imported modules, and build-time options (`--engine`, `--shots`, `--seed`, `--allow fs`) onto a copy of the `qxide` binary. Every command-line argument passed to the built executable goes directly to `main(String[] args)` without `--`, and without `--seed` each run picks a fresh random seed without printing the seed line to `stderr`. Passing no file inside a project builds `src/main.qx` under the package name, and omitting `-o` writes the executable to the current directory (appending `.exe` on Windows when no extension is given).
+
 ```text
 $ qxide run examples/qx/bell.qx
 seed: 12059043656824605579 (pass --seed 12059043656824605579 to reproduce)

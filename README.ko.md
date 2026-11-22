@@ -118,6 +118,8 @@ c[1] = measure q[1];
 - `qxide explain <CODE>`: 영문 카탈로그 [docs/error-codes.md](docs/error-codes.md)에서 해당 오류 코드의 발생 원인, 잘못된 예시, 수정 방법을 찾아 출력합니다.
 - `qxide new <NAME>`: `NAME` 패키지 프로젝트를 만들고 `qxide.toml`(폴더 이름에서 생성한 패키지 이름, 버전 `0.1.0`, 필요한 `qxide` 버전), 벨 쌍 예제 `src/main.qx`, 짧은 `README.md`, `target/`을 무시하는 `.gitignore`를 생성합니다. 프로젝트 폴더 안에서는 파일 없이 `qxide run`을 실행하면 `src/main.qx`를 실행합니다.
 
+`qxide build`는 `.qx` 프로그램이나 패키지 프로젝트를 독립 실행 파일로 묶어 주므로(`qxide build examples/cli/wc.qx -o wc.exe` 후 `wc.exe -f < notes.txt`), 생성된 바이너리는 `qxide` CLI나 원본 소스 파일, 패키지 캐시 없이 실행할 수 있습니다. 네이티브 코드로 사전 컴파일하는 방식이 아니라, 검사를 통과한 소스와 임포트한 모듈, 빌드 시점 옵션(`--engine`, `--shots`, `--seed`, `--allow fs`)을 `qxide` 바이너리 사본 뒤에 함께 담습니다. 생성된 실행 파일에 전달한 명령줄 인자는 `--` 없이 그대로 `main(String[] args)`로 넘어가며, `--seed`를 지정하지 않은 경우 매 실행마다 새 무작위 시드를 쓰되 `stderr`에 시드 줄을 출력하지 않습니다. 프로젝트 안에서 파일 경로를 생략하면 패키지 이름으로 `src/main.qx`를 빌드하며, `-o`를 생략하면 현재 디렉터리에 실행 파일을 생성합니다(Windows에서는 확장자가 없으면 `.exe`를 붙입니다).
+
 언어 사양과 문법의 자세한 내용은 [docs/design/qx-language.md](docs/design/qx-language.md)에서 확인할 수 있습니다.
 
 ## 지금 지원하는 것

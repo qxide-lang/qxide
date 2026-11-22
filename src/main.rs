@@ -4,13 +4,14 @@
 //! can be installed as a standalone tool (cargo-dist installers, PyPI wheel).
 
 mod app;
+mod bundle;
 mod lang;
 mod lsp;
 mod pkg;
 mod qpu;
 
 use qxide::{Backend, Circuit};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,6 +31,8 @@ Commands:
                                      {}
   check [FILE]                       Check a .qx program for errors without running it
   qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
+  build [FILE] [-o OUT] [--engine E] [--shots N] [--seed S] [--allow fs]
+                                     {}
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
   repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
@@ -44,6 +47,7 @@ Options:
 ",
         BACKEND_HELP,
         BACKEND_FLAGS_HELP,
+        BUILD_HELP,
         LSP_HELP,
         pkg::cli::usage(),
         app::usage(),
@@ -55,6 +59,8 @@ const BACKEND_HELP: &str =
     "Run a .qx program on an IBM quantum computer (prompts before submitting; uses QPU time)";
 
 const BACKEND_FLAGS_HELP: &str = "--dry-run (preview), --yes (no prompt), --max-seconds S (QPU cap, default 120), --device-config FILE (dry-run)";
+
+const BUILD_HELP: &str = "Package a .qx program into a standalone executable";
 
 const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
 
@@ -550,7 +556,280 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     }
 }
 
+// `qxide build`: checks the program, then writes this executable with the program appended
+// (src/bundle.rs). The bundle keeps every module file the linker read, so the output needs
+// neither the sources nor the package cache at run time.
+fn build_command(args: &[String]) -> ExitCode {
+    let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
+    let (mut engine, mut out) = (None, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let parsed = match arg.as_str() {
+            "-o" | "--output" => parse_value(arg, rest.next()).map(|v| out = Some(v)),
+            "--engine" => {
+                parse_engine(arg, rest.next().map(String::as_str)).map(|e| engine = Some(e))
+            }
+            "--shots" => parse_count(arg, rest.next(), 1).map(|n| shots = n),
+            "--seed" => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
+            "--allow" => parse_allow(rest.next()).map(|()| allow_fs = true),
+            p if file.is_none() && !p.starts_with('-') => {
+                file = Some(p.to_string());
+                Ok(())
+            }
+            _ => {
+                eprintln!("qxide: unexpected argument `{arg}` for `build`");
+                Err(ExitCode::from(2))
+            }
+        };
+        if let Err(code) = parsed {
+            return code;
+        }
+    }
+    let engine = match engine.map_or_else(default_engine, Ok) {
+        Ok(lang::Engine::Dual) => {
+            eprintln!("qxide: invalid value `dual` for --engine (expected `ast`, `ir`, or `jit`)");
+            return ExitCode::from(2);
+        }
+        Ok(e) => e,
+        Err(code) => return code,
+    };
+    let path = match file {
+        Some(p) => p,
+        None => match pkg::project::default_entry() {
+            Ok(p) => p.display().to_string(),
+            Err(_) => {
+                eprintln!("qxide: command `build` requires a .qx file path");
+                eprint!("{}", usage());
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let src = match read_source(&path) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let project = match pkg::project::for_entry(Path::new(&path)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprint!("{}", e.render());
+            return ExitCode::from(1);
+        }
+    };
+    if project.as_ref().is_some_and(|p| p.entry_module.is_some()) {
+        eprintln!("qxide: `{path}` is a library module with no `main`; pass the program's entry file instead (e.g. `src/main.qx`)");
+        return ExitCode::from(1);
+    }
+    // The name as given is checked too: `-o some_dir` must not become `some_dir.exe`.
+    let given = PathBuf::from(out.unwrap_or_else(|| default_output(&path)));
+    let out = with_exe_suffix(given.clone());
+    let entry = Path::new(&path);
+    if let Err(e) = check_output(&given, entry).and_then(|()| check_output(&out, entry)) {
+        eprintln!("qxide: {e}");
+        return ExitCode::from(1);
+    }
+    let (name, text, proj) = (path.clone(), src.clone(), project.clone());
+    let checked = on_lang_stack(move || {
+        let files = std::cell::RefCell::new(Vec::new());
+        let read = |p: &Path| {
+            let r = lang::read_file(p);
+            if let Ok(t) = &r {
+                files.borrow_mut().push((p.to_path_buf(), t.clone()));
+            }
+            r
+        };
+        let input = lang::Input {
+            name: &name,
+            src: &text,
+            project: proj.as_ref(),
+            read: &read,
+            perms: lang::stdlib::Permissions::cli(allow_fs),
+        };
+        let checked = lang::check_input(&input);
+        checked.map(|()| files.into_inner())
+    });
+    let files = match checked {
+        Some(Ok(f)) => f,
+        Some(Err(lang::Failure(diags))) => {
+            eprint!("{diags}");
+            return ExitCode::from(1);
+        }
+        None => return ExitCode::from(101),
+    };
+    let mut bundled = Vec::with_capacity(files.len());
+    for (p, t) in files {
+        match p.to_str() {
+            Some(s) => bundled.push((s.to_string(), t)),
+            None => {
+                eprintln!("qxide: path `{}` is not valid UTF-8", p.display());
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let b = bundle::Bundle {
+        version: VERSION.to_string(),
+        name: path,
+        src,
+        engine: engine.name().to_string(),
+        shots,
+        seed,
+        allow_fs,
+        project,
+        files: bundled,
+    };
+    match write_bundle(&b, &out) {
+        Ok(()) => {
+            let shown = out.display();
+            eprintln!("Wrote executable to `{shown}`");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("qxide: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+// `app.qx` -> `app`; a project's `src/main.qx` -> the package name.
+fn default_output(entry: &str) -> String {
+    let p = Path::new(entry);
+    let stem = p
+        .file_stem()
+        .map_or_else(|| "app".to_string(), |s| s.to_string_lossy().into_owned());
+    if stem == "main" {
+        let dir = p.parent().unwrap_or(Path::new("."));
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+        if let Some(m) = pkg::manifest::find(&dir).and_then(|d| pkg::manifest::load(&d).ok()) {
+            return m.name;
+        }
+    }
+    stem
+}
+
+// Windows runs only files with an executable extension: `-o app` becomes `app.exe` there.
+fn with_exe_suffix(out: PathBuf) -> PathBuf {
+    if cfg!(windows) && out.extension().is_none() {
+        out.with_extension("exe")
+    } else {
+        out
+    }
+}
+
+// The output may replace an earlier build, but never a source file, a directory or this binary.
+fn check_output(out: &Path, entry: &Path) -> Result<(), String> {
+    let shown = out.display();
+    if out.is_dir() {
+        return Err(format!("output path `{shown}` is a directory"));
+    }
+    if out.extension().is_some_and(|e| e == "qx") {
+        return Err(format!("refusing to write an executable to `.qx` path `{shown}`; pass `-o` with an executable name"));
+    }
+    let same = |a: &Path, b: &Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    };
+    if same(out, entry) || std::env::current_exe().is_ok_and(|exe| same(out, &exe)) {
+        return Err(format!(
+            "refusing to overwrite `{shown}`; choose a different output path with `-o`"
+        ));
+    }
+    Ok(())
+}
+
+// Copies this executable next to the output, appends the bundle, then renames it into place, so
+// a failed build never leaves a half-written program behind.
+fn write_bundle(b: &bundle::Bundle, out: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("cannot locate the qxide executable: {e}"))?;
+    let payload = b.encode()?;
+    let file_name = out
+        .file_name()
+        .map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());
+    let tmp = out.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    let fail = |what: &str, e: std::io::Error| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("failed to {what} `{}`: {e}", out.display())
+    };
+    std::fs::copy(&exe, &tmp).map_err(|e| fail("write", e))?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(&payload).and_then(|()| f.sync_all()))
+        .map_err(|e| fail("write", e))?;
+    std::fs::rename(&tmp, out).map_err(|e| fail("replace", e))
+}
+
+// A bundled executable: runs its program like `qxide run` with the options fixed at build time.
+// Every command-line argument goes to `main(String[] args)`; without `--seed` at build time each
+// run draws a fresh seed and, unlike `qxide run`, does not print it.
+fn run_bundle(b: bundle::Bundle) -> ExitCode {
+    if b.version != VERSION {
+        eprintln!(
+            "qxide: this program was bundled by qxide {} but carries the qxide {VERSION} runtime; rebuild it with `qxide build`",
+            b.version
+        );
+        return ExitCode::from(1);
+    }
+    let Some(engine) = lang::Engine::parse(&b.engine).filter(|e| *e != lang::Engine::Dual) else {
+        eprintln!(
+            "qxide: this program needs the `{}` engine, which its runtime does not have; rebuild it with `qxide build`",
+            b.engine
+        );
+        return ExitCode::from(1);
+    };
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let seed = b.seed.unwrap_or_else(random_seed);
+    let result = on_lang_stack(move || {
+        lang::set_engine(engine);
+        let files: std::collections::HashMap<PathBuf, String> = b
+            .files
+            .into_iter()
+            .map(|(p, t)| (PathBuf::from(p), t))
+            .collect();
+        // Only the files read while building exist: the bundle never reads module sources.
+        let read = |p: &Path| {
+            files.get(p).cloned().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "not in the bundle")
+            })
+        };
+        let input = lang::Input {
+            name: &b.name,
+            src: &b.src,
+            project: b.project.as_ref(),
+            read: &read,
+            perms: lang::stdlib::Permissions::cli(b.allow_fs),
+        };
+        // `std.fs` of a bundle built with `--allow fs` uses `data/` in the current directory.
+        let mut host = lang::cli_host(PathBuf::from("data"));
+        host.args = args;
+        lang::run_input_report(&input, b.shots, seed, &mut host).map(|r| (r.text, r.exit_code))
+    });
+    match result {
+        Some(Ok((out, code))) => {
+            print!("{out}");
+            ExitCode::from(code)
+        }
+        Some(Err(lang::Failure(diags))) => {
+            eprint!("{diags}");
+            ExitCode::from(1)
+        }
+        None => ExitCode::from(101),
+    }
+}
+
 fn main() -> ExitCode {
+    // A bundled program (`qxide build`) runs instead of the command-line interface.
+    match bundle::current() {
+        Ok(Some(b)) => return run_bundle(b),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("qxide: the program bundled into this executable cannot be loaded ({e}); the file may be truncated or modified, so rebuild it with `qxide build`");
+            return ExitCode::from(1);
+        }
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some(flag @ ("--version" | "-V" | "--help" | "-h")) if args.len() > 1 => {
@@ -560,6 +839,7 @@ fn main() -> ExitCode {
         Some("--version" | "-V") => println!("qxide {VERSION}"),
         Some("--help" | "-h") | None => print!("{}", usage()),
         Some(cmd @ ("run" | "check" | "qasm")) => return lang_command(cmd, &args[1..]),
+        Some("build") => return build_command(&args[1..]),
         Some("fmt") => return fmt_command(&args[1..]),
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),
