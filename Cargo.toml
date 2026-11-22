@@ -39,6 +39,10 @@ jit = [
     "dep:cranelift-native",
 ]
 
+# `extern` declarations and `--allow ffi`: calls into native C libraries (src/lang/ffi.rs). Native
+# code runs outside qxide's checks and limits, so it is off by default.
+ffi = []
+
 [dependencies]
 cranelift-codegen = { version = "0.138", optional = true }
 cranelift-frontend = { version = "0.138", optional = true }

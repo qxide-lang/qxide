@@ -1,0 +1,16 @@
+// Calls C library functions through `extern` declarations. Native code runs outside qxide's
+// checks, so this needs a qxide built with `--features ffi` and the `--allow ffi` flag:
+//
+//     qxide run --allow ffi examples/cli/ffi.qx
+//
+// `ucrtbase` is the C runtime of Windows; on Linux use "libm.so.6" (and "libc.so.6" for
+// `llabs`), on macOS "libSystem.B.dylib".
+extern "ucrtbase" double cbrt(double x);
+extern "ucrtbase" double ldexp(double x, int e);
+extern "ucrtbase" int llabs(int n);
+
+void main() {
+    for i in 0..4 {
+        println("{} {} {}", cbrt(i * i * i), ldexp(0.5, i), llabs(-i));
+    }
+}

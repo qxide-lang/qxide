@@ -1006,3 +1006,58 @@ fn damaged_bundles_fail_cleanly() {
     let out = run_exe(&plain, &dir, &["--version"], "");
     assert!(String::from_utf8(out.stdout).unwrap().starts_with("qxide "));
 }
+
+// Stage 4a: `extern` functions need `--allow ffi`, and a build with the `ffi` feature.
+#[test]
+fn extern_functions_need_allow_ffi() {
+    let dir = fresh_dir("ffi_flags");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = if cfg!(windows) {
+        "ucrtbase"
+    } else if cfg!(target_os = "macos") {
+        "libSystem.B.dylib"
+    } else {
+        "libm.so.6"
+    };
+    let src = format!(
+        "extern \"{lib}\" double cos(double x);\n\nint main(String[] args) {{\n    println(\"{{}} {{}}\", cos(0.0), len(args));\n    return 4;\n}}\n"
+    );
+    let file = dir.join("native.qx");
+    std::fs::write(&file, src).unwrap();
+    let f = file.to_str().unwrap();
+    // Refused before anything is loaded.
+    let out = qxide(&["run", f]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    if !cfg!(feature = "ffi") {
+        assert!(err.contains("error[Q0702]"), "{err}");
+        let out = qxide(&["run", "--allow", "ffi", f]);
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("`ffi` feature"));
+        return;
+    }
+    assert!(
+        err.contains("error[Q0703]") && err.contains("--allow ffi"),
+        "{err}"
+    );
+    let out = qxide(&["check", f]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(qxide(&["check", "--allow", "ffi", f]).status.success());
+    for engine in ["ast", "ir"] {
+        let out = qxide(&["run", "--allow", "ffi", "--engine", engine, f, "--", "a"]);
+        assert_eq!(out.status.code(), Some(4), "{out:?}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "1.0 1\n");
+    }
+    // A bundle keeps the permission it was built with.
+    let exe = dir.join(exe_name("native"));
+    let out = qxide(&["build", f, "-o", exe.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(!exe.exists());
+    let out = qxide(&["build", f, "--allow", "ffi", "-o", exe.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    let out = run_exe(&exe, &dir, &["x", "y"], "");
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "1.0 2\n");
+}

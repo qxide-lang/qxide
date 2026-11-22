@@ -10,6 +10,7 @@ pub mod command;
 mod diag;
 mod engine;
 mod explain;
+mod ffi;
 mod fmt;
 pub mod ide;
 mod interp;
@@ -191,6 +192,9 @@ fn build(src: &str) -> Result<(ast::Program, Elaborated), Vec<Diagnostic>> {
     )
     .1
 }
+
+/// Whether this build can call native functions (`extern`, `--allow ffi`).
+pub const FFI_SUPPORTED: bool = ffi::SUPPORTED;
 
 /// The `qxide run` host: `std.log` to stderr, `std.fs` under `data_root`.
 pub fn cli_host(data_root: std::path::PathBuf) -> stdlib::NativeStd {

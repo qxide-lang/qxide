@@ -100,6 +100,10 @@ pub fn link(
     };
     // Single-file programs without imports take the old path unchanged.
     if program.imports.is_empty() {
+        let errors = extern_errors(&program, perms, true);
+        if !errors.is_empty() {
+            return (l.map, Err(errors));
+        }
         let mut program = program;
         add_prelude(&mut l.map, &mut program);
         program.lift_methods();
@@ -111,6 +115,12 @@ pub fn link(
         l.by_key.insert((p.entry_package, path), 0);
     }
     l.dfs(0);
+    for (m, module) in l.modules.iter().enumerate() {
+        if module.pkg != Some(STD_PKG) {
+            l.errors
+                .extend(extern_errors(&module.program, perms, m == 0));
+        }
+    }
     if l.errors.is_empty() {
         l.resolve_names();
     }
@@ -150,6 +160,67 @@ pub fn link(
     add_prelude(&mut l.map, &mut program);
     program.lift_methods();
     (l.map, Ok(program))
+}
+
+// `extern` declarations (src/lang/ffi.rs) of one module: their types, then where they may appear
+// and whether this host and the user allow native code. Nothing is loaded here.
+fn extern_errors(p: &Program, perms: &Permissions, entry: bool) -> Vec<Diagnostic> {
+    use super::ffi::{Kind, MAX_PARAMS, PREFIX};
+    let mut errors = Vec::new();
+    for f in p.fns.iter().filter(|f| f.name.name.starts_with(PREFIX)) {
+        let before = errors.len();
+        for prm in &f.params {
+            if Kind::of(prm.ty, false).is_none() {
+                errors.push(Diagnostic::new(
+                    Code::BadExtern,
+                    prm.ty_span,
+                    msg::bad_extern_type(prm.ty.name()),
+                ));
+            }
+        }
+        if Kind::of(f.ret, true).is_none() {
+            errors.push(Diagnostic::new(
+                Code::BadExtern,
+                f.ret_span,
+                msg::bad_extern_type(f.ret.name()),
+            ));
+        }
+        if f.params.len() > MAX_PARAMS {
+            errors.push(Diagnostic::new(
+                Code::BadExtern,
+                f.params[MAX_PARAMS].ty_span,
+                msg::extern_too_many(MAX_PARAMS),
+            ));
+        }
+        if errors.len() > before {
+            continue;
+        }
+        let denied = if !entry {
+            Some((
+                Code::StdDenied,
+                msg::ffi_not_entry(),
+                msg::help_ffi_not_entry(),
+            ))
+        } else {
+            match perms.ffi() {
+                Access::Allowed => None,
+                Access::Unavailable(host) => Some((
+                    Code::StdUnavailable,
+                    msg::ffi_unavailable(host),
+                    msg::help_ffi_unavailable(),
+                )),
+                Access::Denied(how) => Some((
+                    Code::StdDenied,
+                    msg::ffi_denied(how),
+                    msg::help_ffi_denied(),
+                )),
+            }
+        };
+        if let Some((code, m, help)) = denied {
+            errors.push(Diagnostic::new(code, f.name.span, m).with_help(help));
+        }
+    }
+    errors
 }
 
 // Adds the prelude types the program's files mention (`try_parse_int` returns a `Result`) and do

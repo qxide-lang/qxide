@@ -64,6 +64,7 @@ fn std_error(e: StdError, span: Span) -> Diagnostic {
         StdErrorKind::Http => Code::StdHttp,
         StdErrorKind::Url => Code::StdUrl,
         StdErrorKind::Cancelled => Code::Cancelled,
+        StdErrorKind::Ffi => Code::Ffi,
     };
     Diagnostic::new(code, span, e.message)
 }

@@ -1105,6 +1105,22 @@ void main() {
 }
 ```
 
+## Q0233: invalid `extern` declaration
+
+An `extern` declaration (`extern "lib" double cos(double x);`) names a C function in a native library. Its parameters may only be `int` (passed as a C `int64_t`) or `double`, its result `int`, `double` or `void`, and it may have at most 6 parameters, because these values travel in machine registers on every supported platform and need no conversion. Strings, arrays, structs, qubits, pointers and callbacks cannot cross into native code. The types are checked before the permission, so this error is reported whether or not `--allow ffi` was given.
+
+Erroneous code example:
+
+```java
+extern "m" double length(String text);  // error[Q0233]
+```
+
+To fix it, declare the function with `int` and `double` values only.
+
+```java
+extern "m" double pow(double x, double y);
+```
+
 ## Q0301: use of a consumed qubit
 
 A `Qubit` was used after it had already been consumed by being measured, discarded, or moved. In `.qx`, qubits have linear types checked at compile time, so once a qubit is consumed it is no longer available for further operations. This prevents a program from applying gates or other operations to a qubit whose quantum state has already been measured, discarded, or transferred.
@@ -2655,4 +2671,20 @@ To fix it, request fewer shots, return less data (for example a summary computed
 
 ```js
 await qxide.invoke("noise", {}, { shots: 1000 });
+```
+
+## Q0717: native library or function not found
+
+A call of an `extern` function could not load the library it names or find the function in it. The library is loaded at the first call, when the program runs with `--allow ffi` in a `qxide` built with the `ffi` feature. A bare name is turned into the platform's file name (`m` is `m.dll` on Windows, `libm.so` on Linux and `libm.dylib` on macOS) and searched only in the system directories; on Windows the current directory and `PATH` are not searched, so a library that ships with your program needs a path. A name with an extension (`libm.so.6`) or a path is used as written.
+
+Erroneous code example:
+
+```java
+extern "ucrtbase" double cosine(double x);  // error[Q0717] at the first call: no function `cosine`
+```
+
+To fix it, check the library name and the exact name the library exports.
+
+```java
+extern "ucrtbase" double cos(double x);
 ```

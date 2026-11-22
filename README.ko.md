@@ -120,6 +120,8 @@ c[1] = measure q[1];
 
 `qxide build`는 `.qx` 프로그램이나 패키지 프로젝트를 독립 실행 파일로 묶어 주므로(`qxide build examples/cli/wc.qx -o wc.exe` 후 `wc.exe -f < notes.txt`), 생성된 바이너리는 `qxide` CLI나 원본 소스 파일, 패키지 캐시 없이 실행할 수 있습니다. 네이티브 코드로 사전 컴파일하는 방식이 아니라, 검사를 통과한 소스와 임포트한 모듈, 빌드 시점 옵션(`--engine`, `--shots`, `--seed`, `--allow fs`)을 `qxide` 바이너리 사본 뒤에 함께 담습니다. 생성된 실행 파일에 전달한 명령줄 인자는 `--` 없이 그대로 `main(String[] args)`로 넘어가며, `--seed`를 지정하지 않은 경우 매 실행마다 새 무작위 시드를 쓰되 `stderr`에 시드 줄을 출력하지 않습니다. 프로젝트 안에서 파일 경로를 생략하면 패키지 이름으로 `src/main.qx`를 빌드하며, `-o`를 생략하면 현재 디렉터리에 실행 파일을 생성합니다(Windows에서는 확장자가 없으면 `.exe`를 붙입니다).
 
+`--features ffi`로 빌드한 `qxide`에서는 최상위 `extern` 선언으로 공유 라이브러리의 C 함수를 호출할 수 있습니다(`extern "m" double cos(double x);`, `int`와 `double` 값만 지원, [examples/cli/ffi.qx](examples/cli/ffi.qx) 참고). 네이티브 코드는 qxide의 검사와 스텝 한도 밖에서 실행되므로 `qxide run`·`check`·`build`에 `--allow ffi`가 필요하고, `extern` 선언은 진입 파일에만 둘 수 있으며, 플레이그라운드·Studio·REPL·데스크톱 앱에서는 쓸 수 없습니다.
+
 언어 사양과 문법의 자세한 내용은 [docs/design/qx-language.md](docs/design/qx-language.md)에서 확인할 수 있습니다.
 
 ## 지금 지원하는 것

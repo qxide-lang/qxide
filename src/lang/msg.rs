@@ -501,6 +501,8 @@ pub fn help(code: Code) -> Option<String> {
         Code::Cancelled => "the run was stopped by the page or because the window closed, so you can simply start it again".into(),
         Code::BadCommand => "mark the function `public` and use only `int`, `double`, `boolean`, or `String` parameters".into(),
         Code::BadAppConfig => "see the `[app]` section reference in `docs/design/qx-app.md`".into(),
+        Code::BadExtern => "declare native functions with `int` and `double` parameters only, such as `extern \"m\" double pow(double x, double y);`".into(),
+        Code::Ffi => "check the library name and that it exports the function; a bare name is searched only in the system directories, so give a path for any other library".into(),
         _ => return None,
     })
 }
@@ -684,6 +686,53 @@ pub fn std_denied(module: &str, how: &str) -> String {
 
 pub fn std_dependency_denied(module: &str, package: &str) -> String {
     format!("dependency package `{package}` cannot import `std.{module}`; dependencies may only import `std.log`")
+}
+
+// Native calls (`extern`, src/lang/ffi.rs). Native code runs outside qxide's checks, so these
+// messages say how to grant it rather than suggest it.
+pub fn ffi_unavailable(host: &str) -> String {
+    format!("native functions (`extern`) are not available in {host}")
+}
+
+pub fn ffi_denied(how: &str) -> String {
+    format!("`extern` functions run native code outside qxide's safety checks and limits, so they need permission; grant it with {how}")
+}
+
+pub fn ffi_not_entry() -> String {
+    "`extern` functions can only be declared in a program's entry file; imported modules and dependency packages cannot load native libraries".into()
+}
+
+pub fn help_ffi_denied() -> String {
+    "grant it only to programs you trust: native code can read and change anything this process can, and the step limit does not apply to it".into()
+}
+
+pub fn help_ffi_unavailable() -> String {
+    "native functions only run from the `qxide` command line, in a build with the `ffi` feature"
+        .into()
+}
+
+pub fn help_ffi_not_entry() -> String {
+    "declare the `extern` function in the program's entry file and pass the values it returns to the module".into()
+}
+
+pub fn bad_extern_type(ty: &str) -> String {
+    format!("`extern` functions take and return only `int` (C `int64_t`) and `double`, or return `void`; found `{ty}`")
+}
+
+pub fn extern_too_many(max: usize) -> String {
+    format!("`extern` functions can have at most {max} parameters")
+}
+
+pub fn ffi_bad_stub(f: &str) -> String {
+    format!("invalid native function signature `{f}`")
+}
+
+pub fn ffi_load(file: &str, err: &str) -> String {
+    format!("cannot load native library `{file}`: {}", err.trim_end())
+}
+
+pub fn ffi_symbol(file: &str, sym: &str) -> String {
+    format!("native library `{file}` has no function `{sym}`")
 }
 
 pub fn std_sleep_range(ms: i64, max: i64) -> String {

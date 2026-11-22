@@ -30,6 +30,8 @@ pub struct Bundle {
     pub shots: u64,
     pub seed: Option<u64>,
     pub allow_fs: bool,
+    /// `--allow ffi`: the program may call native functions (`extern`).
+    pub allow_ffi: bool,
     pub project: Option<Project>,
     /// Every module file the linker read while checking, by the path it asked for.
     pub files: Vec<(String, String)>,
@@ -152,7 +154,8 @@ impl Bundle {
             }
             None => w.u8(0),
         }
-        w.u8(u8::from(self.allow_fs));
+        // Permission bits: 1 = `--allow fs`, 2 = `--allow ffi`.
+        w.u8(u8::from(self.allow_fs) | (u8::from(self.allow_ffi) << 1));
         match &self.project {
             None => w.u8(0),
             Some(p) => {
@@ -214,7 +217,11 @@ impl Bundle {
         let engine = r.str()?;
         let shots = r.u64()?;
         let seed = if r.flag()? { Some(r.u64()?) } else { None };
-        let allow_fs = r.flag()?;
+        let perms = r.u8()?;
+        if perms > 3 {
+            return Err(DAMAGED.into());
+        }
+        let (allow_fs, allow_ffi) = (perms & 1 != 0, perms & 2 != 0);
         let project = if r.flag()? {
             let n = r.count(12)?;
             let mut packages = Vec::with_capacity(n);
@@ -274,6 +281,7 @@ impl Bundle {
             shots,
             seed,
             allow_fs,
+            allow_ffi,
             project,
             files,
         })
@@ -346,6 +354,7 @@ mod tests {
             shots: 3,
             seed: Some(7),
             allow_fs: true,
+            allow_ffi: true,
             project: Some(Project {
                 packages: vec![
                     PackageRoot {

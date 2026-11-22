@@ -31,7 +31,7 @@ Commands:
                                      {}
   check [FILE]                       Check a .qx program for errors without running it
   qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
-  build [FILE] [-o OUT] [--engine E] [--shots N] [--seed S] [--allow fs]
+  build [FILE] [-o OUT] [--engine E] [--shots N] [--seed S] [--allow fs|ffi]
                                      {}
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
   repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
@@ -368,13 +368,26 @@ fn explain_command(args: &[String]) -> ExitCode {
     }
 }
 
-// `--allow fs`: the only permission `qxide run` can grant (`std.log` and `std.time` need none).
-fn parse_allow(value: Option<&String>) -> Result<(), ExitCode> {
+// `--allow fs` (`std.fs` under `data/`) and `--allow ffi` (`extern` functions: native code
+// outside qxide's checks, only in builds with the `ffi` feature). `std.log` and `std.time` need
+// no permission.
+fn parse_allow(value: Option<&String>, fs: &mut bool, ffi: &mut bool) -> Result<(), ExitCode> {
     match value.map(String::as_str) {
-        Some("fs") => Ok(()),
+        Some("fs") => {
+            *fs = true;
+            Ok(())
+        }
+        Some("ffi") if lang::FFI_SUPPORTED => {
+            *ffi = true;
+            Ok(())
+        }
+        Some("ffi") => {
+            eprintln!("qxide: --allow ffi needs a qxide built with the `ffi` feature (Windows x86-64, or Linux or macOS on x86-64 or AArch64)");
+            Err(ExitCode::from(2))
+        }
         other => {
             eprintln!(
-                "qxide: invalid value `{}` for --allow (expected `fs`)",
+                "qxide: invalid value `{}` for --allow (expected `fs` or `ffi`)",
                 other.unwrap_or_default()
             );
             Err(ExitCode::from(2))
@@ -391,6 +404,7 @@ fn project_data_dir(entry: &std::path::Path) -> std::path::PathBuf {
 fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     // Flags may come before or after the file (`run --shots 9 a.qx` or `run a.qx --shots 9`).
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
+    let mut allow_ffi = false;
     let mut engine = None;
     // `run --backend PROVIDER:DEVICE` (src/qpu): a quantum computer service instead of the simulator.
     let (mut backend, mut dry_run, mut yes) = (None, false, false);
@@ -409,7 +423,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             }
             ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             ("run", "--seed") => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
-            ("run" | "check", "--allow") => parse_allow(rest.next()).map(|()| allow_fs = true),
+            ("run" | "check", "--allow") => parse_allow(rest.next(), &mut allow_fs, &mut allow_ffi),
             ("run", "--backend") => parse_value(arg, rest.next()).map(|v| backend = Some(v)),
             ("run", "--dry-run") => {
                 dry_run = true;
@@ -445,7 +459,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
         max_seconds,
         device_config.is_some(),
         seed.is_some(),
-        allow_fs,
+        allow_fs || allow_ffi,
     )
     .and_then(|()| {
         backend
@@ -511,7 +525,9 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                 src: &src,
                 project: project.as_ref(),
                 read: &lang::read_file,
-                perms: app_perms.unwrap_or_else(|| lang::stdlib::Permissions::cli(allow_fs)),
+                perms: app_perms.unwrap_or_else(|| {
+                    lang::stdlib::Permissions::cli(allow_fs).with_ffi(allow_ffi)
+                }),
             };
             match cmd.as_str() {
                 "check" => lang::check_input(&input).map(|()| {
@@ -533,6 +549,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                 _ => {
                     let mut host = lang::cli_host(data_root);
                     host.args = program_args;
+                    host.ffi.enabled = allow_ffi;
                     lang::run_input_report(&input, shots, seed, &mut host)
                         .map(|r| (r.text, r.simulated, r.exit_code))
                 }
@@ -561,6 +578,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
 // neither the sources nor the package cache at run time.
 fn build_command(args: &[String]) -> ExitCode {
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
+    let mut allow_ffi = false;
     let (mut engine, mut out) = (None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -571,7 +589,7 @@ fn build_command(args: &[String]) -> ExitCode {
             }
             "--shots" => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             "--seed" => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
-            "--allow" => parse_allow(rest.next()).map(|()| allow_fs = true),
+            "--allow" => parse_allow(rest.next(), &mut allow_fs, &mut allow_ffi),
             p if file.is_none() && !p.starts_with('-') => {
                 file = Some(p.to_string());
                 Ok(())
@@ -642,7 +660,7 @@ fn build_command(args: &[String]) -> ExitCode {
             src: &text,
             project: proj.as_ref(),
             read: &read,
-            perms: lang::stdlib::Permissions::cli(allow_fs),
+            perms: lang::stdlib::Permissions::cli(allow_fs).with_ffi(allow_ffi),
         };
         let checked = lang::check_input(&input);
         checked.map(|()| files.into_inner())
@@ -673,6 +691,7 @@ fn build_command(args: &[String]) -> ExitCode {
         shots,
         seed,
         allow_fs,
+        allow_ffi,
         project,
         files: bundled,
     };
@@ -800,11 +819,12 @@ fn run_bundle(b: bundle::Bundle) -> ExitCode {
             src: &b.src,
             project: b.project.as_ref(),
             read: &read,
-            perms: lang::stdlib::Permissions::cli(b.allow_fs),
+            perms: lang::stdlib::Permissions::cli(b.allow_fs).with_ffi(b.allow_ffi),
         };
         // `std.fs` of a bundle built with `--allow fs` uses `data/` in the current directory.
         let mut host = lang::cli_host(PathBuf::from("data"));
         host.args = args;
+        host.ffi.enabled = b.allow_ffi;
         lang::run_input_report(&input, b.shots, seed, &mut host).map(|r| (r.text, r.exit_code))
     });
     match result {

@@ -84,6 +84,7 @@ codes! {
     TypeArgs => "Q0230",
     BadTry => "Q0231",
     Interface => "Q0232",
+    BadExtern => "Q0233",
     UseAfterConsume => "Q0301",
     NeverConsumed => "Q0302",
     DuplicateQubit => "Q0303",
@@ -142,6 +143,7 @@ codes! {
     BadCommand => "Q0714",
     BadAppConfig => "Q0715",
     ResultTooLarge => "Q0716",
+    Ffi => "Q0717",
 }
 
 #[derive(Debug, Clone)]

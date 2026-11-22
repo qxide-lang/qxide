@@ -744,3 +744,112 @@ fn studio_qasm_uses_the_app_output_limit() {
         &json[..json.len().min(400)]
     );
 }
+
+// `extern` declarations (src/lang/ffi.rs): only the CLI with `--allow ffi` in a build that can
+// call native code; every other host refuses them before anything is loaded.
+#[test]
+fn extern_permissions_per_host() {
+    let src =
+        "extern \"m\" double cos(double x);\n\nvoid main() {\n    println(\"{}\", cos(0.0));\n}\n";
+    let denied = if super::FFI_SUPPORTED {
+        "Q0703"
+    } else {
+        "Q0702"
+    };
+    assert_eq!(err_codes(src, Permissions::cli(true)), [denied]);
+    assert_eq!(err_codes(src, Permissions::playground()), ["Q0702"]);
+    assert_eq!(err_codes(src, Permissions::repl()), ["Q0702"]);
+    assert_eq!(err_codes(src, Permissions::app(&["ffi".into()])), ["Q0702"]);
+    assert!(!Permissions::known("ffi"));
+    // Granted by the checker, but this host (`LogOnly`) has no native calls: refused at the call,
+    // and nothing is loaded. Without the feature the checker refuses it already.
+    assert_eq!(
+        err_codes(src, Permissions::cli(false).with_ffi(true)),
+        ["Q0702"]
+    );
+    // Types are checked first, whatever the permission.
+    let bad = "extern \"m\" String f(boolean b, double x);\n\nvoid main() {}\n";
+    assert_eq!(err_codes(bad, Permissions::cli(false)), ["Q0233", "Q0233"]);
+    let many =
+        "extern \"m\" int f(int a, int b, int c, int d, int e, int f, int g);\n\nvoid main() {}\n";
+    assert_eq!(err_codes(many, Permissions::cli(false)), ["Q0233"]);
+    let qubit = "extern \"m\" void f(Qubit q);\n\nvoid main() {}\n";
+    assert_eq!(err_codes(qubit, Permissions::cli(false)), ["Q0233"]);
+}
+
+// `extern` stays an ordinary identifier unless a string follows it at the top level.
+#[test]
+fn extern_is_a_contextual_keyword() {
+    let src = "int extern(int x) {\n    return x + 1;\n}\n\nvoid main() {\n    int extern2 = extern(1);\n    var e = extern2;\n    println(\"{}\", e);\n}\n";
+    assert_eq!(out(src), "2\n");
+}
+
+#[cfg(feature = "ffi")]
+fn c_libraries() -> (&'static str, &'static str) {
+    if cfg!(windows) {
+        ("ucrtbase", "ucrtbase")
+    } else if cfg!(target_os = "macos") {
+        ("libSystem.B.dylib", "libSystem.B.dylib")
+    } else {
+        ("libm.so.6", "libc.so.6")
+    }
+}
+
+#[cfg(feature = "ffi")]
+fn ffi_run(src: &str, enabled: bool) -> Result<String, String> {
+    let mut input = Input::file("t.qx", src);
+    input.perms = Permissions::cli(false).with_ffi(true);
+    let mut host = NativeStd::new(std::env::temp_dir(), Box::new(|_, _| {}));
+    host.ffi.enabled = enabled;
+    super::run_input(&input, 1, 0, &mut host).map_err(|Failure(d)| d)
+}
+
+#[cfg(feature = "ffi")]
+#[test]
+fn extern_calls_c_library_functions() {
+    if !super::FFI_SUPPORTED {
+        return;
+    }
+    let (m, c) = c_libraries();
+    let src = format!(
+        r#"extern "{m}" double cos(double x);
+extern "{m}" double pow(double x, double y);
+extern "{m}" double ldexp(double x, int e);
+extern "{c}" int llabs(int n);
+
+double hypot2(double a, double b) {{
+    return pow(a, 2) + pow(b, 2);
+}}
+
+void main() {{
+    double sum = 0.0;
+    for i in 0..3 {{
+        sum += ldexp(1.5, i);
+    }}
+    println("{{}} {{}} {{}} {{}}", cos(0), hypot2(3.0, 4.0), sum, llabs(-7));
+}}
+"#
+    );
+    // Both engines of the test build (tree-walker and IR, compared) call the library.
+    assert_eq!(ffi_run(&src, true).unwrap(), "1.0 25.0 10.5 7\n");
+    // Granted by the checker but not by the host: refused at the first call.
+    let off = ffi_run(&src, false).unwrap_err();
+    assert!(off.starts_with("error[Q0702]"), "{off}");
+    let missing = format!(
+        "extern \"{m}\" int no_such_function_qx(int x);\n\nvoid main() {{\n    println(\"{{}}\", no_such_function_qx(1));\n}}\n"
+    );
+    let e = ffi_run(&missing, true).unwrap_err();
+    assert!(
+        e.starts_with("error[Q0717]") && e.contains("no_such_function_qx"),
+        "{e}"
+    );
+    let no_lib = "extern \"no_such_library_qx\" int f(int x);\n\nvoid main() {\n    println(\"{}\", f(1));\n}\n";
+    let e = ffi_run(no_lib, true).unwrap_err();
+    assert!(e.starts_with("error[Q0717]"), "{e}");
+    // Native calls are build-time effects: not inside an `if` on a measured bit.
+    let in_bit_if = format!(
+        "extern \"{m}\" double cos(double x);\n\nvoid main() {{\n    Qubit q = qubit();\n    h(q);\n    Bit b = measure(q);\n    if (b) {{\n        double y = cos(0.0);\n    }}\n}}\n"
+    );
+    let e = ffi_run(&in_bit_if, true).unwrap_err();
+    assert!(e.starts_with("error[Q0314]"), "{e}");
+}

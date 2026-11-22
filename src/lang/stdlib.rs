@@ -210,6 +210,8 @@ pub enum Access {
 #[derive(Debug, Clone)]
 pub struct Permissions {
     access: Vec<(&'static str, Access)>,
+    // `extern` declarations (src/lang/ffi.rs): native code outside the interpreter's checks.
+    ffi: Access,
 }
 
 const IN_CLI: &str = "`qxide run`";
@@ -218,6 +220,7 @@ const IN_REPL: &str = "the REPL";
 const GRANT_CLI_FS: &str = "`--allow fs`";
 const GRANT_APP: &str = "`[app] permissions` in `qxide.toml`";
 const IN_APP: &str = "a desktop app";
+const GRANT_CLI_FFI: &str = "`--allow ffi`";
 
 impl Permissions {
     // Pure modules (`std.math`) have no effects, so every host allows them.
@@ -231,7 +234,14 @@ impl Permissions {
         };
         Permissions {
             access: MODULES.iter().map(|(m, _)| (*m, access(m))).collect(),
+            ffi: Access::Unavailable(IN_CLI),
         }
+    }
+
+    // Hosts other than the CLI never load native code.
+    fn without_ffi(mut self, host: &'static str) -> Self {
+        self.ffi = Access::Unavailable(host);
+        self
     }
 
     /// `qxide run`/`check`: logging, the clock, the terminal and the environment always, files
@@ -243,6 +253,24 @@ impl Permissions {
             "fs" => Access::Denied(GRANT_CLI_FS),
             _ => Access::Unavailable(IN_CLI),
         })
+        .with_ffi(false)
+    }
+
+    /// `extern` declarations: offered by the CLI only when this build can call native code, and
+    /// granted only with `--allow ffi`.
+    pub fn with_ffi(mut self, allow: bool) -> Self {
+        self.ffi = if !super::ffi::SUPPORTED {
+            Access::Unavailable(super::ffi::NO_FFI)
+        } else if allow {
+            Access::Allowed
+        } else {
+            Access::Denied(GRANT_CLI_FFI)
+        };
+        self
+    }
+
+    pub fn ffi(&self) -> Access {
+        self.ffi
     }
 
     /// The browser playground: logging only.
@@ -252,6 +280,7 @@ impl Permissions {
             "log" => Access::Allowed,
             _ => Access::Unavailable(IN_PLAYGROUND),
         })
+        .without_ffi(IN_PLAYGROUND)
     }
 
     /// The REPL replays the session on every input, so effects other than logging are refused.
@@ -260,6 +289,7 @@ impl Permissions {
             "log" => Access::Allowed,
             _ => Access::Unavailable(IN_REPL),
         })
+        .without_ffi(IN_REPL)
     }
 
     /// A desktop app: `std.log` always, every other module only if listed in `[app] permissions`.
@@ -274,6 +304,7 @@ impl Permissions {
                 Access::Denied(GRANT_APP)
             }
         })
+        .without_ffi(IN_APP)
     }
 
     pub fn access(&self, module: &str) -> Option<Access> {
@@ -317,6 +348,8 @@ pub enum StdErrorKind {
     Url,
     /// The call was cancelled (Q0713).
     Cancelled,
+    /// A native library or function of an `extern` declaration could not be loaded (Q0717).
+    Ffi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,6 +411,8 @@ pub struct NativeStd {
     pub http: Option<HttpAccess>,
     /// The arguments after `--` of `qxide run`, passed to `main(String[] args)`.
     pub args: Vec<String>,
+    /// Native calls of `extern` declarations; enabled only by `--allow ffi`.
+    pub ffi: super::ffi::Ffi,
 }
 
 /// An HTTP response as the transport read it; the body is at most `MAX_HTTP_BYTES + 1` bytes.
@@ -430,6 +465,7 @@ impl NativeStd {
             cancel: None,
             http: None,
             args: Vec::new(),
+            ffi: super::ffi::Ffi::default(),
         }
     }
 
@@ -495,6 +531,7 @@ impl NativeStd {
                 .map_or(HostValue::Unit, |a| HostValue::Str(a.clone()))),
             ("fs", f) => self.fs(f, args),
             ("http", "get") => self.http_get(str_arg(args, 0)),
+            ("ffi", f) => self.ffi.call(f, args),
             _ => Err(StdError::new(
                 StdErrorKind::Unavailable,
                 msg::std_unavailable(&format!("std.{module}"), "this host"),

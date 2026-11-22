@@ -4,7 +4,7 @@ use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::lexer::{Tok, Token};
 use super::msg;
-use super::native;
+use super::{ffi, native};
 
 use std::collections::HashSet;
 
@@ -113,6 +113,10 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
             enums.push(p.enum_decl()?);
         } else if p.at_interface() {
             ifaces.push(p.iface_decl()?);
+        } else if p.at_extern() {
+            let (wrapper, stub) = p.extern_decl()?;
+            fns.push(wrapper);
+            fns.push(stub);
         } else {
             fns.push(p.fn_decl()?);
         }
@@ -128,6 +132,8 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
 
 // Contextual keywords: ordinary identifiers everywhere else, so existing names keep working.
 const INTERFACE: &str = "interface";
+// `extern "lib" ...` at the top level: an identifier followed by a string is no other item.
+const EXTERN: &str = "extern";
 const IMPLEMENTS: &str = "implements";
 const EXTENDS: &str = "extends";
 
@@ -347,6 +353,99 @@ impl Parser {
             params,
             methods,
         })
+    }
+
+    fn at_extern(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == EXTERN)
+            && matches!(self.peek_at(1), Tok::Str(_))
+    }
+
+    // `extern "lib" double cos(double x);` (src/lang/ffi.rs): a function `cos` whose body calls
+    // the std stub `std.ffi.lib@cos(d)d`, plus that stub. The linker checks the types and the
+    // permission; the host loads the library.
+    fn extern_decl(&mut self) -> PResult<(FnDecl, FnDecl)> {
+        let kw = self.bump().span;
+        let t = self.bump();
+        // `at_extern` saw the string.
+        let lib = match t.tok {
+            Tok::Str(s) => s,
+            _ => String::new(),
+        };
+        let lib_span = t.span;
+        let (ret, ret_span) = self.ty()?;
+        let name = self.name()?;
+        let params = self.params()?;
+        let semi = self.expect(Tok::Semi)?;
+        let span = kw.to(semi);
+        let tys: Vec<Ty> = params.iter().map(|p| p.ty).collect();
+        let stub_name = ffi::stub_name(&lib, &name.name, &tys, ret);
+        let call = Expr {
+            kind: ExprKind::Call {
+                name: Ident {
+                    name: stub_name.clone(),
+                    span: name.span,
+                },
+                args: params
+                    .iter()
+                    .map(|p| Expr {
+                        kind: ExprKind::Var(p.name.name.clone()),
+                        span: p.name.span,
+                    })
+                    .collect(),
+            },
+            span,
+        };
+        let body = if ret == Ty::Void {
+            vec![Stmt::Expr(call)]
+        } else {
+            vec![Stmt::Return {
+                value: Some(call),
+                span,
+            }]
+        };
+        let default = match ret {
+            Ty::Int => Some(ExprKind::Int(0)),
+            Ty::Double => Some(ExprKind::Double(0.0)),
+            _ => None,
+        };
+        let stub_body = default.map_or_else(Vec::new, |kind| {
+            vec![Stmt::Return {
+                value: Some(Expr { kind, span }),
+                span,
+            }]
+        });
+        let stub = FnDecl {
+            public: None,
+            tparams: Vec::new(),
+            bounds: Vec::new(),
+            name: Ident {
+                name: stub_name,
+                span: lib_span,
+            },
+            params: params.clone(),
+            ret,
+            ret_span,
+            body: Block {
+                stmts: stub_body,
+                close: semi,
+            },
+            method: None,
+        };
+        let wrapper = FnDecl {
+            public: None,
+            tparams: Vec::new(),
+            bounds: Vec::new(),
+            name,
+            params,
+            ret,
+            ret_span,
+            body: Block {
+                stmts: body,
+                close: semi,
+            },
+            method: None,
+        };
+        Ok((wrapper, stub))
     }
 
     // `(Type a, consume Type b)`

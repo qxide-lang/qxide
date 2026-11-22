@@ -70,6 +70,8 @@ For command-line programs, anything after `--` is passed to `main(String[] args)
 
 `qxide build` packages a `.qx` program or package project into a standalone executable (`qxide build examples/cli/wc.qx -o wc.exe`, then `wc.exe -f < notes.txt`), so the resulting binary runs without the `qxide` CLI, source files, or package cache. Rather than compiling ahead of time to native code, it bundles the checked sources, imported modules, and build-time options (`--engine`, `--shots`, `--seed`, `--allow fs`) onto a copy of the `qxide` binary. Every command-line argument passed to the built executable goes directly to `main(String[] args)` without `--`, and without `--seed` each run picks a fresh random seed without printing the seed line to `stderr`. Passing no file inside a project builds `src/main.qx` under the package name, and omitting `-o` writes the executable to the current directory (appending `.exe` on Windows when no extension is given).
 
+In a `qxide` built with `--features ffi`, a program can call C functions from shared libraries through top-level `extern` declarations (`extern "m" double cos(double x);`, `int` and `double` values only; see [examples/cli/ffi.qx](examples/cli/ffi.qx)). Native code runs outside qxide's checks and step limits, so it needs `--allow ffi` on `qxide run`, `check` or `build`, only the entry file may declare `extern` functions, and the playground, Studio, the REPL and desktop apps never offer them.
+
 ```text
 $ qxide run examples/qx/bell.qx
 seed: 12059043656824605579 (pass --seed 12059043656824605579 to reproduce)

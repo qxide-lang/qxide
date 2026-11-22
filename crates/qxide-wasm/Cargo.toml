@@ -15,6 +15,7 @@ qxide = { path = "../..", default-features = false }
 [package.metadata.dist]
 dist = false
 
-# src/lang (compiled here too) has code for the CLI-only `jit` feature, which is never on here.
+# src/lang (compiled here too) has code for the CLI-only `jit` and `ffi` features, which are never
+# on here.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit", "ffi"))'] }

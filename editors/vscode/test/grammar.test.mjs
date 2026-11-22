@@ -105,6 +105,8 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf(shapes, "T"), "entity.name.type.parameter.qx");
   assert.equal(scopeOf("interface Ordered<T> { int compare(T o); }", "Ordered"), "entity.name.type.qx");
   assert.equal(scopeOf("int interface = 1;", " interface "), "source.qx");
+  assert.equal(scopeOf('extern "m" double cos(double x);', "extern"), "storage.modifier.extern.qx");
+  assert.equal(scopeOf("int extern = 1;", " extern "), "source.qx");
   const bits = "int f(int x) { x <<= 2; return x >>> 1 ^ ~x & 3 | x >> 2; }";
   assert.equal(scopeOf(bits, "<<="), "keyword.operator.assignment.compound.qx");
   assert.equal(scopeOf(bits, ">>>"), "keyword.operator.bitwise.shift.qx");

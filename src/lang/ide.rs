@@ -608,9 +608,9 @@ impl Analysis {
             (Some(p), _) => p
                 .fns
                 .iter()
-                .filter(|f| self.in_entry(f.name.span))
+                .filter(|f| self.in_entry(f.name.span) && visible(f))
                 .collect(),
-            (None, Some(p)) => p.fns.iter().collect(),
+            (None, Some(p)) => p.fns.iter().filter(|f| visible(f)).collect(),
             (None, None) => Vec::new(),
         }
     }
@@ -619,7 +619,7 @@ impl Analysis {
     /// document does not parse.
     pub fn symbols(&self) -> Option<Vec<Symbol>> {
         let entry = self.entry.as_ref()?;
-        let fns: Vec<&FnDecl> = entry.fns.iter().collect();
+        let fns: Vec<&FnDecl> = entry.fns.iter().filter(|f| visible(f)).collect();
         let scopes = Scopes::of(&fns);
         let symbols = fns
             .iter()
@@ -878,7 +878,7 @@ impl Analysis {
                 self.imported(imports, &mut push);
             }
             Some(p) => {
-                let fns: Vec<&FnDecl> = p.fns.iter().collect();
+                let fns: Vec<&FnDecl> = p.fns.iter().filter(|f| visible(f)).collect();
                 locals_at(&Scopes::of(&fns), at, &mut push);
                 for f in fns.iter().filter(|f| f.method.is_none()) {
                     push(
@@ -982,6 +982,12 @@ fn token_names(src: &str, at: usize, push: &mut impl FnMut(&str, ItemKind, Optio
             _ => {}
         }
     }
+}
+
+// The std stub behind each `extern` declaration (src/lang/ffi.rs) is an implementation detail:
+// the declaration itself shows up as the function of that name.
+fn visible(f: &FnDecl) -> bool {
+    !f.name.name.starts_with(super::ffi::PREFIX)
 }
 
 #[cfg(test)]

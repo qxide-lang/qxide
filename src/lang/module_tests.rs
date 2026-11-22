@@ -485,4 +485,9 @@ fn dependencies_may_only_import_std_log() {
     // Pure modules have no effects, so dependencies may use them too.
     let math = "import std.math;\n\npublic void note() {\n    double d = math.sqrt(2.0);\n}\n";
     assert_eq!(errs(entry, &[("bell_utils/src/lib.qx", math)]), vec![]);
+    // Nor may they load native code, whatever the entry program was granted: the error points at
+    // the library name of the `extern` declaration.
+    let native = "extern \"m\" double cos(double x);\n\npublic void note() {}\n";
+    let e = errs(entry, &[("bell_utils/src/lib.qx", native)]);
+    assert_eq!(e, vec![("Q0703", path("bell_utils/src/lib.qx"), 1, 8)]);
 }

@@ -111,6 +111,7 @@
       "patterns": [
         { "name": "keyword.control.qx", "match": "\\b(if|else|for|in|while|break|continue|return|match)\\b" },
         { "name": "keyword.other.new.qx", "match": "\\bnew\\b(?=\\s+[A-Za-z_])" },
+        { "name": "storage.modifier.extern.qx", "match": "^\\s*extern\\b(?=\\s*\")" },
         { "name": "storage.modifier.qx", "match": "\\b(final|var|consume|public)\\b" },
         { "name": "storage.type.struct.qx", "match": "\\bstruct\\b" },
         { "name": "storage.type.enum.qx", "match": "\\benum\\b" },
