@@ -11,7 +11,7 @@
 
 양자컴퓨터와 일반 컴퓨터에서 함께 쓰는 프로그래밍 언어를 목표로 하는 프로젝트입니다. 소스 파일 확장자는 `.qx`이며, Java와 C 개발자에게 익숙한 문법(타입을 이름 앞에 적는 `int x = 1;`, `Qubit q = qubit();`, `void main()` 형태)에 Rust 수준의 컴파일 타임 큐비트 안전성을 결합하고, 장기적으로 네이티브 성능을 목표로 합니다.
 
-현재는 `qxide` 명령줄 도구(`run`, `check`, `qasm`)와 Rust 라이브러리 크레이트(`qxide`)를 함께 제공하며, CPU 상태벡터·안정화자 시뮬레이터와 OpenQASM 3 출력을 지원합니다. 0.7.0은 모듈과 패키지(`import`, `qxide add`), 새 명령어(`new`, `fmt`, `repl`, `explain`), 샷별 독립 샘플링을 추가했으며 아직 초기 실험 버전입니다. 문법과 API는 앞으로도 바뀔 수 있습니다.
+현재는 `qxide` 명령줄 도구(`run`, `check`, `qasm`)와 Rust 라이브러리 크레이트(`qxide`)를 함께 제공하며, CPU 상태벡터·안정화자 시뮬레이터와 OpenQASM 3 출력을 지원합니다. 0.8.0은 타입이 지정된 IR 엔진과 선택적 Cranelift JIT(`--engine ir|jit`), IBM Quantum 기기 제출(`qxide run --backend ibm:<기기>`), `String`과 `std` 라이브러리, 데스크톱 앱, 언어 서버와 VS Code 확장을 추가했으며 아직 초기 실험 버전입니다. 문법과 API는 앞으로도 바뀔 수 있습니다.
 
 ## 핵심 아이디어
 

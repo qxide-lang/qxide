@@ -59,7 +59,7 @@ dev-only  = { path = "../dev-only" }                # path-only: cannot be publi
 
 - `[package]` with `name` and `version` is required.
 - `version` must be a valid semver string (for example `1.2.3`).
-- `qxide` is a semver requirement on the `qxide` language and tool version, checked by `run`, `check`, `qasm`, and `install`. This binary is version `0.7.0`; `>=0.6` is recommended because a caret requirement such as `^0.6` would reject `0.7`.
+- `qxide` is a semver requirement on the `qxide` language and tool version, checked by `run`, `check`, `qasm`, and `install`. This binary is version `0.8.0`; `>=0.6` is recommended because a caret requirement such as `^0.6` would reject `0.7`.
 - `description`, `license`, and `qxide` are required when publishing a package.
 - `authors` (array of strings) and `repository` are optional metadata.
 - Unknown keys are ignored for forward compatibility.
@@ -352,7 +352,7 @@ The GitHub registry records which accounts may change a package in `owners/<pref
 `validate.py --base` applies these rules to pull requests:
 
 - **Pull request author.** The workflow passes `github.event.pull_request.user.id` and `.login` from the `pull_request_target` event. GitHub sets them to the account that opened the pull request. Later pushes do not change them, and nothing in the pull request can set them. The workflow does not use `github.actor`, which is whoever triggered the run (for example a re-run), or commit author fields, which anyone can write. Without an author, `--base` fails.
-- **New package** (no index file on the base branch). The pull request must add the owner file, listing exactly its author. `qxide publish` writes this file from the next release on; with `qxide` 0.7.0 and earlier, add it by hand (the registry README and pull request template say how). The first account to publish a name owns it.
+- **New package** (no index file on the base branch). The pull request must add the owner file, listing exactly its author. `qxide publish` writes this file from 0.8.0 on; with `qxide` 0.7.0 and earlier, add it by hand (the registry README and pull request template say how). The first account to publish a name owns it.
 - **Existing package.** A pull request that changes the package's index file, adds one of its archives, or changes its owner file must be opened by an owner listed in the owner file on the base branch (invited accounts do not count). Owners added by the pull request itself do not count either, so an account cannot add itself and publish in the same pull request.
 - **Inviting and accepting.** An account becomes an owner in two steps. First an owner opens a pull request that adds the account with `"pending": true`. After that is merged, the invited account opens its own pull request that removes `pending` from its line (and may update its `login`); that pull request may change nothing else, in the owner file or elsewhere. No pull request can add an owner directly, and an owner cannot accept for someone else.
 - **Removing owners and transferring.** An owner can remove owners and withdraw invitations. To transfer a package, the owner invites the new owner, who accepts, and then either of them removes the old owner. The file cannot be left without an owner or deleted.
