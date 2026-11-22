@@ -34,7 +34,7 @@ Commands:
   lsp                                {}
 {}{}
 Options:
-  --engine ast|ir                    {}
+  --engine ast|ir|jit                {}
   -V, --version                      Print version
   -h, --help                         Print help
 ",
@@ -47,16 +47,20 @@ Options:
 
 const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
 
-const ENGINE_HELP: &str = "Select interpreter for run, qasm, and repl (default: QXIDE_ENGINE or ast; ir: experimental typed IR)";
+const ENGINE_HELP: &str = "Select engine for run, qasm, and repl (default: QXIDE_ENGINE or ast; ir: typed IR; jit: IR + native, needs jit feature)";
 
 // `--engine` (or `QXIDE_ENGINE` when the flag is absent): which interpreter builds the circuit.
 fn parse_engine(flag: &str, value: Option<&str>) -> Result<lang::Engine, ExitCode> {
     match value.and_then(lang::Engine::parse) {
-        // `dual` (both engines, compared) is for tests and not advertised.
+        // `dual` (every engine, compared) is for tests and not advertised.
         Some(e) => Ok(e),
+        None if value == Some("jit") => {
+            eprintln!("qxide: `jit` not available for {flag} (this build has no JIT; rebuild with `cargo build --features jit`, or use `--engine ir`)");
+            Err(ExitCode::from(2))
+        }
         None => {
             let v = value.unwrap_or_default();
-            eprintln!("qxide: invalid value `{v}` for {flag} (expected `ast` or `ir`)");
+            eprintln!("qxide: invalid value `{v}` for {flag} (expected `ast`, `ir`, or `jit`)");
             Err(ExitCode::from(2))
         }
     }

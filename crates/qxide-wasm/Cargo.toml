@@ -14,3 +14,7 @@ qxide = { path = "../..", default-features = false }
 # Built only for the qxide.dev playground; not a cargo-dist app.
 [package.metadata.dist]
 dist = false
+
+# src/lang (compiled here too) has code for the CLI-only `jit` feature, which is never on here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit"))'] }

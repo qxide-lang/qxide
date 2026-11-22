@@ -3,6 +3,7 @@
 //   cargo test --release --bin qxide bench_suite -- --ignored --nocapture
 // Environment: QXIDE_BENCH_REPEAT (default 5), QXIDE_BENCH_ENGINES (comma list, default `ast`),
 // QXIDE_BENCH_ONLY (substring filter), QXIDE_BENCH_JSON (append one JSON line per result).
+// The `jit` engine needs `--features jit`.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -136,10 +137,12 @@ fn once(case: &Case, engine: Engine, t: &mut Times) -> String {
         Mode::Check => String::new(),
         Mode::Run(_) | Mode::Build => {
             let s = Instant::now();
-            let e = if engine == Engine::Ir {
+            // For `jit`, `elaborate` also includes compiling functions on their first call.
+            let e = if matches!(engine, Engine::Ir | Engine::Jit) {
                 let module = ir::build(&program);
                 t.lower.push(s.elapsed());
-                ir::exec::run(&module, "main", Vec::new(), &mut host, &limits).map(|(e, _)| e)
+                engine::run_lowered(&module, engine, "main", Vec::new(), &mut host, &limits)
+                    .map(|(e, _)| e)
             } else {
                 engine::elaborate(&program, &mut host, &limits, engine)
             }

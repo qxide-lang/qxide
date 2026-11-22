@@ -12,7 +12,10 @@ mod explain;
 mod fmt;
 pub mod ide;
 mod interp;
-mod ir;
+pub mod ir;
+// Cranelift JIT for `--engine jit`; the playground (wasm) and app runtime build without it.
+#[cfg(feature = "jit")]
+mod jit;
 mod lexer;
 mod link;
 mod machine;

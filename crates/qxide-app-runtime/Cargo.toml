@@ -28,3 +28,7 @@ strip = true
 # Same as the qxide crate: the shared interpreter tests need optimised frames and run many shots.
 [profile.test]
 opt-level = 2
+
+# src/lang (compiled here too) has code for the CLI-only `jit` feature, which is never on here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit"))'] }

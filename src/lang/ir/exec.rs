@@ -4,25 +4,13 @@
 
 use qxide::Circuit;
 
-use super::super::ast::{Program, Ty};
+use super::super::ast::Ty;
 use super::super::diag::{Code, Diagnostic, Span};
 use super::super::interp::{Elaborated, Value};
 use super::super::machine::{self, coerce, internal, Machine, R};
 use super::super::stdlib::Host;
 use super::super::{msg, Limits};
 use super::*;
-
-/// Lowers `p` and runs `name` once with `args`, like `interp::elaborate_call`.
-pub fn elaborate_call(
-    p: &Program,
-    name: &str,
-    args: Vec<Value>,
-    host: &mut dyn Host,
-    limits: &Limits,
-) -> R<(Elaborated, Value)> {
-    let module = super::build(p);
-    run(&module, name, args, host, limits)
-}
 
 /// Runs the function `name` of a lowered module once with `args`.
 pub fn run(
@@ -32,6 +20,28 @@ pub fn run(
     host: &mut dyn Host,
     limits: &Limits,
 ) -> R<(Elaborated, Value)> {
+    run_with(module, name, args, host, limits, None)
+}
+
+/// Native code for some functions of a module (the Cranelift JIT, src/lang/jit/).
+pub trait Native {
+    /// Whether function `id` runs natively; may compile it (and the functions it calls) first.
+    fn has(&mut self, id: FuncId) -> bool;
+
+    /// Runs function `id` with `args` after the caller's `Machine::enter_call`. Steps, call
+    /// depth and runtime errors are the IR interpreter's, charged at the same points.
+    fn call(&mut self, id: FuncId, args: Vec<Value>, m: &mut Machine) -> R<Value>;
+}
+
+/// `run`, with the functions `native` has compiled running as native code.
+pub fn run_with(
+    module: &Module,
+    name: &str,
+    args: Vec<Value>,
+    host: &mut dyn Host,
+    limits: &Limits,
+    native: Option<&mut dyn Native>,
+) -> R<(Elaborated, Value)> {
     let id = *module
         .index
         .get(name)
@@ -40,6 +50,7 @@ pub fn run(
         module,
         m: Machine::new(host, limits),
         free: vec![Vec::new(); module.funcs.len()],
+        native,
     };
     let mut c = Circuit::new();
     let span = module.funcs[id as usize].span;
@@ -47,9 +58,10 @@ pub fn run(
     Ok((x.m.finish(c), ret))
 }
 
-struct Exec<'m, 'h> {
+struct Exec<'m, 'h, 'n> {
     module: &'m Module,
     m: Machine<'h>,
+    native: Option<&'n mut dyn Native>,
     // Frames of returned calls, per function, reused as they are: lowering writes every register
     // and slot before reading it, so a call costs no work in proportion to the function's size.
     free: Vec<Vec<Frame>>,
@@ -97,12 +109,19 @@ impl Frame {
     }
 }
 
-impl<'m> Exec<'m, '_> {
+impl<'m> Exec<'m, '_, '_> {
     // The interpreter's `call_fn`: a step and the depth limit, then the body.
     fn call(&mut self, c: &mut Circuit, id: FuncId, args: Vec<Value>, at: Span) -> R<Value> {
         let module: &'m Module = self.module;
         let f = &module.funcs[id as usize];
         self.m.enter_call(at)?;
+        if let Some(n) = self.native.as_deref_mut() {
+            if n.has(id) {
+                let r = n.call(id, args, &mut self.m);
+                self.m.leave_call();
+                return r;
+            }
+        }
         let mut fr = self.free[id as usize].pop().unwrap_or_else(|| Frame {
             slots: vec![Value::Unit; f.slots.len()],
             regs: vec![Value::Unit; f.regs.len()],

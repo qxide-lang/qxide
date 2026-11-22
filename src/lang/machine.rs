@@ -203,6 +203,30 @@ impl<'h> Machine<'h> {
         }
     }
 
+    /// Steps used and the step count of the next cancellation poll, handed to native code.
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub fn budget(&self) -> (u64, u64, u64) {
+        (self.steps, self.next_poll, self.limits.max_steps)
+    }
+
+    /// Takes back the counters native code advanced (see `budget`).
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub fn set_budget(&mut self, steps: u64, next_poll: u64) {
+        self.steps = steps;
+        self.next_poll = next_poll;
+    }
+
+    /// Calls in progress, for native code that checks `MAX_CALL_DEPTH` itself.
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub fn set_depth(&mut self, depth: usize) {
+        self.depth = depth;
+    }
+
     pub fn charge(&mut self, steps: u64, at: Span) -> R<()> {
         self.steps = self.steps.saturating_add(steps);
         if self.steps > self.limits.max_steps {

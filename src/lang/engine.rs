@@ -1,6 +1,7 @@
-// Which elaborator builds the circuit: the tree-walking interpreter (the default) or the typed
-// IR interpreter (docs/design/qx-ir.md), or both with their results compared (`dual`, the
-// default under `cargo test`). The choice is per thread, so parallel tests do not interfere;
+// Which elaborator builds the circuit: the tree-walking interpreter (the default), the typed
+// IR interpreter (docs/design/qx-ir.md), the IR interpreter with Cranelift native code for
+// classical functions (docs/design/qx-jit.md, `jit` feature), or all of them with their results
+// compared (`dual`, the default under `cargo test`). The choice is per thread, so parallel tests do not interfere;
 // the CLI sets it from `--engine` or `QXIDE_ENGINE` on the thread that runs the program.
 
 use std::cell::Cell;
@@ -17,7 +18,11 @@ pub enum Engine {
     Ast,
     // Lowering to the typed IR, then the IR interpreter (src/lang/ir/).
     Ir,
-    // Both; panics if their results differ, else returns the tree-walking result.
+    // The IR interpreter, running build-time classical functions as native code (src/lang/jit/).
+    // Without the `jit` feature it is the IR interpreter alone.
+    Jit,
+    // Every engine of this build; panics if their results differ, else returns the
+    // tree-walking result.
     Dual,
 }
 
@@ -26,6 +31,7 @@ impl Engine {
         match s {
             "ast" => Some(Engine::Ast),
             "ir" => Some(Engine::Ir),
+            "jit" if JIT => Some(Engine::Jit),
             "dual" => Some(Engine::Dual),
             _ => None,
         }
@@ -36,10 +42,14 @@ impl Engine {
         match self {
             Engine::Ast => "ast",
             Engine::Ir => "ir",
+            Engine::Jit => "jit",
             Engine::Dual => "dual",
         }
     }
 }
+
+/// Whether this build has the Cranelift JIT (`--engine jit`).
+pub const JIT: bool = cfg!(feature = "jit");
 
 // Tests compare both engines on every program they elaborate.
 const DEFAULT: Engine = if cfg!(test) {
@@ -105,9 +115,32 @@ pub fn elaborate_call_with(
 ) -> Result<(Elaborated, Value), Diagnostic> {
     match engine {
         Engine::Ast => interp::elaborate_call(p, name, args, host, limits),
-        Engine::Ir => ir::exec::elaborate_call(p, name, args, host, limits),
+        Engine::Ir | Engine::Jit => {
+            let module = ir::build(p);
+            run_lowered(&module, engine, name, args, host, limits)
+        }
         Engine::Dual => dual(p, name, args, host, limits),
     }
+}
+
+/// Runs `name` of a lowered module with the IR interpreter, plus native code for `Engine::Jit`.
+pub fn run_lowered(
+    module: &ir::Module,
+    engine: Engine,
+    name: &str,
+    args: Vec<Value>,
+    host: &mut dyn Host,
+    limits: &Limits,
+) -> Result<(Elaborated, Value), Diagnostic> {
+    #[cfg(feature = "jit")]
+    if engine == Engine::Jit {
+        // Machines Cranelift does not support run everything in the interpreter.
+        if let Some(mut jit) = super::jit::Jit::new(module) {
+            return ir::exec::run_with(module, name, args, host, limits, Some(&mut jit));
+        }
+    }
+    let _ = engine;
+    ir::exec::run(module, name, args, host, limits)
 }
 
 // Host calls of the first run, replayed for the second so effects happen once.
@@ -140,7 +173,7 @@ impl Host for Replay {
             Some((m, f, a, r)) if m == module && f == function && a == args => r,
             other => {
                 let msg = format!(
-                    "IR run called std.{module}.{function}{args:?}, tree-walking run {:?}",
+                    "replayed run called std.{module}.{function}{args:?}, tree-walking run {:?}",
                     other.map(|(m, f, a, _)| format!("std.{m}.{f}{a:?}"))
                 );
                 self.mismatch.get_or_insert(msg);
@@ -233,27 +266,37 @@ fn dual(
     if matches!(&tree, Err(d) if d.code == super::diag::Code::Cancelled) {
         return tree;
     }
-    let mut replay = Replay {
-        calls: rec.calls.into_iter(),
-        mismatch: None,
+    let want = fingerprint(&tree);
+    let module = ir::build(p);
+    let others: &[Engine] = if JIT {
+        &[Engine::Ir, Engine::Jit]
+    } else {
+        &[Engine::Ir]
     };
-    let ir = ir::exec::elaborate_call(p, name, args, &mut replay, limits);
-    let (a, b) = (fingerprint(&tree), fingerprint(&ir));
-    if let Some((m, f, a, _)) = replay.calls.next() {
-        replay
-            .mismatch
-            .get_or_insert(format!("IR run skipped std.{m}.{f}{a:?}"));
-    }
-    if let Some(m) = replay.mismatch {
-        panic!("IR engine differs from the tree-walking interpreter: {m}");
-    }
-    if a != b {
-        let line = a
-            .lines()
-            .zip(b.lines())
-            .find(|(x, y)| x != y)
-            .map_or_else(String::new, |(x, y)| format!("\n  ast: {x}\n  ir:  {y}"));
-        panic!("IR engine differs from the tree-walking interpreter in `{name}`:{line}");
+    for &engine in others {
+        let mut replay = Replay {
+            calls: rec.calls.clone().into_iter(),
+            mismatch: None,
+        };
+        let got = run_lowered(&module, engine, name, args.clone(), &mut replay, limits);
+        let e = engine.name();
+        if let Some((m, f, a, _)) = replay.calls.next() {
+            replay
+                .mismatch
+                .get_or_insert(format!("{e} run skipped std.{m}.{f}{a:?}"));
+        }
+        if let Some(m) = replay.mismatch {
+            panic!("{e} engine differs from the tree-walking interpreter: {m}");
+        }
+        let got = fingerprint(&got);
+        if want != got {
+            let line = want
+                .lines()
+                .zip(got.lines())
+                .find(|(x, y)| x != y)
+                .map_or_else(String::new, |(x, y)| format!("\n  ast: {x}\n  {e}: {y}"));
+            panic!("{e} engine differs from the tree-walking interpreter in `{name}`:{line}");
+        }
     }
     tree
 }

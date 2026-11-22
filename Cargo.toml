@@ -28,8 +28,23 @@ cli = [
 ]
 # GPU state-vector backend (prototype). Pulls in CubeCL + wgpu, so it is off by default.
 gpu = ["dep:cubecl"]
+# `qxide run --engine jit`: native code for the build-time classical functions of a `.qx`
+# program (docs/design/qx-jit.md). Pulls in Cranelift, so it is off by default.
+jit = [
+    "cli",
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-native",
+]
 
 [dependencies]
+cranelift-codegen = { version = "0.138", optional = true }
+cranelift-frontend = { version = "0.138", optional = true }
+cranelift-jit = { version = "0.138", optional = true }
+cranelift-module = { version = "0.138", optional = true }
+cranelift-native = { version = "0.138", optional = true }
 cubecl = { version = "=0.11.4", default-features = false, features = ["wgpu"], optional = true }
 flate2 = { version = "1.1", optional = true }
 # `qxide lsp`: JSON-RPC framing and the initialize/shutdown handshake only (see docs/design/lsp.md).

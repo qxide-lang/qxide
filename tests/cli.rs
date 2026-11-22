@@ -704,6 +704,15 @@ fn engine_flag_and_env_give_identical_results() {
         .map(|f| example(f))
         .collect();
     files.push(error);
+    // Classical functions (native code under `jit`), one of them overflowing.
+    files.push(format!(
+        "{}/bench/qx/recursion.qx",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    files.push(tmp_qx(
+        "engine_overflow.qx",
+        "int grow(int n) {\n    int x = 1;\n    for i in 0..n {\n        x = x * 3;\n    }\n    return x;\n}\n\nvoid main() {\n    println(\"{}\", grow(30));\n    println(\"{}\", grow(50));\n}\n",
+    ));
     let repl = "Qubit q = qubit();\nh(q);\nBit m = measure(q);\nm\n:qasm\n:quit\n";
     let mut cases: Vec<(Vec<&str>, &str)> = vec![(vec!["repl", "--seed", "4"], repl)];
     for f in &files {
@@ -719,11 +728,17 @@ fn engine_flag_and_env_give_identical_results() {
         };
         let ast = with("ast");
         assert!(!ast.stdout.is_empty() || !ast.stderr.is_empty(), "{args:?}");
-        for other in [
+        let mut others = vec![
             with("ir"),
             qxide_engine_env(&args, Some("ir"), input),
             qxide_engine_env(&args, Some("dual"), input),
-        ] {
+        ];
+        // Native code for classical functions (docs/design/qx-jit.md).
+        if cfg!(feature = "jit") {
+            others.push(with("jit"));
+            others.push(qxide_engine_env(&args, Some("jit"), input));
+        }
+        for other in others {
             assert_eq!(other.status.code(), ast.status.code(), "{args:?}");
             assert_eq!(other.stdout, ast.stdout, "{args:?}");
             assert_eq!(other.stderr, ast.stderr, "{args:?}");
@@ -755,4 +770,12 @@ fn engine_values_are_checked() {
     assert_eq!(check.status.code(), Some(2));
     let repl = qxide_engine_env(&["repl", "--engine", "fast"], None, "");
     assert_eq!(repl.status.code(), Some(2));
+    // Without the `jit` feature, `jit` is refused with a note on how to get it.
+    let jit = qxide_engine_env(&["run", &bell, "--engine", "jit", "--seed", "1"], None, "");
+    if cfg!(feature = "jit") {
+        assert_eq!(jit.status.code(), Some(0));
+    } else {
+        assert_eq!(jit.status.code(), Some(2));
+        assert!(String::from_utf8(jit.stderr).unwrap().contains("jit"));
+    }
 }

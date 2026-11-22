@@ -40,13 +40,23 @@ fn outputs(engine: Engine, src: &str, shots: u64, seed: u64, limits: Limits) -> 
     })
 }
 
+// The IR interpreter, and with the `jit` feature also native code, against the tree-walker.
 fn same_outputs(src: &str, shots: u64, seed: u64, limits: Limits) {
     let ast = outputs(Engine::Ast, src, shots, seed, limits);
-    let ir = outputs(Engine::Ir, src, shots, seed, limits);
-    assert_eq!(
-        ast, ir,
-        "engines differ (shots {shots}, seed {seed}) on\n{src}"
-    );
+    let others: &[Engine] = if engine::JIT {
+        &[Engine::Ir, Engine::Jit]
+    } else {
+        &[Engine::Ir]
+    };
+    for &e in others {
+        let got = outputs(e, src, shots, seed, limits);
+        assert_eq!(
+            ast,
+            got,
+            "{} differs (shots {shots}, seed {seed}) on\n{src}",
+            e.name()
+        );
+    }
 }
 
 const SUM: &str = "int sum(int n) {
@@ -394,4 +404,5 @@ fn cancellation_polls_agree() {
     let (ast, ir) = (polls(Engine::Ast), polls(Engine::Ir));
     assert!(ast.1 > 100, "{ast:?}");
     assert_eq!(ast, ir);
+    assert_eq!(ast, polls(Engine::Jit));
 }
