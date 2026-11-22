@@ -54,6 +54,8 @@ struct FnLower<'p, 'a> {
     scopes: Vec<Vec<(&'p str, SlotId)>>,
     // Inside an `if` on a measured bit: `return` ends the region like in the interpreter.
     regions: usize,
+    // Slots named after each base name so far, for unique dump names (`i`, `i.1`, ...).
+    slot_names: HashMap<String, u32>,
 }
 
 impl<'p, 'a> FnLower<'p, 'a> {
@@ -94,6 +96,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
             cur: 0,
             scopes: Vec::new(),
             regions: 0,
+            slot_names: HashMap::new(),
         }
     }
 
@@ -180,13 +183,14 @@ impl<'p, 'a> FnLower<'p, 'a> {
 
     // --- builder -------------------------------------------------------------------------
 
+    // Source names have no `.`, so `name.k` never collides with another base name.
     fn slot(&mut self, name: &str, ty: IrTy) -> SlotId {
-        let mut unique = name.to_string();
-        let mut k = 1;
-        while self.func.slots.iter().any(|s| s.name == unique) {
-            unique = format!("{name}.{k}");
-            k += 1;
-        }
+        let k = self.slot_names.entry(name.to_string()).or_insert(0);
+        let unique = match *k {
+            0 => name.to_string(),
+            k => format!("{name}.{k}"),
+        };
+        *k += 1;
         self.func.slots.push(Slot { name: unique, ty });
         (self.func.slots.len() - 1) as SlotId
     }

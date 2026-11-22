@@ -39,6 +39,7 @@ pub fn run(
     let mut x = Exec {
         module,
         m: Machine::new(host, limits),
+        free: vec![Vec::new(); module.funcs.len()],
     };
     let mut c = Circuit::new();
     let span = module.funcs[id as usize].span;
@@ -49,8 +50,12 @@ pub fn run(
 struct Exec<'m, 'h> {
     module: &'m Module,
     m: Machine<'h>,
+    // Frames of returned calls, per function, reused as they are: lowering writes every register
+    // and slot before reading it, so a call costs no work in proportion to the function's size.
+    free: Vec<Vec<Frame>>,
 }
 
+#[derive(Clone)]
 struct Frame {
     slots: Vec<Value>,
     regs: Vec<Value>,
@@ -98,10 +103,10 @@ impl<'m> Exec<'m, '_> {
         let module: &'m Module = self.module;
         let f = &module.funcs[id as usize];
         self.m.enter_call(at)?;
-        let mut fr = Frame {
+        let mut fr = self.free[id as usize].pop().unwrap_or_else(|| Frame {
             slots: vec![Value::Unit; f.slots.len()],
             regs: vec![Value::Unit; f.regs.len()],
-        };
+        });
         for (i, (v, ty)) in args.into_iter().zip(&f.param_tys).enumerate() {
             fr.slots[i] = coerce(v, *ty);
         }
@@ -110,6 +115,7 @@ impl<'m> Exec<'m, '_> {
         } else {
             self.run(c, f, &mut fr, 0)
         };
+        self.free[id as usize].push(fr);
         self.m.leave_call();
         match exit? {
             Exit::Ret(v) if f.ret == IrTy::F64 => Ok(coerce(v, Ty::Double)),

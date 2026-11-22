@@ -60,6 +60,18 @@ fn flat_functions(n: usize) -> String {
     s
 }
 
+// One long `main` with n same-named loops and `&&` operands: lowering work per statement, which
+// no budget charges.
+fn many_loops(n: usize) -> String {
+    let mut s = String::from("void main() {\n    int total = 0;\n    boolean ok = true;\n");
+    for _ in 0..n {
+        s.push_str("    for i in 0..2 {\n        total = total + i;\n    }\n");
+        s.push_str("    ok = ok && total >= 0;\n");
+    }
+    s.push_str("    println(\"{} {}\", total, ok);\n}\n");
+    s
+}
+
 fn cases() -> Vec<Case> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -91,6 +103,11 @@ fn cases() -> Vec<Case> {
     v.push(Case {
         name: "run_flat_8000".into(),
         src: flat_functions(8000),
+        mode: Mode::Run(1),
+    });
+    v.push(Case {
+        name: "many_loops_4000".into(),
+        src: many_loops(4000),
         mode: Mode::Run(1),
     });
     v
