@@ -66,6 +66,22 @@ jobs:
       # `run --backend --dry-run` device circuits against offline IBM device snapshots (no network).
       - run: cargo build -q && python ci/check_isa.py target/debug/qxide isa-out examples/qx/*.qx
 
+  # The VS Code extension must install, test, and package on Linux as vscode.yml does for releases.
+  # The language server test needs target/debug/qxide, so it is skipped here.
+  vscode-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: editors/vscode
+      - run: npm test
+        working-directory: editors/vscode
+      - run: npx vsce package --out qxide-vscode-ci.vsix && npx vsce ls
+        working-directory: editors/vscode
+
   # registry-template/scripts run in the registry repository; test them here on throwaway registries.
   registry-scripts:
     runs-on: ubuntu-latest
