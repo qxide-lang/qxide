@@ -24,6 +24,26 @@ function insert(ta: HTMLTextAreaElement, text: string, onChange: (v: string) => 
   requestAnimationFrame(() => ta.setSelectionRange(s + text.length, s + text.length));
 }
 
+/** Viewport x of the boundary before UTF-16 column `col` in a highlighted line. */
+function columnX(line: Element, col: number): number {
+  const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  let last: Text | null = null;
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    if (col < node.length) {
+      range.setStart(node, col);
+      range.setEnd(node, col + 1);
+      return range.getBoundingClientRect().left;
+    }
+    col -= node.length;
+    last = node;
+  }
+  if (!last || !last.length) return line.getBoundingClientRect().left;
+  range.setStart(last, last.length - 1);
+  range.setEnd(last, last.length);
+  return range.getBoundingClientRect().right;
+}
+
 /**
  * A textarea over a highlighted copy of the same text. Both sit in one scroll box and size to the
  * content, so line numbers, highlighting and the caret stay aligned without scroll syncing.
@@ -32,7 +52,6 @@ export function Editor({id, value, onChange, errorLines, onRun, describedBy, tex
   // After Escape, Tab moves focus out of the editor instead of indenting.
   const tabReleased = useRef(false);
   const box = useRef<HTMLElement>(null);
-  const charWidth = useRef(0);
   const lines = value.split('\n');
 
   // The textarea never scrolls itself (it is as large as its text), so keep the caret inside the scroll box.
@@ -42,21 +61,19 @@ export function Editor({id, value, onChange, errorLines, onRun, describedBy, tex
     if (!ta || !el) return;
     const style = getComputedStyle(ta);
     const lh = parseFloat(style.lineHeight) || 24;
-    if (!charWidth.current) {
-      const ctx = document.createElement('canvas').getContext('2d');
-      if (ctx) ctx.font = `${style.fontSize} ${style.fontFamily}`;
-      charWidth.current = ctx?.measureText('0').width || 8;
-    }
     const before = ta.value.slice(0, ta.selectionEnd);
     const row = before.split('\n').length - 1;
     const col = before.length - before.lastIndexOf('\n') - 1;
     const top = parseFloat(style.paddingTop) + row * lh;
     if (top < el.scrollTop) el.scrollTop = top - lh;
     else if (top + 2 * lh > el.scrollTop + el.clientHeight) el.scrollTop = top + 2 * lh - el.clientHeight;
+    // Measured on the rendered copy, so web-font swaps and wide (e.g. Hangul) glyphs need no cached metrics.
+    const line = el.querySelectorAll('.pg-hl .pg-line')[row];
+    if (!line) return;
+    const left = columnX(line, col) - el.getBoundingClientRect().left + el.scrollLeft;
     // The sticky gutter covers the left edge of the scroll box.
-    const gutter = (ta.parentElement?.offsetLeft ?? 0);
-    const left = gutter + parseFloat(style.paddingLeft) + col * charWidth.current;
-    const margin = 4 * charWidth.current;
+    const gutter = ta.parentElement?.offsetLeft ?? 0;
+    const margin = 2.4 * (parseFloat(style.fontSize) || 14);
     if (left - margin < el.scrollLeft + gutter) el.scrollLeft = Math.max(0, left - margin - gutter);
     else if (left + margin > el.scrollLeft + el.clientWidth) el.scrollLeft = left + margin - el.clientWidth;
   };
@@ -126,7 +143,8 @@ export function Editor({id, value, onChange, errorLines, onRun, describedBy, tex
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
           onKeyUp={revealCaret}
-          onInput={revealCaret}
+          // Wait for the highlighted copy to re-render with the new text before measuring it.
+          onInput={() => requestAnimationFrame(revealCaret)}
           onClick={revealCaret}
           onBlur={() => (tabReleased.current = false)}
           aria-describedby={describedBy}

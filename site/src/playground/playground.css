@@ -127,7 +127,9 @@
   min-height: 22rem;
   max-height: min(40rem, 72vh);
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  /* 13.75px: the 0.6em advance (8.25px) is a whole number of Chrome's 1/64px layout units, so the many
+     token boxes of a highlighted line add no rounding drift against the textarea's single text run. */
+  font-size: 0.859375rem;
   line-height: 1.7;
   tab-size: 4;
   /* JetBrains Mono ligatures would turn `-->` and `!=` into single glyphs. */
@@ -177,6 +179,13 @@
   letter-spacing: 0;
   tab-size: 4;
   white-space: pre;
+}
+/* The Astryx reset gives <code> its own system monospace stack and line height; the caret is laid out by
+   the textarea in the editor font, so the highlighted copy must use exactly the same metrics. */
+.pg-code-panel .pg-hl code {
+  font: inherit;
+  letter-spacing: inherit;
+  word-spacing: inherit;
 }
 .pg-code-panel .pg-hl {
   overflow: visible;
