@@ -234,6 +234,22 @@ pub fn div_by_zero() -> String {
     "attempt to divide by zero".into()
 }
 
+pub fn substring_range(start: i64, end: i64, len: usize) -> String {
+    format!("invalid substring range: the range is {start}..{end} for length {len}")
+}
+
+pub fn negative_exponent(e: i64) -> String {
+    format!("cannot raise integer to negative exponent `{e}`")
+}
+
+pub fn negative_repeat(k: i64) -> String {
+    format!("string repeat count `{k}` cannot be negative")
+}
+
+pub fn parse_number(text: &str, ty: &str) -> String {
+    format!("cannot parse `{text}` as `{ty}`")
+}
+
 pub fn index_out_of_bounds(index: i64, len: usize) -> String {
     format!("index out of bounds: the length is {len} but the index is {index}")
 }

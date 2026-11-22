@@ -46,6 +46,41 @@ public void emit(String event, String payload) {}
 ",
     ),
     (
+        "math",
+        "public double sqrt(double x) { return 0.0; }
+public double cbrt(double x) { return 0.0; }
+public double exp(double x) { return 0.0; }
+public double log(double x) { return 0.0; }
+public double log10(double x) { return 0.0; }
+public double log2(double x) { return 0.0; }
+public double sin(double x) { return 0.0; }
+public double cos(double x) { return 0.0; }
+public double tan(double x) { return 0.0; }
+public double asin(double x) { return 0.0; }
+public double acos(double x) { return 0.0; }
+public double atan(double x) { return 0.0; }
+public double sinh(double x) { return 0.0; }
+public double cosh(double x) { return 0.0; }
+public double tanh(double x) { return 0.0; }
+public double floor(double x) { return 0.0; }
+public double ceil(double x) { return 0.0; }
+public double round(double x) { return 0.0; }
+public double trunc(double x) { return 0.0; }
+public double abs(double x) { return 0.0; }
+public double pow(double x, double y) { return 0.0; }
+public double atan2(double y, double x) { return 0.0; }
+public double hypot(double x, double y) { return 0.0; }
+public double min(double a, double b) { return 0.0; }
+public double max(double a, double b) { return 0.0; }
+public boolean is_nan(double x) { return false; }
+public boolean is_finite(double x) { return false; }
+public int abs_int(int x) { return 0; }
+public int min_int(int a, int b) { return 0; }
+public int max_int(int a, int b) { return 0; }
+public int pow_int(int base, int exponent) { return 0; }
+",
+    ),
+    (
         "http",
         "public String get(String url) { return \"\"; }
 ",
@@ -90,9 +125,17 @@ const GRANT_CLI_FS: &str = "`--allow fs`";
 const GRANT_APP: &str = "`[app] permissions` in `qxide.toml`";
 
 impl Permissions {
+    // Pure modules (`std.math`) have no effects, so every host allows them.
     fn with(f: impl Fn(&str) -> Access) -> Self {
+        let access = |m: &str| {
+            if super::pure::is_pure_module(m) {
+                Access::Allowed
+            } else {
+                f(m)
+            }
+        };
         Permissions {
-            access: MODULES.iter().map(|(m, _)| (*m, f(m))).collect(),
+            access: MODULES.iter().map(|(m, _)| (*m, access(m))).collect(),
         }
     }
 
@@ -956,6 +999,15 @@ mod tests {
         assert!(matches!(app.access("http"), Some(Access::Denied(_))));
         let net = Permissions::app(&["http".into()]);
         assert_eq!(net.access("http"), Some(Access::Allowed));
+        // Pure modules have no effects: every host allows them without a grant.
+        for host in [
+            Permissions::cli(false),
+            Permissions::playground(),
+            Permissions::repl(),
+            Permissions::app(&[]),
+        ] {
+            assert_eq!(host.access("math"), Some(Access::Allowed));
+        }
         for host in [
             Permissions::cli(true),
             Permissions::playground(),

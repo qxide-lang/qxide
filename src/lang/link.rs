@@ -291,7 +291,7 @@ impl Linker<'_> {
             _ => None,
         };
         let access = match &dependency {
-            Some(_) if module.name != "log" => None,
+            Some(_) if module.name != "log" && !super::pure::is_pure_module(&module.name) => None,
             _ => self.perms.access(&module.name),
         };
         match (access, dependency) {

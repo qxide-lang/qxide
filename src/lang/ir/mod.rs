@@ -195,6 +195,14 @@ pub enum Inst {
         name: &'static str,
         span: Span,
     },
+    /// A method of a `String` value (src/lang/pure.rs), charged per byte.
+    StrMethod {
+        name: &'static str,
+        dst: Reg,
+        recv: Reg,
+        args: Box<[Reg]>,
+        span: Span,
+    },
     QAlloc {
         dst: Reg,
         span: Span,
@@ -519,6 +527,19 @@ impl Func {
             } => {
                 let args: Vec<String> = args.iter().map(|(a, _)| r(*a)).collect();
                 format!("{} = call.host {name}({})", r(*dst), args.join(", "))
+            }
+            Inst::StrMethod {
+                name,
+                dst,
+                recv,
+                args,
+                ..
+            } => {
+                let args: Vec<String> = std::iter::once(recv)
+                    .chain(args.iter())
+                    .map(|a| r(*a))
+                    .collect();
+                format!("{} = str.{name} {}", r(*dst), args.join(", "))
             }
             Inst::Call {
                 func, dst, args, ..

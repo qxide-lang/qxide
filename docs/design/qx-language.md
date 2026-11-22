@@ -1174,3 +1174,30 @@ int collatz(int n) {
 | 코드 | 의미 |
 | --- | --- |
 | `Q0224` | `break` 또는 `continue`가 같은 함수 안의 루프 밖에 있음 |
+
+### 19.2 `std.math`와 `String` 메서드
+
+- **설계 결정(D4)**: `docs/design/general-purpose-roadmap.md`의 설계 결정 D4에 따라 순수 함수는 새 전역 내장 함수로 추가하지 않는다. 사용자 함수가 내장 함수 이름을 재사용할 수 없어(`Q0217`) 새 전역 이름이 기존 프로그램을 깨뜨릴 수 있기 때문이다. 수학 함수는 표준 모듈 `std.math`(`import std.math;` 후 `math.sqrt(x)` 형태로 호출)에 두고, 텍스트 함수는 `String` 값의 메서드(`s.trim()`)로 제공하여 전역 이름을 추가하지 않는다.
+- **순수성과 호스트 허용**: `std.math`와 `String` 메서드는 순수 연산으로, 호스트를 거치지 않고 인터프리터 내부에서 실행된다. 따라서 모든 호스트(CLI, 플레이그라운드, REPL, 데스크톱 앱, 의존 패키지)가 권한 없이 `std.math`를 허용하며, 다른 `std` 모듈과 달리(`Q0314`) 측정 비트 조건의 `if` 안에서도 사용할 수 있다.
+- **`std.math` 함수**: 별도 표기가 없는 함수는 모두 `double`을 받고 반환하며, `int` 인수는 `double`로 확장된다. `sqrt`, `cbrt`, `exp`, `log`(자연로그), `log10`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round`(중간값은 0에서 멀어지는 쪽으로 반올림), `trunc`, `abs`, `pow(x, y)`, `hypot(x, y)`, `min`, `max`(Java와 마찬가지로 두 인수 중 하나라도 NaN이면 NaN 반환)를 제공하며, `is_nan`과 `is_finite`는 `boolean`을 반환한다. 정수 함수로는 `abs_int`, `min_int`, `max_int`, `pow_int(base, exponent)`를 제공한다(오버플로는 `Q0401`, 음수 지수는 `Q0706`).
+- **플랫폼 차이**: `sqrt`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`는 모든 플랫폼에서 같은 결과를 낸다. 나머지 함수는 플랫폼의 부동소수점 라이브러리를 사용하므로 Java의 `Math`와 `StrictMath`처럼 플랫폼 간(예: Windows의 CLI와 WebAssembly 플레이그라운드)에 마지막 자릿수가 다를 수 있다. 단일 빌드의 모든 엔진은 동일한 결과를 낸다.
+- **`String` 메서드**: 기존 `as_int`/`to_binary`와 마찬가지로 `snake_case`를 사용하며, 인덱스는 `len`과 같이 유니코드 문자 단위로 센다. `length()`는 `int`를 반환하고, `substring(start, end)`는 `end` 미포함 범위의 부분 문자열을 반환한다(`0 <= start <= end <= length`를 벗어나면 `Q0403`). `char_at(i)`는 한 글자 `String`을 반환하며 범위를 벗어나면 `Q0403`이 발생한다. `index_of(t)`는 문자 인덱스 또는 `-1`을, `contains(t)`, `starts_with(t)`, `ends_with(t)`는 `boolean`을 반환한다. 또한 `to_upper()`, `to_lower()`, `trim()`, 모든 일치 항목을 치환하는 `replace(from, to)`, `repeat(n)`(음수 `n`은 `Q0706`), 그리고 `parse_int()`와 `parse_double()`(앞뒤 공백은 무시하며 유효하지 않은 텍스트는 새 실행 시간 오류 `Q0419`)을 제공한다. `split`은 배열과 함께 추가된다.
+- **검사 오류**: 알 수 없는 메서드는 `Q0220`, 인수 개수 불일치는 `Q0203`, 인수 타입 불일치는 `Q0204`, 알 수 없는 `std.math` 함수는 `Q0701`로 보고한다.
+- **스텝 예산과 엔진**: 모든 메서드는 읽고 생성하는 바이트마다 스텝을 부과한다(다른 `String` 작업과 마찬가지로 바이트당 8스텝). 결과 크기를 미리 알 수 있는 메서드(`repeat`, `replace`)는 결과를 만들기 전에 스텝을 먼저 부과하므로, `"ab".repeat(huge)` 같은 호출은 메모리를 소진하지 않고 스텝 한도(`Q0413`)에서 중단된다. 세 엔진 모두 같은 스텝을 부과하며(모든 스텝 한도 위치에서 검증됨), JIT는 아직 이러한 호출을 포함한 함수를 컴파일하지 않는다.
+
+```rust
+import std.math;
+
+double norm(double x, double y) {
+    return math.sqrt(x * x + y * y);
+}
+
+void main() {
+    String t = "  Hello, Qxide  ".trim();
+    println("{} {} {}", t.to_upper(), t.substring(7, 12), norm(3, 4));
+}
+```
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0419` | `parse_int()`/`parse_double()`에 숫자가 아닌 텍스트가 주어짐(실행 시간 오류) |

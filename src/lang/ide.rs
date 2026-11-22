@@ -329,7 +329,12 @@ impl Scopes {
                 self.expr(base);
                 self.expr(index);
             }
-            ExprKind::Method { recv, .. } => self.expr(recv),
+            ExprKind::Method { recv, args, .. } => {
+                self.expr(recv);
+                for a in args {
+                    self.expr(a);
+                }
+            }
             ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => self.expr(expr),
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.expr(lhs);

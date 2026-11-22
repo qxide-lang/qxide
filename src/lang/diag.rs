@@ -108,6 +108,7 @@ codes! {
     CondDepth => "Q0416",
     SimWorkLimit => "Q0417",
     TooManyDiagnostics => "Q0418",
+    ParseNumber => "Q0419",
     UnknownPackage => "Q0501",
     ModuleNotFound => "Q0502",
     UnknownImport => "Q0503",

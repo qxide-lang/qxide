@@ -618,7 +618,13 @@ impl<'h> Machine<'h> {
     pub fn std_call(&mut self, n: &str, vals: Vec<HostValue>, span: Span) -> R<Value> {
         let rest = n.strip_prefix("std.").ok_or_else(|| internal(span))?;
         let (module, function) = rest.split_once('.').ok_or_else(|| internal(span))?;
-        match self.host.call(module, function, vals) {
+        // Pure modules run here, never through the host.
+        let result = if super::pure::is_pure_module(module) {
+            Ok(super::pure::math(function, &vals, span)?)
+        } else {
+            self.host.call(module, function, vals)
+        };
+        match result {
             Ok(HostValue::Unit) => Ok(Value::Unit),
             Ok(HostValue::Int(n)) => Ok(Value::Int(n)),
             Ok(HostValue::Double(v)) => Ok(Value::Double(v)),

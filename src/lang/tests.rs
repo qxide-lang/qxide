@@ -1300,6 +1300,121 @@ fn loop_control_rules() {
     );
 }
 
+#[test]
+fn string_methods_and_std_math() {
+    let src = "import std.math;
+void main() {
+    String t = \"  Hello, Qxide  \".trim();
+    println(\"{} {} {} {}\", t, t.length(), t.to_upper(), t.to_lower());
+    println(\"{} {} {} {}\", t.substring(7, 12), t.char_at(0), t.index_of(\"Qx\"), t.index_of(\"zz\"));
+    println(\"{} {} {}\", t.contains(\"lo\"), t.starts_with(\"He\"), t.ends_with(\"x\"));
+    println(\"{} {} {}\", t.replace(\"l\", \"L\"), \"ab\".repeat(3), \"x\".replace(\"\", \"-\"));
+    println(\"{} {}\", \" 42 \".parse_int() + 1, \"2.5e3\".parse_double());
+    println(\"{} {} {} {}\", \"한글\".length(), \"한글\".substring(1, 2), \"한글\".index_of(\"글\"), \"ß\".to_upper());
+    println(\"{} {} {} {} {}\", math.sqrt(16), math.floor(-2.5), math.ceil(2.1), math.round(2.5), math.trunc(-2.7));
+    println(\"{} {} {} {}\", math.abs(-1.5), math.min(1, 2.5), math.max(0.0 / 0.0, 1.0), math.hypot(3, 4));
+    println(\"{} {} {} {}\", math.abs_int(-9), math.min_int(3, 7), math.max_int(3, 7), math.pow_int(-2, 5));
+    println(\"{} {} {}\", math.pow_int(1, 1000000), math.is_nan(0.0 / 0.0), math.is_finite(1.0 / 0.0));
+}
+";
+    assert_eq!(
+        run_ok(src, 1),
+        "Hello, Qxide 12 HELLO, QXIDE hello, qxide
+Qxide H 7 -1
+true true false
+HeLLo, Qxide ababab -x-
+43 2500.0
+2 글 1 SS
+4.0 -3.0 3.0 3.0 -2.0
+1.5 1.0 NaN 5.0
+9 3 7 -32
+1 true false
+"
+    );
+    // Pure math is allowed inside an `if` on a measured bit; other std modules are not.
+    ok("import std.math;
+void main() {
+    Qubit q = qubit();
+    Qubit t = qubit();
+    h(q);
+    Bit b = measure(q);
+    if b {
+        rx(t, math.sqrt(2.0));
+    }
+    discard(t);
+}
+");
+}
+
+#[test]
+fn string_method_and_std_math_errors() {
+    let m = |body: &str| main_body(body);
+    assert_eq!(
+        codes(&m("    String s = \"a\";\n    int n = s.size();")),
+        ["Q0220"]
+    );
+    assert_eq!(
+        codes(&m("    String s = \"a\";\n    String t = s.substring(1);")),
+        ["Q0203"]
+    );
+    assert_eq!(
+        codes(&m("    String s = \"a\";\n    String t = s.repeat(1.5);")),
+        ["Q0204"]
+    );
+    assert_eq!(
+        codes(&m("    String s = \"a\";\n    int n = s.trim();")),
+        ["Q0204"]
+    );
+    assert_eq!(
+        codes("import std.math;\nvoid main() { double d = math.cube(2.0); }"),
+        ["Q0701"]
+    );
+    let rt = |body: &str| runtime_error(&m(body)).0;
+    assert_eq!(
+        rt("    String s = \"abc\";\n    println(\"{}\", s.substring(2, 1));"),
+        "Q0403"
+    );
+    assert_eq!(
+        rt("    String s = \"abc\";\n    println(\"{}\", s.substring(0, 4));"),
+        "Q0403"
+    );
+    assert_eq!(
+        rt("    String s = \"abc\";\n    println(\"{}\", s.char_at(-1));"),
+        "Q0403"
+    );
+    assert_eq!(
+        rt("    String s = \"abc\";\n    println(\"{}\", s.repeat(-1));"),
+        "Q0706"
+    );
+    assert_eq!(
+        rt("    String s = \"4x\";\n    println(\"{}\", s.parse_int());"),
+        "Q0419"
+    );
+    assert_eq!(
+        rt("    String s = \"\";\n    println(\"{}\", s.parse_double());"),
+        "Q0419"
+    );
+    let math = |body: &str| {
+        let src = format!("import std.math;\nvoid main() {{\n{body}\n}}\n");
+        runtime_error(&src).0
+    };
+    assert_eq!(
+        math("    println(\"{}\", math.abs_int(-9223372036854775807 - 1));"),
+        "Q0401"
+    );
+    assert_eq!(math("    println(\"{}\", math.pow_int(3, 40));"), "Q0401");
+    assert_eq!(math("    println(\"{}\", math.pow_int(2, -1));"), "Q0706");
+    // A huge result is refused by the step budget before it is built.
+    assert_eq!(
+        rt("    String s = \"ab\";\n    println(\"{}\", s.repeat(4611686018427387903).length());"),
+        "Q0413"
+    );
+    assert_eq!(
+        rt("    String s = \"aaaaaaaa\".repeat(1000000);\n    String t = s.replace(\"a\", s);"),
+        "Q0413"
+    );
+}
+
 // Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`
 // (measured worst case: ~100 MiB unoptimized, ~45 MiB optimized). The parser and checker also
 // run on that thread, as in the CLI: unoptimized they need more than a test thread's 2 MiB.

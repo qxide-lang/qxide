@@ -15,6 +15,7 @@ use super::super::check;
 use super::super::diag::{Code, Diagnostic, Span};
 use super::super::machine::{internal, Gate1, Rot};
 use super::super::msg;
+use super::super::pure;
 use super::*;
 
 struct Sig {
@@ -561,8 +562,24 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 });
                 dst
             }
-            ExprKind::Method { recv, name, .. } => {
+            ExprKind::Method { recv, name, args } => {
                 let v = self.expr(recv);
+                if self.ty(v) == IrTy::Str {
+                    let Some((name, _, ret)) = pure::string_method(&name.name) else {
+                        self.trap(internal(e.span));
+                        return self.reg(IrTy::Unit);
+                    };
+                    let args: Box<[Reg]> = args.iter().map(|a| self.expr(a)).collect();
+                    let dst = self.reg(IrTy::of(ret));
+                    self.emit(Inst::StrMethod {
+                        name,
+                        dst,
+                        recv: v,
+                        args,
+                        span: e.span,
+                    });
+                    return dst;
+                }
                 let (name, ty) = match name.name.as_str() {
                     "as_int" => ("as_int", IrTy::ShotInt),
                     "to_binary" => ("to_binary", IrTy::ShotBinary),

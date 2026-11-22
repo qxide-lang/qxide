@@ -225,6 +225,15 @@ impl Checker<'_> {
                 self.ty(*base)?;
             }
             Inst::View { src, .. } => self.want(*src, IrTy::Bits)?,
+            Inst::StrMethod {
+                dst, recv, args, ..
+            } => {
+                self.want(*recv, IrTy::Str)?;
+                for a in args.iter() {
+                    self.ty(*a)?;
+                }
+                self.ty(*dst)?;
+            }
             Inst::QAlloc { dst, .. } => self.want(*dst, IrTy::Qubit)?,
             Inst::QAllocReg { dst, size, .. } => {
                 self.want(*size, IrTy::I64)?;

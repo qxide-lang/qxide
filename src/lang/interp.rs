@@ -409,7 +409,7 @@ impl<'p> Interp<'p, '_> {
             ExprKind::Var(name) => self.var(f, name, e.span),
             ExprKind::Call { name, args } => self.call(c, f, name, args, e.span),
             ExprKind::Index { base, index } => self.index(c, f, base, index, e.span),
-            ExprKind::Method { recv, name, .. } => self.method(c, f, recv, name, e.span),
+            ExprKind::Method { recv, name, args } => self.method(c, f, recv, name, args, e.span),
             ExprKind::Cast { ty, expr } => self.cast(c, f, ty, expr, e.span),
             ExprKind::Unary { op, expr } => self.unary(c, f, op, expr, e.span),
             ExprKind::Binary { op, lhs, rhs } => self.binary_expr(c, f, op, lhs, rhs, e.span),
@@ -435,9 +435,17 @@ impl<'p> Interp<'p, '_> {
         f: &mut Frame<'p>,
         recv: &'p Expr,
         name: &'p Ident,
+        args: &'p [Expr],
         span: Span,
     ) -> R<Value> {
         let v = self.expr(c, f, recv)?;
+        if let Value::Str(_) = v {
+            let mut vals = Vec::with_capacity(args.len());
+            for a in args {
+                vals.push(self.expr(c, f, a)?);
+            }
+            return self.m.str_method(&name.name, v, vals, span);
+        }
         machine::method(v, &name.name, span)
     }
 

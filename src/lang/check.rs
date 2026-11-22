@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::msg;
+use super::pure;
 
 pub const BUILTINS: &[&str] = &[
     "qubit", "qreg", "h", "x", "z", "s", "sdg", "t", "tdg", "reset", "rx", "ry", "rz", "cx", "ccx",
@@ -291,7 +292,8 @@ impl Checker {
                 .params
                 .iter()
                 .find(|p| p.ty.is_quantum() && p.consume.is_some());
-            let direct = if f.name.name.starts_with("std.") {
+            // Pure std functions (`std.math`) are plain build-time arithmetic.
+            let direct = if f.name.name.starts_with("std.") && !pure::is_pure_fn(&f.name.name) {
                 Some((f.name.span, Unconditional::Op(f.name.name.clone())))
             } else if let Some(p) = consume {
                 Some((p.name.span, Unconditional::Consume(p.name.name.clone())))
@@ -933,6 +935,9 @@ impl Checker {
             }
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
+                if t == Ty::String {
+                    return self.string_method(name, args, e.span);
+                }
                 if !args.is_empty() {
                     self.err(Code::Arity, e.span, msg::arity(&name.name, 0, args.len()));
                     for a in args {
@@ -1050,6 +1055,38 @@ impl Checker {
     }
 
     // The right operand of `&&`/`||` may be skipped at run time, like a one-armed `if`.
+    // `s.substring(0, 3)` and the other methods of `String` (src/lang/pure.rs).
+    fn string_method(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {
+        let sig = pure::string_method(&name.name);
+        let Some((_, params, ret)) = sig.filter(|(_, p, _)| p.len() == args.len()) else {
+            match sig {
+                Some((_, params, _)) => {
+                    self.err(
+                        Code::Arity,
+                        span,
+                        msg::arity(&name.name, params.len(), args.len()),
+                    );
+                }
+                None => {
+                    self.err(
+                        Code::UnknownMethod,
+                        name.span,
+                        msg::unknown_method(&name.name, Ty::String.name()),
+                    );
+                }
+            }
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        };
+        for (a, want) in args.iter().zip(params) {
+            let found = self.expr(a);
+            self.expect_ty(a.span, *want, found);
+        }
+        ret
+    }
+
     fn short_circuit_rhs(&mut self, op: BinOp, rhs: &Expr) -> Ty {
         let before = self.states();
         let t = self.expr(rhs);

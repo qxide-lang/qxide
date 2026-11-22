@@ -420,4 +420,7 @@ fn dependencies_may_only_import_std_log() {
     assert_eq!(e, vec![("Q0703", path("bell_utils/src/lib.qx"), 2, 1)]);
     let ok = "import std.log;\n\npublic void note() {\n    log.info(\"x\");\n}\n";
     assert_eq!(errs(entry, &[("bell_utils/src/lib.qx", ok)]), vec![]);
+    // Pure modules have no effects, so dependencies may use them too.
+    let math = "import std.math;\n\npublic void note() {\n    double d = math.sqrt(2.0);\n}\n";
+    assert_eq!(errs(entry, &[("bell_utils/src/lib.qx", math)]), vec![]);
 }

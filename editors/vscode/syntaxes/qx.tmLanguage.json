@@ -94,7 +94,7 @@
       "captures": { "1": { "name": "support.function.builtin.qx" } }
     },
     "method": {
-      "match": "(\\.)\\s*(as_int|to_binary)\\b",
+      "match": "(\\.)\\s*(as_int|to_binary|length|substring|char_at|index_of|contains|starts_with|ends_with|to_upper|to_lower|trim|replace|repeat|parse_int|parse_double)\\b",
       "captures": {
         "1": { "name": "punctuation.accessor.qx" },
         "2": { "name": "support.function.method.qx" }

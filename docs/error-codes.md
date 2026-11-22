@@ -1655,6 +1655,30 @@ void main() {
 }
 ```
 
+## Q0419: text is not a valid number
+
+The `String` method `parse_int()` or `parse_double()` was called on text that is not a valid number of that type. This is a runtime error raised while the program runs rather than by `qxide check`. Leading and trailing whitespace is ignored; `parse_int()` accepts an optional sign and decimal digits that fit in a 64-bit `int`, while `parse_double()` also accepts a fraction and an exponent such as `2.5e3`. Because the language has no recoverable errors yet, the program stops when parsing fails, so check the text first (for example with `contains` or `length`) when it may not be a number.
+
+Erroneous code example:
+
+```qx
+void main() {
+    String s = "42 apples";
+    int n = s.parse_int();  // error[Q0419]
+    println("{}", n);
+}
+```
+
+To fix it, parse only the part of the text that holds the number, here the first two characters taken with `substring`.
+
+```qx
+void main() {
+    String s = "42 apples";
+    int n = s.substring(0, 2).parse_int();
+    println("{}", n);
+}
+```
+
 ## Q0501: unknown package in an import
 
 The first segment of an `import` path names a package that is neither the current package nor a dependency declared in `[dependencies]` in `qxide.toml`. Package names with hyphens, such as `bell-utils`, are imported using underscores (`bell_utils`). Requiring every external package to be declared in `qxide.toml` keeps builds reproducible and ensures dependencies are explicitly resolved before compilation.

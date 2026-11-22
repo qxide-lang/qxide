@@ -434,6 +434,37 @@ void main() {
     same_outputs(src, 50, 9, Limits::CLI);
 }
 
+// `String` methods and `std.math` charge the same steps at the same places in every engine.
+#[test]
+fn string_methods_and_math_agree_at_every_step_limit() {
+    let src = "import std.math;
+String shout(String s) { return s.trim().to_upper() + \"!\"; }
+void main() {
+    String t = shout(\"  hey \");
+    int k = t.index_of(\"Y\");
+    String r = t.replace(\"E\", \"ee\").repeat(2);
+    println(\"{} {} {} {}\", t, k, r, r.substring(1, 4));
+    println(\"{} {} {}\", math.sqrt(2.0), math.pow_int(3, 4), \"17\".parse_int() + 1);
+}
+";
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 100, "{total}");
+    for max in 0..=total + 1 {
+        let limits = Limits {
+            max_steps: max,
+            ..Limits::CLI
+        };
+        same_outputs(src, 1, 3, limits);
+    }
+}
+
 // Counts how often elaboration asks whether it was cancelled.
 struct Polls {
     n: Cell<u64>,

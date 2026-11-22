@@ -283,6 +283,17 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = machine::method(fr.get(*src), name, *span)?;
                 fr.set(*dst, v);
             }
+            Inst::StrMethod {
+                name,
+                dst,
+                recv,
+                args,
+                span,
+            } => {
+                let vals = args.iter().map(|a| fr.get(*a)).collect();
+                let v = self.m.str_method(name, fr.get(*recv), vals, *span)?;
+                fr.set(*dst, v);
+            }
             Inst::QAlloc { dst, span } => {
                 let v = self.m.qubit(c, *span)?;
                 fr.set(*dst, v);
