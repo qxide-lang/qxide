@@ -128,7 +128,7 @@ Keeping the diagnostic on the open file's `import` lines ensures the problem is 
 
 ## 6. VS Code extension
 
-The extension lives in `editors/vscode/` with `private: true`, version `0.1.0`, and publisher ID `qxide-lang` written only in `package.json` (not registered on the Visual Studio Marketplace).
+The extension lives in `editors/vscode/` (version `0.1.0`, publisher ID `qxide-lang`, with `private: true` only to block `npm publish`); it is packaged as a `.vsix` for each release and published by `.github/workflows/vscode.yml` once the maintainer sets up the publisher and credentials (see `docs/vscode-extension.md`).
 
 - **Language and grammar**:
   - Registers language `qx` for `*.qx` with a language configuration covering `//` comments, brackets, auto-closing pairs, and indentation rules.
@@ -142,7 +142,7 @@ The extension lives in `editors/vscode/` with `private: true`, version `0.1.0`, 
 - **Build and local development**:
   - Built inside `editors/vscode` with `npm install` followed by `npm run compile` (`tsc`); nothing is installed globally.
   - All dependency versions are pinned exactly and `package-lock.json` is committed; `node_modules/` and `out/` are ignored.
-  - Not packaged (no `vsce`). To run locally, open `editors/vscode` in VS Code and press `F5` (Extension Development Host) with `qxide` on `PATH` or `qxide.path` pointing to a built binary (for example `target/debug/qxide`).
+  - Packaged with the pinned `vsce` (`npm run package`, see `docs/vscode-extension.md`). For development, open `editors/vscode` in VS Code and press `F5` (Extension Development Host) with `qxide` on `PATH` or `qxide.path` pointing to a built binary (for example `target/debug/qxide`).
 
 ## 7. Testing
 

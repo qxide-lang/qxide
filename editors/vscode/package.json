@@ -6,6 +6,15 @@
   "private": true,
   "publisher": "qxide-lang",
   "license": "MIT OR Apache-2.0",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#16161a",
+    "theme": "dark"
+  },
+  "homepage": "https://qxide.dev",
+  "bugs": {
+    "url": "https://github.com/qxide-lang/qxide/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/qxide-lang/qxide",
@@ -18,6 +27,14 @@
     "Programming Languages",
     "Linters",
     "Formatters"
+  ],
+  "keywords": [
+    "qxide",
+    "qx",
+    "quantum",
+    "qubit",
+    "openqasm",
+    "language-server"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -71,9 +88,11 @@
     ]
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile && node scripts/license.mjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --test \"test/*.test.mjs\""
+    "test": "npm run compile && node --test \"test/*.test.mjs\"",
+    "package": "vsce package --out qxide-vscode.vsix"
   },
   "dependencies": {
     "vscode-languageclient": "11.0.0"
@@ -81,6 +100,8 @@
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/vscode": "1.91.0",
+    "@vscode/vsce": "4.1.1",
+    "ovsx": "1.4.0",
     "typescript": "5.9.3",
     "vscode-jsonrpc": "10.0.0",
     "vscode-oniguruma": "2.0.1",

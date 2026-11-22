@@ -180,3 +180,12 @@ qxide --version
 
 - PyPI versions are immutable: a file for a version cannot be uploaded again, even after deletion, so re-running the workflow for an already-published tag fails at upload.
 - Local builds are for testing only: `maturin build --release` produces a wheel for the current platform only; do not upload from a local machine.
+
+---
+
+## VS Code Extension (GitHub Actions)
+
+- **Workflow trigger**: `.github/workflows/vscode.yml` (`VS Code extension`) runs automatically after the cargo-dist `Release` workflow succeeds for a `vX.Y.Z` tag push, or manually with `gh workflow run vscode.yml -f tag=vX.Y.Z`.
+- **Release asset**: The workflow runs `npm test`, packages `qxide-vscode-<version>.vsix`, and attaches it to the GitHub release for the tag unless a file of that name is already attached.
+- **Marketplace publishing**: The `marketplace` and `open-vsx` jobs publish to Visual Studio Marketplace and Open VSX only when credentials (`VSCE_PAT` or `VSCE_TRUSTED_PUBLISHING` set to `true`, and `OVSX_PAT`) exist, and skip already-published versions.
+- **Setup and versioning**: One-time registry setup, credential configuration, and extension versioning are documented in `docs/vscode-extension.md`.

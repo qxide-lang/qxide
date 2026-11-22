@@ -1,0 +1,170 @@
+# Package the VS Code extension (editors/vscode) for every qxide release tag, attach the .vsix to the
+# GitHub release, and publish it to the Visual Studio Marketplace and Open VSX when credentials exist.
+#
+# Triggers (same reasoning as pypi.yml):
+# - workflow_run "Release": cargo-dist creates the release with GITHUB_TOKEN, which starts no other
+#   workflows, so this runs after the Release workflow of a tag push succeeds.
+# - workflow_dispatch: package and publish an existing release tag by hand.
+#
+# The extension keeps its own version (editors/vscode/package.json). Marketplace versions are
+# immutable, so publishing uses --skip-duplicate: a release whose extension version is already
+# published only attaches the .vsix. Setup and credentials: docs/vscode-extension.md.
+name: VS Code extension
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vX.Y.Z)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vscode-${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    # workflow_run: only successful tag pushes of Release (that workflow also runs on pull requests).
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      vsix: ${{ steps.pack.outputs.vsix }}
+    steps:
+      - id: tag
+        shell: bash
+        env:
+          # Passed via env, never interpolated into the script, so tag text cannot inject shell.
+          TAG: ${{ github.event.workflow_run.head_branch || inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a release tag: $TAG"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: editors/vscode
+      # Grammar tests; the language server session test is skipped because qxide is not built here.
+      - run: npm test
+        working-directory: editors/vscode
+      - id: pack
+        working-directory: editors/vscode
+        shell: bash
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          vsix="qxide-vscode-$version.vsix"
+          npx vsce package --out "$vsix"
+          npx vsce ls
+          echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vscode-vsix
+          path: editors/vscode/${{ steps.pack.outputs.vsix }}
+          if-no-files-found: error
+
+  release-asset:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: vscode-vsix
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.package.outputs.tag }}
+          VSIX: ${{ needs.package.outputs.vsix }}
+        run: |
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$VSIX"; then
+            echo "::notice::$VSIX is already attached to $TAG"
+          else
+            gh release upload "$TAG" "$VSIX"
+          fi
+
+  marketplace:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only used by Trusted Publishing (vsce --oidc).
+      id-token: write
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      TRUSTED: ${{ vars.VSCE_TRUSTED_PUBLISHING }}
+      VSIX: ${{ needs.package.outputs.vsix }}
+    steps:
+      - if: env.VSCE_PAT == '' && env.TRUSTED != 'true'
+        run: echo "::notice::VSCE_PAT is not set and Trusted Publishing is off; skipping the Visual Studio Marketplace"
+      - if: env.VSCE_PAT != '' || env.TRUSTED == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.package.outputs.tag }}
+          persist-credentials: false
+      - if: env.VSCE_PAT != '' || env.TRUSTED == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: env.VSCE_PAT != '' || env.TRUSTED == 'true'
+        run: npm ci
+        working-directory: editors/vscode
+      - if: env.VSCE_PAT != '' || env.TRUSTED == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: vscode-vsix
+          path: editors/vscode
+      # vsce reads the token from VSCE_PAT; it is never passed on the command line.
+      - if: env.VSCE_PAT != ''
+        working-directory: editors/vscode
+        run: npx vsce publish --packagePath "$VSIX" --skip-duplicate
+      - if: env.VSCE_PAT == '' && env.TRUSTED == 'true'
+        working-directory: editors/vscode
+        run: npx vsce publish --packagePath "$VSIX" --skip-duplicate --oidc
+
+  open-vsx:
+    needs: package
+    runs-on: ubuntu-latest
+    env:
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      VSIX: ${{ needs.package.outputs.vsix }}
+    steps:
+      - if: env.OVSX_PAT == ''
+        run: echo "::notice::OVSX_PAT is not set; skipping Open VSX"
+      - if: env.OVSX_PAT != ''
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.package.outputs.tag }}
+          persist-credentials: false
+      - if: env.OVSX_PAT != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: env.OVSX_PAT != ''
+        run: npm ci
+        working-directory: editors/vscode
+      - if: env.OVSX_PAT != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: vscode-vsix
+          path: editors/vscode
+      # ovsx reads the token from OVSX_PAT; it is never passed on the command line.
+      - if: env.OVSX_PAT != ''
+        working-directory: editors/vscode
+        run: npx ovsx publish "$VSIX" --skip-duplicate
