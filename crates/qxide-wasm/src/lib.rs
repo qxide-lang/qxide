@@ -129,6 +129,20 @@ pub fn execute(cmd: Command, name: &str, src: &str, shots: u64, seed: u64) -> Ou
     }
 }
 
+/// Selects the elaborator for later `qx_exec` calls in this instance: 0 tree-walking (the
+/// default), 1 typed IR, 2 both with their results compared. Returns 0 for an unknown code.
+#[no_mangle]
+pub extern "C" fn qx_set_engine(code: u32) -> u32 {
+    let engine = match code {
+        0 => lang::Engine::Ast,
+        1 => lang::Engine::Ir,
+        2 => lang::Engine::Dual,
+        _ => return 0,
+    };
+    lang::set_engine(engine);
+    1
+}
+
 /// Allocates `len` bytes for the host to write UTF-8 input into.
 #[no_mangle]
 pub extern "C" fn qx_alloc(len: usize) -> *mut u8 {

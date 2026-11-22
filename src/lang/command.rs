@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use super::ast::{Program, Ty};
 use super::diag::{Code, Diagnostic, SourceMap};
-use super::interp::{self, OutPiece, Value};
+use super::interp::{OutPiece, Value};
 use super::stdlib::Host;
 use super::{front_input, msg, render_output, sample, sorted_groups, Input, Limits};
 
@@ -443,7 +443,7 @@ pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, 
     let at = f.name.span;
     let fail = |d: Diagnostic| CallError::from_diags(&map, &[d]);
     let (e, ret) =
-        interp::elaborate_call(&program, c.name, values, host, &c.limits).map_err(fail)?;
+        super::engine::elaborate_call(&program, c.name, values, host, &c.limits).map_err(fail)?;
     let returned: Option<Vec<qxide::Bit>> = match &ret {
         Value::Bit(b) => Some(vec![*b]),
         Value::Bits(v) => Some(v.to_vec()),

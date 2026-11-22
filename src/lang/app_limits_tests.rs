@@ -4,7 +4,7 @@
 // `cargo test app_limits -- --nocapture` prints the table recorded in part 2 of
 // docs/security/EXECUTION_LIMITS_FIXES.md; the test fails if `Limits::APP` loses that headroom.
 
-use super::interp::{self, Value};
+use super::interp::Value;
 use super::stdlib::{Host, HostValue, LogOnly, Permissions, StdResult};
 use super::*;
 
@@ -106,7 +106,7 @@ fn command(
     let (_, program) = front_input(&input, false);
     let program = program.unwrap_or_else(|d| panic!("{name}: {d:?}"));
     let mut host = AppStd { file: file.into() };
-    let (e, _) = interp::elaborate_call(&program, name, args, &mut host, &Limits::APP)
+    let (e, _) = super::engine::elaborate_call(&program, name, args, &mut host, &Limits::APP)
         .unwrap_or_else(|d| panic!("{name}: {d:?}"));
     peak.usage(&e);
     peak.source(module);

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::engine::{self, Engine};
-use super::{front_input, stdlib, Input, Limits};
+use super::{front_input, ir, stdlib, Input, Limits};
 
 enum Mode {
     // Front end, elaboration, then `run` with this many shots (sampling and rendering).
@@ -61,7 +61,11 @@ fn flat_functions(n: usize) -> String {
 }
 
 fn cases() -> Vec<Case> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/qx");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|d| d.join("bench/qx"))
+        .find(|d| d.is_dir())
+        .expect("bench/qx");
     let mut names: Vec<_> = std::fs::read_dir(&dir)
         .expect("bench/qx")
         .map(|e| e.expect("entry").path())
@@ -95,6 +99,8 @@ fn cases() -> Vec<Case> {
 #[derive(Default)]
 struct Times {
     front: Vec<Duration>,
+    // IR only: lowering to the IR (part of `elaborate`).
+    lower: Vec<Duration>,
     elaborate: Vec<Duration>,
     back: Vec<Duration>,
     total: Vec<Duration>,
@@ -113,8 +119,14 @@ fn once(case: &Case, engine: Engine, t: &mut Times) -> String {
         Mode::Check => String::new(),
         Mode::Run(_) | Mode::Build => {
             let s = Instant::now();
-            let e = engine::elaborate(&program, &mut host, &limits, engine)
-                .unwrap_or_else(|d| panic!("{}: {d:?}", case.name));
+            let e = if engine == Engine::Ir {
+                let module = ir::build(&program);
+                t.lower.push(s.elapsed());
+                ir::exec::run(&module, "main", Vec::new(), &mut host, &limits).map(|(e, _)| e)
+            } else {
+                engine::elaborate(&program, &mut host, &limits, engine)
+            }
+            .unwrap_or_else(|d| panic!("{}: {d:?}", case.name));
             t.elaborate.push(s.elapsed());
             let s = Instant::now();
             let out = match case.mode {
@@ -165,10 +177,10 @@ fn run_suite() {
         .collect();
     let json = std::env::var("QXIDE_BENCH_JSON").ok();
     println!(
-        "{:<18} {:<6} {:>14} {:>14} {:>14} {:>14}",
-        "case", "engine", "front ms", "elaborate ms", "run/qasm ms", "total ms"
+        "{:<18} {:<6} {:>14} {:>14} {:>14} {:>14} {:>14}",
+        "case", "engine", "front ms", "lower ms", "elaborate ms", "run/qasm ms", "total ms"
     );
-    println!("{:<25} {:>14} (min / median of {repeat} runs)", "", "");
+    println!("(min / median of {repeat} runs; elaborate includes lower)");
     for case in cases().iter().filter(|c| c.name.contains(only.as_str())) {
         let mut reference: Option<String> = None;
         for &engine in &engines {
@@ -184,6 +196,7 @@ fn run_suite() {
             }
             let cols = [
                 stats(&mut t.front),
+                stats(&mut t.lower),
                 stats(&mut t.elaborate),
                 stats(&mut t.back),
                 stats(&mut t.total),
@@ -196,13 +209,14 @@ fn run_suite() {
                 }
             };
             println!(
-                "{:<18} {:<6} {:>14} {:>14} {:>14} {:>14}",
+                "{:<18} {:<6} {:>14} {:>14} {:>14} {:>14} {:>14}",
                 case.name,
                 engine.name(),
                 cell(cols[0]),
                 cell(cols[1]),
                 cell(cols[2]),
-                cell(cols[3])
+                cell(cols[3]),
+                cell(cols[4])
             );
             if let Some(path) = &json {
                 let num = |x: f64| {
@@ -213,13 +227,15 @@ fn run_suite() {
                     }
                 };
                 let line = format!(
-                    "{{\"case\":\"{}\",\"engine\":\"{}\",\"repeat\":{repeat},\"front_ms\":[{},{}],\"elaborate_ms\":[{},{}],\"back_ms\":[{},{}],\"total_ms\":[{},{}]}}\n",
+                    "{{\"case\":\"{}\",\"engine\":\"{}\",\"repeat\":{repeat},\"front_ms\":[{},{}],\"lower_ms\":[{},{}],\"elaborate_ms\":[{},{}],\"back_ms\":[{},{}],\"total_ms\":[{},{}]}}
+",
                     case.name,
                     engine.name(),
                     num(cols[0].0), num(cols[0].1),
                     num(cols[1].0), num(cols[1].1),
                     num(cols[2].0), num(cols[2].1),
                     num(cols[3].0), num(cols[3].1),
+                    num(cols[4].0), num(cols[4].1),
                 );
                 use std::io::Write;
                 std::fs::OpenOptions::new()

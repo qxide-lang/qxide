@@ -418,7 +418,10 @@ impl Session {
         }
         // The session is replayed on every input, so effects other than logging are refused.
         let mut host = super::stdlib::LogOnly::default();
-        let e = interp::elaborate(&program, &mut host, &Limits::CLI).map_err(|d| p.render(&[d]))?;
+        let e =
+            super::engine::elaborate_call(&program, "main", Vec::new(), &mut host, &Limits::CLI)
+                .map(|(e, _)| e)
+                .map_err(|d| p.render(&[d]))?;
         Ok((p, e))
     }
 

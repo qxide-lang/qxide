@@ -7,11 +7,16 @@ export type Command = 'check' | 'run' | 'qasm';
 export type Outcome = {exit: number; stdout: string; stderr: string};
 
 const CODES: Record<Command, number> = {check: 0, run: 1, qasm: 2};
+
+/** Which elaborator builds the circuit (`qxide --engine`); the playground uses `ast`. */
+export type Engine = 'ast' | 'ir' | 'dual';
+const ENGINES: Record<Engine, number> = {ast: 0, ir: 1, dual: 2};
 const U64_MAX = (1n << 64n) - 1n;
 
 type Exports = {
   memory: WebAssembly.Memory;
   qx_alloc(len: number): number;
+  qx_set_engine(code: number): number;
   qx_exec(cmd: number, namePtr: number, nameLen: number, srcPtr: number, srcLen: number, shots: bigint, seed: bigint): number;
 };
 
@@ -19,10 +24,11 @@ type Exports = {
  * Runs one command in a fresh instance, so every run starts with clean memory and a trap cannot
  * leave state behind. Throws if the module traps (stack exhaustion, out of memory, a bug).
  */
-export function execute(module: WebAssembly.Module, cmd: Command, name: string, src: string, shots: bigint, seed: bigint): Outcome {
+export function execute(module: WebAssembly.Module, cmd: Command, name: string, src: string, shots: bigint, seed: bigint, engine: Engine = 'ast'): Outcome {
   if (shots < 0n || shots > U64_MAX || seed < 0n || seed > U64_MAX) throw new RangeError('shots and seed must fit in u64');
   const instance = new WebAssembly.Instance(module, {});
   const ex = instance.exports as unknown as Exports;
+  if (engine !== 'ast' && ex.qx_set_engine(ENGINES[engine]) !== 1) throw new Error(`unknown engine ${engine}`);
   const enc = new TextEncoder();
   const nameBytes = enc.encode(name);
   const srcBytes = enc.encode(src);

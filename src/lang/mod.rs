@@ -12,8 +12,10 @@ mod explain;
 mod fmt;
 pub mod ide;
 mod interp;
+mod ir;
 mod lexer;
 mod link;
+mod machine;
 mod msg;
 mod parser;
 pub mod repl;
@@ -67,6 +69,10 @@ pub const STACK_SIZE: usize = 256 << 20;
 // The CLI notes a random seed; the playground shows it itself.
 #[allow(unused_imports)]
 pub use msg::seed_note;
+
+// The CLI and the playground pick the interpreter per run (`--engine`); see engine.rs.
+#[allow(unused_imports)]
+pub use engine::{set as set_engine, Engine};
 
 /// Rendered diagnostics, ready for stderr.
 #[derive(Debug)]
@@ -133,7 +139,9 @@ fn build_input(
 ) {
     let (map, program) = front_input(input, true);
     let built = program.and_then(|program| {
-        let elaborated = interp::elaborate(&program, host, limits).map_err(|d| vec![d])?;
+        let elaborated = engine::elaborate_call(&program, "main", Vec::new(), host, limits)
+            .map(|(e, _)| e)
+            .map_err(|d| vec![d])?;
         Ok((program, elaborated))
     });
     (map, built)

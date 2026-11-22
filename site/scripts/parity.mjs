@@ -25,8 +25,11 @@ function runCli(cmd, path, shots, seed) {
   return {exit: r.status, stdout: r.stdout, stderr: r.stderr};
 }
 
+// QXIDE_ENGINE=ir (or dual) runs both sides on the typed IR interpreter; the CLI reads it too.
+const engine = process.env.QXIDE_ENGINE ?? 'ast';
+
 function runWasm(cmd, path, shots, seed) {
-  return execute(module, cmd, path, readFileSync(join(root, path), 'utf8'), BigInt(shots), BigInt(seed));
+  return execute(module, cmd, path, readFileSync(join(root, path), 'utf8'), BigInt(shots), BigInt(seed), engine);
 }
 
 let checked = 0;
@@ -117,4 +120,4 @@ if (failures.length) {
   console.error(`parity: ${failures.length} mismatch(es) in ${checked} comparisons`);
   process.exit(1);
 }
-console.log(`parity: ${checked} comparisons over ${examples.length} examples and ${Object.keys(errorCases).length} error cases match the CLI; 21-qubit cap verified`);
+console.log(`parity (engine ${engine}): ${checked} comparisons over ${examples.length} examples and ${Object.keys(errorCases).length} error cases match the CLI; 21-qubit cap verified`);

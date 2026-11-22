@@ -34,16 +34,41 @@ Commands:
   lsp                                {}
 {}{}
 Options:
+  --engine ast|ir                    {}
   -V, --version                      Print version
   -h, --help                         Print help
 ",
         LSP_HELP,
         pkg::cli::usage(),
-        app::usage()
+        app::usage(),
+        ENGINE_HELP
     )
 }
 
 const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
+
+const ENGINE_HELP: &str = "Select interpreter for run, qasm, and repl (default: QXIDE_ENGINE or ast; ir: experimental typed IR)";
+
+// `--engine` (or `QXIDE_ENGINE` when the flag is absent): which interpreter builds the circuit.
+fn parse_engine(flag: &str, value: Option<&str>) -> Result<lang::Engine, ExitCode> {
+    match value.and_then(lang::Engine::parse) {
+        // `dual` (both engines, compared) is for tests and not advertised.
+        Some(e) => Ok(e),
+        None => {
+            let v = value.unwrap_or_default();
+            eprintln!("qxide: invalid value `{v}` for {flag} (expected `ast` or `ir`)");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
+// The engine of `run`, `qasm` and `repl` when `--engine` is not given.
+fn default_engine() -> Result<lang::Engine, ExitCode> {
+    match std::env::var("QXIDE_ENGINE") {
+        Ok(v) => parse_engine("QXIDE_ENGINE", Some(&v)),
+        Err(_) => Ok(lang::Engine::Ast),
+    }
+}
 
 fn bell(shots: u64) {
     let mut c = Circuit::new();
@@ -251,11 +276,14 @@ fn new_command(args: &[String]) -> ExitCode {
 }
 
 fn repl_command(args: &[String]) -> ExitCode {
-    let mut seed = None;
+    let (mut seed, mut engine) = (None, None);
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let parsed = match flag.as_str() {
             "--seed" => parse_count(flag, rest.next(), 0).map(|n| seed = Some(n)),
+            "--engine" => {
+                parse_engine(flag, rest.next().map(String::as_str)).map(|e| engine = Some(e))
+            }
             _ => {
                 eprintln!("qxide: unexpected argument `{flag}` for `repl`");
                 Err(ExitCode::from(2))
@@ -265,8 +293,13 @@ fn repl_command(args: &[String]) -> ExitCode {
             return code;
         }
     }
+    let engine = match engine.map_or_else(default_engine, Ok) {
+        Ok(e) => e,
+        Err(code) => return code,
+    };
     let (seed, announce) = seed.map_or_else(|| (random_seed(), true), |s| (s, false));
     let code = on_lang_stack(move || {
+        lang::set_engine(engine);
         use std::io::IsTerminal;
         let stdin = std::io::stdin();
         let interactive = stdin.is_terminal();
@@ -330,9 +363,13 @@ fn project_data_dir(entry: &std::path::Path) -> std::path::PathBuf {
 fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     // Flags may come before or after the file (`run --shots 9 a.qx` or `run a.qx --shots 9`).
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
+    let mut engine = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let parsed = match (cmd, arg.as_str()) {
+            ("run" | "qasm", "--engine") => {
+                parse_engine(arg, rest.next().map(String::as_str)).map(|e| engine = Some(e))
+            }
             ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             ("run", "--seed") => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
             ("run" | "check", "--allow") => parse_allow(rest.next()).map(|()| allow_fs = true),
@@ -349,6 +386,10 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             return code;
         }
     }
+    let engine = match engine.map_or_else(default_engine, Ok) {
+        Ok(e) => e,
+        Err(code) => return code,
+    };
     // Without a file, use `src/main.qx` of the project around the current directory.
     let path = match file {
         Some(p) => p,
@@ -388,6 +429,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     let worker = std::thread::Builder::new()
         .stack_size(LANG_STACK)
         .spawn(move || {
+            lang::set_engine(engine);
             let input = lang::Input {
                 name: &path,
                 src: &src,
