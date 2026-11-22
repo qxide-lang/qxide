@@ -405,6 +405,13 @@ fn repl_defines_functions_across_lines_and_calls_them() {
 }
 
 #[test]
+fn repl_declares_structs_and_uses_them() {
+    let src = "struct P {\n    int a;\n}\nP p = new P(3);\np.a += 4;\np.a\n";
+    let (out, err, code) = repl(src);
+    assert_eq!((out.as_str(), err.as_str(), code), ("7\n", "", 0));
+}
+
+#[test]
 fn repl_commands() {
     let (out, err, code) = repl(":help\nQubit q = qubit();\nh(q);\n:qasm\n:reset\nq\n:nope\n");
     assert!(out.contains("h q[0];"), "{out}");

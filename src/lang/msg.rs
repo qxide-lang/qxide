@@ -719,7 +719,7 @@ pub fn command_not_public(name: &str) -> String {
 }
 
 pub fn command_bad_return(name: &str, ty: &str) -> String {
-    format!("command `{name}` has unsupported return type `{ty}`; arrays cannot be sent to JavaScript yet")
+    format!("command `{name}` has unsupported return type `{ty}`; returning arrays or structs to JavaScript is not supported yet")
 }
 
 pub fn command_bad_param(name: &str, param: &str, ty: &str) -> String {

@@ -212,8 +212,8 @@ struct Loop {
 
 struct Checker {
     fns: HashMap<String, Sig>,
-    // Fields of every struct, in declaration order.
-    structs: HashMap<Ty, Vec<(String, Ty)>>,
+    // Fields of every struct: types in declaration order, and by name.
+    structs: HashMap<Ty, (Vec<Ty>, HashMap<String, Ty>)>,
     // Functions that cannot run inside an `if` on a `Bit`, with the first reason found.
     unconditional: HashMap<String, (Span, Unconditional)>,
     vars: Vec<Var>,
@@ -270,9 +270,10 @@ impl Checker {
                 );
                 continue;
             }
-            let mut fields: Vec<(String, Ty)> = Vec::new();
+            let mut order = Vec::new();
+            let mut by_name: HashMap<String, Ty> = HashMap::new();
             for f in &s.fields {
-                if fields.iter().any(|(n, _)| *n == f.name.name) {
+                if by_name.contains_key(&f.name.name) {
                     self.err(
                         Code::Duplicate,
                         f.name.span,
@@ -294,42 +295,66 @@ impl Checker {
                     );
                     Ty::Error
                 };
-                fields.push((f.name.name.clone(), ty));
+                order.push(ty);
+                by_name.insert(f.name.name.clone(), ty);
             }
-            self.structs.insert(ty, fields);
+            self.structs.insert(ty, (order, by_name));
         }
-        let strip = |mut t: Ty| {
-            while let Some(e) = t.elem() {
-                t = e;
+        self.struct_cycles(p);
+    }
+
+    // One iterative depth-first search over "struct contains struct" edges (through arrays);
+    // each edge that closes a cycle is reported at its field.
+    fn struct_cycles(&mut self, p: &Program) {
+        let ids: HashMap<Ty, usize> = p
+            .structs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (Ty::struct_named(&s.name.name), i))
+            .rev()
+            .collect();
+        let edges: Vec<Vec<(usize, Span)>> = p
+            .structs
+            .iter()
+            .map(|s| {
+                s.fields
+                    .iter()
+                    .filter_map(|f| {
+                        let mut t = f.ty;
+                        while let Some(e) = t.elem() {
+                            t = e;
+                        }
+                        ids.get(&t).map(|&v| (v, f.ty_span))
+                    })
+                    .collect()
+            })
+            .collect();
+        // 0: not visited, 1: on the current path, 2: done.
+        let mut color = vec![0u8; edges.len()];
+        for start in 0..edges.len() {
+            if color[start] != 0 {
+                continue;
             }
-            t
-        };
-        for s in &p.structs {
-            let me = Ty::struct_named(&s.name.name);
-            for f in &s.fields {
-                // Depth-first over the struct types reachable from this field.
-                let mut stack = vec![strip(f.ty)];
-                let mut seen = Vec::new();
-                let mut cycle = false;
-                while let Some(t) = stack.pop() {
-                    if t == me {
-                        cycle = true;
-                        break;
+            color[start] = 1;
+            let mut stack = vec![(start, 0usize)];
+            while let Some(top) = stack.last_mut() {
+                let (u, k) = *top;
+                let Some(&(v, span)) = edges[u].get(k) else {
+                    color[u] = 2;
+                    stack.pop();
+                    continue;
+                };
+                top.1 += 1;
+                match color[v] {
+                    0 => {
+                        color[v] = 1;
+                        stack.push((v, 0));
                     }
-                    if !matches!(t, Ty::Struct(_)) || seen.contains(&t) {
-                        continue;
+                    1 => {
+                        let name = &p.structs[u].name.name;
+                        self.err(Code::BadFieldType, span, msg::recursive_struct(name));
                     }
-                    seen.push(t);
-                    if let Some(fs) = self.structs.get(&t) {
-                        stack.extend(fs.iter().map(|(_, ft)| strip(*ft)));
-                    }
-                }
-                if cycle {
-                    self.err(
-                        Code::BadFieldType,
-                        f.ty_span,
-                        msg::recursive_struct(&s.name.name),
-                    );
+                    _ => {}
                 }
             }
         }
@@ -1099,7 +1124,11 @@ impl Checker {
             }
             ExprKind::ArrayLit { ty, elems } => self.array_lit(*ty, elems, e.span),
             ExprKind::NewStruct { ty, args } => {
-                let fields = self.structs.get(ty).cloned().unwrap_or_default();
+                let fields = self
+                    .structs
+                    .get(ty)
+                    .map(|(order, _)| order.clone())
+                    .unwrap_or_default();
                 if fields.len() != args.len() {
                     self.err(
                         Code::Arity,
@@ -1111,7 +1140,7 @@ impl Checker {
                     }
                     return Ty::Error;
                 }
-                for (a, (_, want)) in args.iter().zip(fields) {
+                for (a, want) in args.iter().zip(fields) {
                     let found = self.expr(a);
                     self.expect_ty(a.span, want, found);
                 }
@@ -1326,8 +1355,8 @@ impl Checker {
         let found = self
             .structs
             .get(&t)
-            .and_then(|fs| fs.iter().find(|(n, _)| *n == name.name))
-            .map(|(_, ft)| *ft);
+            .and_then(|(_, by_name)| by_name.get(&name.name))
+            .copied();
         found.unwrap_or_else(|| {
             self.err(
                 Code::UnknownField,

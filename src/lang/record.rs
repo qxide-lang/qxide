@@ -26,10 +26,17 @@ impl fmt::Debug for StructVal {
     }
 }
 
+#[derive(Debug, Default)]
+struct Layout {
+    fields: Vec<(String, Ty)>,
+    // Field name -> index: a lookup costs the same for any number of fields.
+    index: HashMap<String, usize>,
+}
+
 /// Field names and types of every struct of one program, in declaration order.
 #[derive(Debug, Default)]
 pub struct Layouts {
-    map: HashMap<TyId, Vec<(String, Ty)>>,
+    map: HashMap<TyId, Layout>,
 }
 
 impl Layouts {
@@ -37,30 +44,39 @@ impl Layouts {
         let mut map = HashMap::new();
         for s in &p.structs {
             if let Ty::Struct(id) = Ty::struct_named(&s.name.name) {
-                let fields = s
-                    .fields
-                    .iter()
-                    .map(|f| (f.name.name.clone(), f.ty))
-                    .collect();
-                map.entry(id).or_insert(fields);
+                map.entry(id).or_insert_with(|| {
+                    let fields: Vec<(String, Ty)> = s
+                        .fields
+                        .iter()
+                        .map(|f| (f.name.name.clone(), f.ty))
+                        .collect();
+                    let mut index = HashMap::new();
+                    for (i, (n, _)) in fields.iter().enumerate() {
+                        index.entry(n.clone()).or_insert(i);
+                    }
+                    Layout { fields, index }
+                });
             }
         }
         Rc::new(Layouts { map })
     }
 
-    pub fn fields(&self, ty: Ty) -> Option<&[(String, Ty)]> {
+    fn layout(&self, ty: Ty) -> Option<&Layout> {
         match ty {
-            Ty::Struct(id) => self.map.get(&id).map(Vec::as_slice),
+            Ty::Struct(id) => self.map.get(&id),
             _ => None,
         }
     }
 
+    pub fn fields(&self, ty: Ty) -> Option<&[(String, Ty)]> {
+        self.layout(ty).map(|l| l.fields.as_slice())
+    }
+
     /// Index and type of field `name` of struct type `ty`.
     pub fn field(&self, ty: Ty, name: &str) -> Option<(usize, Ty)> {
-        self.fields(ty)?
-            .iter()
-            .position(|(n, _)| n == name)
-            .map(|i| (i, self.fields(ty).unwrap()[i].1))
+        let l = self.layout(ty)?;
+        let &i = l.index.get(name)?;
+        Some((i, l.fields[i].1))
     }
 }
 

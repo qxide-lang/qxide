@@ -1589,7 +1589,7 @@ void main() {
         step(p, 0.1);
     }
     bodies[1].mass *= 2;
-    Vec2 d = new Vec2(1, 2);
+    var d = new Vec2(1, 2);
     Vec2 alias = d;
     alias.y = 5;
     println(\"{} {} {} {} {}\", p.name, bodies[1].pos.y, energy(bodies), d.y, bodies[1].tags[0]);
@@ -1614,6 +1614,31 @@ struct P { int x; }",
     );
 }
 
+// Field lookups cost the same for wide structs, and long chains of struct types check in one
+// pass (no per-field search).
+#[test]
+fn wide_structs_and_long_struct_chains() {
+    let n = 3000;
+    let fields: String = (0..n).map(|i| format!("int f{i}; ")).collect();
+    let args = vec!["1"; n].join(", ");
+    let src = format!(
+        "struct W {{ {fields}}}\nvoid main() {{\n    W w = new W({args});\n    int t = 0;\n    for i in 0..1000 {{\n        t += w.f{last};\n        w.f{last} = i;\n    }}\n    println(\"{{}}\", t);\n}}\n",
+        last = n - 1
+    );
+    assert_eq!(run_ok(&src, 1), "498502\n");
+    let chain: String = (0..n)
+        .map(|i| format!("struct S{i} {{ S{}[] next; }}\n", i + 1))
+        .collect();
+    let src =
+        format!("{chain}struct S{n} {{ int x; }}\nvoid main() {{ S0 s = new S0(new S1[0]); }}\n");
+    ok(&src);
+    let looped = src.replace(
+        &format!("struct S{n} {{ int x; }}"),
+        &format!("struct S{n} {{ S0 back; }}"),
+    );
+    assert_eq!(codes(&looped), ["Q0227"]);
+}
+
 #[test]
 fn struct_errors() {
     // Duplicate structs and fields, field types, recursion (directly, through arrays, mutually).
@@ -1628,9 +1653,10 @@ fn struct_errors() {
     assert_eq!(codes("struct P { Qubit q; } void main() {}"), ["Q0227"]);
     assert_eq!(codes("struct N { N next; } void main() {}"), ["Q0227"]);
     assert_eq!(codes("struct N { N[] kids; } void main() {}"), ["Q0227"]);
+    // One error per cycle, at the field that closes it.
     assert_eq!(
-        codes("struct A { B b; } struct B { A[] a; } void main() {}"),
-        ["Q0227", "Q0227"]
+        errors("struct A { B b; } struct B { A[] a; } void main() {}"),
+        [("Q0227", 1, 30)]
     );
     // Construction arity and types, unknown fields, field stores.
     let p = |body: &str| {

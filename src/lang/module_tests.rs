@@ -411,6 +411,31 @@ fn library_modules_need_no_main() {
     assert_eq!(e, vec![("Q0105", path("bell_utils/src/lib.qx"), 1, 16)]);
 }
 
+// Struct names are unique across the program; a struct type is named only in its own file, but
+// its values may cross files through `var`.
+#[test]
+fn structs_across_modules() {
+    let lib = "struct Pt {\n    int x;\n}\n\npublic int make(int n) {\n    Pt p = new Pt(n);\n    return p.x;\n}\n";
+    let files = [("bell_utils/src/lib.qx", lib)];
+    let entry = "import bell_utils.make;\n\nvoid main() {\n    println(\"{}\", make(4));\n}\n";
+    assert_eq!(run_files(entry, &files, 1), Ok("4\n".to_string()));
+    // The same struct name in the entry module is a duplicate.
+    let dup = "import bell_utils.make;\n\nstruct Pt {\n    int y;\n}\n\nvoid main() {\n    println(\"{}\", make(1));\n}\n";
+    let e = errs(dup, &files);
+    // (The dependency's own uses of its struct may then also be reported.)
+    assert_eq!(e[0].0, "Q0205", "{e:?}");
+    // Another file cannot name the type...
+    let named = "import bell_utils.make;\n\nvoid main() {\n    Pt p = new Pt(1);\n}\n";
+    assert_eq!(errs(named, &files)[0].0, "Q0108");
+    // ...but receives its values through `var`.
+    let lib2 = "struct Pt {\n    int x;\n}\n\npublic Pt make(int n) {\n    return new Pt(n);\n}\n";
+    let via_var = "import bell_utils.make;\n\nvoid main() {\n    var p = make(5);\n    p.x += 1;\n    println(\"{}\", p.x);\n}\n";
+    assert_eq!(
+        run_files(via_var, &[("bell_utils/src/lib.qx", lib2)], 1),
+        Ok("6\n".to_string())
+    );
+}
+
 #[test]
 fn dependencies_may_only_import_std_log() {
     let lib =

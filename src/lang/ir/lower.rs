@@ -385,7 +385,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 IrTy::F64 => IrTy::F64,
                 IrTy::Bool => IrTy::Bool,
                 IrTy::Str => IrTy::Str,
-                t @ IrTy::Array(_) => t,
+                t @ (IrTy::Array(_) | IrTy::Struct(_)) => t,
                 _ => IrTy::I64,
             },
         };
