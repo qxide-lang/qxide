@@ -103,6 +103,8 @@ pub enum Value {
 enum Flow {
     Next,
     Return(Value),
+    Break,
+    Continue,
 }
 
 // Names borrow from the AST, so binding a variable or starting a loop iteration allocates nothing.
@@ -213,6 +215,8 @@ impl<'p> Interp<'p, '_> {
                 f.body.close,
                 msg::no_return(&f.name.name),
             )),
+            // The checker only accepts `break` and `continue` inside a loop.
+            Flow::Break | Flow::Continue => Err(internal(f.body.close)),
         }
     }
 
@@ -225,8 +229,9 @@ impl<'p> Interp<'p, '_> {
 
     fn block_inner(&mut self, c: &mut Circuit, f: &mut Frame<'p>, b: &'p Block) -> R<Flow> {
         for s in &b.stmts {
-            if let Flow::Return(v) = self.stmt(c, f, s)? {
-                return Ok(Flow::Return(v));
+            match self.stmt(c, f, s)? {
+                Flow::Next => {}
+                flow => return Ok(flow),
             }
         }
         Ok(Flow::Next)
@@ -244,6 +249,9 @@ impl<'p> Interp<'p, '_> {
                 end,
                 body,
             } => self.for_stmt(c, f, var, start, end, body),
+            Stmt::While { cond, body, span } => self.while_stmt(c, f, cond, body, *span),
+            Stmt::Break { .. } => Ok(Flow::Break),
+            Stmt::Continue { .. } => Ok(Flow::Continue),
             Stmt::Return { value, .. } => self.return_stmt(c, f, value.as_ref()),
             Stmt::Expr(e) => self.expr(c, f, e).map(|_| Flow::Next),
         }
@@ -300,11 +308,38 @@ impl<'p> Interp<'p, '_> {
                 .push(vec![(var.name.as_str(), Value::Int(k), Ty::Int)]);
             let r = self.block(c, f, body);
             f.scopes.pop();
-            if let Flow::Return(v) = r? {
-                return Ok(Flow::Return(v));
+            match r? {
+                Flow::Next | Flow::Continue => {}
+                Flow::Break => break,
+                Flow::Return(v) => return Ok(Flow::Return(v)),
             }
         }
         Ok(Flow::Next)
+    }
+
+    // `while cond { body }`: the condition is evaluated before every iteration; each iteration
+    // that runs the body costs one step at the `while` keyword, like a `for` iteration.
+    fn while_stmt(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        cond: &'p Expr,
+        body: &'p Block,
+        span: Span,
+    ) -> R<Flow> {
+        loop {
+            match self.expr(c, f, cond)? {
+                Value::Bool(true) => {}
+                Value::Bool(false) => return Ok(Flow::Next),
+                _ => return Err(internal(cond.span)),
+            }
+            self.m.charge(1, span)?;
+            match self.block(c, f, body)? {
+                Flow::Next | Flow::Continue => {}
+                Flow::Break => return Ok(Flow::Next),
+                Flow::Return(v) => return Ok(Flow::Return(v)),
+            }
+        }
     }
 
     fn return_stmt(

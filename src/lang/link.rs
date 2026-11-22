@@ -598,6 +598,11 @@ impl Linker<'_> {
                     self.rewrite_expr(scope, end);
                     self.rewrite_block(scope, body);
                 }
+                Stmt::While { cond, body, .. } => {
+                    self.rewrite_expr(scope, cond);
+                    self.rewrite_block(scope, body);
+                }
+                Stmt::Break { .. } | Stmt::Continue { .. } => {}
                 Stmt::Return { value, .. } => {
                     if let Some(e) = value {
                         self.rewrite_expr(scope, e);

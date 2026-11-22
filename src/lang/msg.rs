@@ -130,6 +130,18 @@ pub fn bad_condition(ty: &str) -> String {
     format!("an `if` condition must be `boolean` or `Bit`, found `{ty}`")
 }
 
+pub fn while_condition(ty: &str) -> String {
+    format!("a `while` condition must be `boolean`, found `{ty}`")
+}
+
+pub fn loop_control_outside(word: &str) -> String {
+    format!("`{word}` outside of a loop")
+}
+
+pub fn note_loop_exits_here(word: &str) -> String {
+    format!("`{word}` exits the iteration here")
+}
+
 pub fn bit_at_build_time(ty: &str) -> String {
     format!("measurement result `{ty}` is only known per shot and cannot be used here")
 }

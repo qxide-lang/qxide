@@ -134,26 +134,28 @@ void main() {
 
 ## Q0107: use of an unsupported reserved keyword
 
-Error `Q0107` occurs when a program uses a reserved keyword that the `.qx` compiler does not support yet: `while`, `loop`, `break`, `continue`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, or `apply`. These words are reserved in the grammar so they cannot be used as identifiers and remain available for future language features. Because the compiler does not yet implement them, the lexer rejects a reserved keyword as soon as it reads it.
+Error `Q0107` occurs when a program uses a reserved keyword that the `.qx` compiler does not support yet: `loop`, `struct`, `enum`, `impl`, `use`, `mod`, `const`, `match`, `with_ancilla`, or `apply`. These words are reserved in the grammar so they cannot be used as identifiers and remain available for future language features. Because the compiler does not yet implement them, the lexer rejects a reserved keyword as soon as it reads it.
 
 Erroneous code example:
 
 ```qx
 void main() {
     int i = 0;
-    while i < 3 {  // error[Q0107]
-        i = i + 1;
+    loop {  // error[Q0107]
+        i += 1;
     }
 }
 ```
 
-To fix it, replace the unsupported `while` loop with a supported construct such as a `for` loop over a range.
+To fix it, replace the unsupported `loop` with a `while` loop that has a condition (or `while true` with `break`).
 
 ```qx
 void main() {
-    for i in 0..3 {
-        println("{}", i);
+    int i = 0;
+    while i < 3 {
+        i += 1;
     }
+    println("{}", i);
 }
 ```
 
@@ -779,6 +781,37 @@ To fix it, cast a `double` value (`d`) to `int` instead of casting a `boolean` v
 void main() {
     double d = 2.7;
     int n = (int) d;
+    println("{}", n);
+}
+```
+
+## Q0224: `break` or `continue` outside of a loop
+
+A `break` or `continue` statement appeared where no `for` or `while` loop encloses it in the same function. In `.qx`, `break` leaves the innermost enclosing loop and `continue` starts its next iteration, so neither statement is valid without an enclosing loop. Loops do not extend into called functions: a `break` inside a helper function called from a loop body is also an error.
+
+Erroneous code example:
+
+```qx
+void main() {
+    int n = 3;
+    if n > 2 {
+        break;  // error[Q0224]
+    }
+    println("{}", n);
+}
+```
+
+To fix it, put the `break` statement inside a `while` (or `for`) loop body so it has a loop to leave.
+
+```qx
+void main() {
+    int n = 0;
+    while true {
+        n += 1;
+        if n > 2 {
+            break;
+        }
+    }
     println("{}", n);
 }
 ```

@@ -97,6 +97,11 @@ fn scan_block(b: &Block, out: &mut Scan) {
                 scan_expr(end, out);
                 scan_block(body, out);
             }
+            Stmt::While { cond, body, .. } => {
+                scan_expr(cond, out);
+                scan_block(body, out);
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Return { value, .. } => {
                 if let Some(e) = value {
                     scan_expr(e, out);
@@ -155,6 +160,17 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
     }
 }
 
+// An enclosing `for` or `while`, for `break` and `continue`.
+struct Loop {
+    // Variable states when the loop was entered.
+    before: Vec<State>,
+    // `bit_ifs.len()` and `scopes.len()` at the loop.
+    bit_ifs: usize,
+    scopes: usize,
+    // Some `break` leaves this loop.
+    breaks: bool,
+}
+
 struct Checker {
     fns: HashMap<String, Sig>,
     // Functions that cannot run inside an `if` on a `Bit`, with the first reason found.
@@ -165,6 +181,7 @@ struct Checker {
     bit_ifs: Vec<Span>,
     // Qubits lent to calls whose arguments are still being checked, as (variable, use site).
     held: Vec<(usize, Span)>,
+    loops: Vec<Loop>,
     ret: Ty,
     errors: Vec<Diagnostic>,
 }
@@ -178,6 +195,7 @@ pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
         scopes: Vec::new(),
         bit_ifs: Vec::new(),
         held: Vec::new(),
+        loops: Vec::new(),
         ret: Ty::Void,
         errors: Vec::new(),
     };
@@ -292,6 +310,7 @@ impl Checker {
 
     fn function(&mut self, f: &FnDecl) {
         self.vars.clear();
+        self.loops.clear();
         self.scopes = vec![Vec::new()];
         self.ret = f.ret;
         for p in &f.params {
@@ -534,30 +553,42 @@ impl Checker {
                     self.expect_ty(e.span, Ty::Int, t);
                 }
                 let before = self.states();
+                self.enter_loop(before.clone());
                 self.scopes.push(Vec::new());
                 self.declare(var, Ty::Int, false);
                 let diverges = self.block(body);
                 self.scopes.pop();
+                self.loops.pop();
                 if !diverges {
-                    let mut moved = Vec::new();
-                    for (id, s) in before.iter().enumerate() {
-                        let v = &self.vars[id];
-                        if let (State::Live, State::Consumed(at)) = (s, v.state) {
-                            if v.ty.is_quantum() {
-                                moved.push((at, v.name.clone(), v.decl));
-                            }
-                        }
-                    }
-                    for (at, name, decl) in moved {
-                        self.err(Code::ConsumedInLoop, at, msg::consumed_in_loop(&name))
-                            .notes
-                            .push(note(decl, msg::note_declared_here()));
-                    }
+                    self.consumed_in_loop(&before);
                 }
                 // The loop may run zero times.
                 self.restore(&before);
                 false
             }
+            Stmt::While { cond, body, .. } => {
+                // The condition runs on every iteration, so it belongs to the loop.
+                let before = self.states();
+                let t = self.expr(cond);
+                if !matches!(t, Ty::Boolean | Ty::Error) {
+                    self.err(
+                        Code::BadCondition,
+                        cond.span,
+                        msg::while_condition(t.name()),
+                    );
+                }
+                self.enter_loop(before.clone());
+                let diverges = self.block(body);
+                let breaks = self.loops.pop().is_some_and(|l| l.breaks);
+                if !diverges {
+                    self.consumed_in_loop(&before);
+                }
+                self.restore(&before);
+                // Like Java, `while true` without `break` never completes normally.
+                matches!(cond.kind, ExprKind::Bool(true)) && !breaks
+            }
+            Stmt::Break { span } => self.loop_exit("break", *span),
+            Stmt::Continue { span } => self.loop_exit("continue", *span),
             Stmt::Return { value, span } => {
                 if let Some(&at) = self.bit_ifs.last() {
                     self.err(
@@ -602,6 +633,74 @@ impl Checker {
                 false
             }
         }
+    }
+
+    fn enter_loop(&mut self, before: Vec<State>) {
+        self.loops.push(Loop {
+            before,
+            bit_ifs: self.bit_ifs.len(),
+            scopes: self.scopes.len(),
+            breaks: false,
+        });
+    }
+
+    // Outer qubits consumed since the loop began (`Q0305`); reported once per use site.
+    fn consumed_in_loop(&mut self, before: &[State]) {
+        let mut moved = Vec::new();
+        for (id, s) in before.iter().enumerate() {
+            let v = &self.vars[id];
+            if let (State::Live, State::Consumed(at)) = (s, v.state) {
+                if v.ty.is_quantum() {
+                    moved.push((at, v.name.clone(), v.decl));
+                }
+            }
+        }
+        for (at, name, decl) in moved {
+            let seen = self
+                .errors
+                .iter()
+                .any(|d| d.code == Code::ConsumedInLoop && d.span == at);
+            if !seen {
+                self.err(Code::ConsumedInLoop, at, msg::consumed_in_loop(&name))
+                    .notes
+                    .push(note(decl, msg::note_declared_here()));
+            }
+        }
+    }
+
+    // `break` or `continue` leaves the loop body like `return` leaves a function, so qubits
+    // declared inside the loop must be consumed by then. Returns true: the rest is unreachable.
+    fn loop_exit(&mut self, word: &str, span: Span) -> bool {
+        let Some(l) = self.loops.last_mut() else {
+            self.err(Code::LoopControl, span, msg::loop_control_outside(word));
+            return false;
+        };
+        if self.bit_ifs.len() > l.bit_ifs {
+            let at = *self.bit_ifs.last().unwrap();
+            self.err(Code::ForbiddenInBitIf, span, msg::forbidden_in_bit_if(word))
+                .notes
+                .push(note(at, msg::note_bit_if_here()));
+            return false;
+        }
+        if word == "break" {
+            l.breaks = true;
+        }
+        let (before, depth) = (l.before.clone(), l.scopes);
+        self.consumed_in_loop(&before);
+        let live: Vec<usize> = self.scopes[depth..]
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&id| self.owned_live(id))
+            .collect();
+        for id in live {
+            let (decl, name) = (self.vars[id].decl, self.vars[id].name.clone());
+            self.err(Code::NeverConsumed, decl, msg::never_consumed(&name))
+                .notes
+                .push(note(span, msg::note_loop_exits_here(word)));
+            self.vars[id].state = State::Consumed(span);
+        }
+        true
     }
 
     fn if_stmt(&mut self, i: &IfStmt) -> bool {

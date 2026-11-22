@@ -230,6 +230,21 @@ impl Parser {
                 }
                 Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
                 Tok::For => stmts.push(self.for_stmt()?),
+                Tok::While => {
+                    let span = self.bump().span;
+                    let cond = self.expr()?;
+                    let body = self.block()?;
+                    stmts.push(Stmt::While { cond, body, span });
+                }
+                Tok::Break | Tok::Continue => {
+                    let t = self.bump();
+                    let span = t.span.to(self.expect(Tok::Semi)?);
+                    stmts.push(if t.tok == Tok::Break {
+                        Stmt::Break { span }
+                    } else {
+                        Stmt::Continue { span }
+                    });
+                }
                 Tok::Return => {
                     let start = self.bump().span;
                     let value = if self.peek() == &Tok::Semi {
@@ -248,6 +263,26 @@ impl Parser {
                     self.bump();
                     let value = self.expr()?;
                     self.expect(Tok::Semi)?;
+                    stmts.push(Stmt::Assign { name, value });
+                }
+                // `x += e` is `x = x + e` (the target is evaluated as a variable read).
+                Tok::Ident(_) if compound_op(self.peek_at(1)).is_some() => {
+                    let name = self.ident()?;
+                    let op = compound_op(&self.bump().tok).expect("checked above");
+                    let rhs = self.expr()?;
+                    self.expect(Tok::Semi)?;
+                    let lhs = Expr {
+                        kind: ExprKind::Var(name.name.clone()),
+                        span: name.span,
+                    };
+                    let value = Expr {
+                        span: name.span.to(rhs.span),
+                        kind: ExprKind::Binary {
+                            op,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
+                    };
                     stmts.push(Stmt::Assign { name, value });
                 }
                 _ => {
@@ -543,6 +578,17 @@ impl Parser {
 }
 
 /// Splits a decoded string literal into text and `{}` holes; `{{`/`}}` are literal braces.
+fn compound_op(t: &Tok) -> Option<BinOp> {
+    Some(match t {
+        Tok::PlusEq => BinOp::Add,
+        Tok::MinusEq => BinOp::Sub,
+        Tok::StarEq => BinOp::Mul,
+        Tok::SlashEq => BinOp::Div,
+        Tok::PercentEq => BinOp::Rem,
+        _ => return None,
+    })
+}
+
 pub fn parse_format(s: &str) -> Option<Vec<FmtPiece>> {
     let mut out = Vec::new();
     let mut lit = String::new();

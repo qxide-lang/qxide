@@ -1143,6 +1143,163 @@ fn deepest_programs() -> Vec<Deepest> {
     ]
 }
 
+#[test]
+fn while_break_continue_and_compound_assignment() {
+    let src = "int collatz(int n) {
+    int steps = 0;
+    while n != 1 {
+        if n % 2 == 0 {
+            n /= 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        steps += 1;
+    }
+    return steps;
+}
+
+int firstAbove(int limit) {
+    int i = 0;
+    while true {
+        i += 1;
+        if i * i <= limit {
+            continue;
+        }
+        return i;
+    }
+}
+
+void main() {
+    int total = 0;
+    for i in 0..10 {
+        if i == 7 {
+            break;
+        }
+        if i % 2 == 1 {
+            continue;
+        }
+        total += i;
+    }
+    double d = 1;
+    d *= 2.5;
+    d -= 1;
+    int r = 17;
+    r %= 5;
+    String s = \"a\";
+    s += 1;
+    println(\"{} {} {} {} {} {}\", total, collatz(27), firstAbove(50), d, r, s);
+}
+";
+    assert_eq!(run_ok(src, 1), "12 111 8 1.5 2 a1\n");
+    // Allocating and measuring inside a `while` body, leaving with `break` after consuming.
+    let q = main_body(
+        "    int k = 0;
+    while true {
+        Qubit q = qubit();
+        x(q);
+        Bit b = measure(q);
+        println(\"{}\", b);
+        k += 1;
+        if k == 2 {
+            break;
+        }
+    }",
+    );
+    assert_eq!(run_ok(&q, 1), "1\n1\n");
+}
+
+#[test]
+fn loop_control_rules() {
+    // `break` and `continue` outside a loop, and inside a function called from a loop.
+    assert_eq!(errors(&main_body("    break;")), [("Q0224", 2, 5)]);
+    assert_eq!(
+        errors("void f() { continue; } void main() { for i in 0..2 { f(); } }"),
+        [("Q0224", 1, 12)]
+    );
+    // A `while` condition is a build-time `boolean`.
+    assert_eq!(codes(&main_body("    while 1 { }")), ["Q0215"]);
+    assert_eq!(
+        codes(&main_body(
+            "    Qubit q = qubit();\n    Bit b = measure(q);\n    while b { }"
+        )),
+        ["Q0215"]
+    );
+    // `break` may not leave an `if` on a measured bit, but loops inside one may use it.
+    assert_eq!(
+        codes(&main_body(
+            "    Qubit q = qubit();
+    Bit b = measure(q);
+    Qubit t = qubit();
+    for i in 0..3 {
+        if b {
+            break;
+        }
+    }
+    discard(t);"
+        )),
+        ["Q0308"]
+    );
+    ok(&main_body(
+        "    Qubit q = qubit();
+    Bit b = measure(q);
+    Qubit t = qubit();
+    if b {
+        for i in 0..3 {
+            if i == 1 {
+                break;
+            }
+            x(t);
+        }
+    }
+    discard(t);",
+    ));
+    // A qubit of the loop body still live at `break` or `continue` leaks.
+    assert_eq!(
+        errors(&main_body(
+            "    while true {\n        Qubit q = qubit();\n        break;\n    }"
+        )),
+        [("Q0302", 3, 15)]
+    );
+    assert_eq!(
+        codes(&main_body(
+            "    for i in 0..2 {\n        Qubit q = qubit();\n        if i == 0 {\n            continue;\n        }\n        discard(q);\n    }"
+        )),
+        ["Q0302"]
+    );
+    // Outer qubits cannot be consumed inside a `while`, even right before `break`.
+    assert_eq!(
+        codes(&main_body(
+            "    Qubit q = qubit();\n    while true {\n        discard(q);\n        break;\n    }"
+        )),
+        ["Q0302", "Q0305"]
+    );
+    assert_eq!(
+        codes(&main_body(
+            "    Qubit q = qubit();\n    int k = 0;\n    while k < 2 {\n        discard(q);\n        k += 1;\n    }"
+        )),
+        ["Q0302", "Q0305"]
+    );
+    // `while true` without `break` never completes, so no `return` is needed after it.
+    ok("int f() { while true { return 1; } } void main() { println(\"{}\", f()); }");
+    assert_eq!(
+        codes("int f() { while true { break; } } void main() { println(\"{}\", f()); }"),
+        ["Q0213"]
+    );
+    // Compound assignment follows the rules of `x = x op e`.
+    assert_eq!(
+        codes(&main_body("    final int n = 1;\n    n += 1;")),
+        ["Q0207"]
+    );
+    assert_eq!(
+        codes(&main_body("    boolean b = true;\n    b += 1;")),
+        ["Q0204", "Q0204"]
+    );
+    assert_eq!(
+        runtime_error(&main_body("    int n = 9223372036854775807;\n    n += 1;")),
+        ("Q0401", 3, 5)
+    );
+}
+
 // Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`
 // (measured worst case: ~100 MiB unoptimized, ~45 MiB optimized). The parser and checker also
 // run on that thread, as in the CLI: unoptimized they need more than a test thread's 2 MiB.

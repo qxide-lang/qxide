@@ -1,0 +1,41 @@
+// `while`, `break`, `continue` and compound assignment in build-time code, plus a
+// repeat-until-success loop that allocates and measures a fresh qubit each iteration.
+int collatzSteps(int n) {
+    int steps = 0;
+    while n != 1 {
+        if n % 2 == 0 {
+            n /= 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        steps += 1;
+    }
+    return steps;
+}
+
+int sumOfEvensBelow(int limit) {
+    int total = 0;
+    for i in 0..1000 {
+        if i >= limit {
+            break;
+        }
+        if i % 2 == 1 {
+            continue;
+        }
+        total += i;
+    }
+    return total;
+}
+
+void main() {
+    println("collatz(27) takes {} steps", collatzSteps(27));
+    println("sum of evens below 10 = {}", sumOfEvensBelow(10));
+    int round = 0;
+    while round < 3 {
+        Qubit q = qubit();
+        h(q);
+        Bit b = measure(q);
+        println("round {}: {}", round, b);
+        round += 1;
+    }
+}

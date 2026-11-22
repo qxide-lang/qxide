@@ -20,6 +20,9 @@ pub enum Tok {
     Else,
     For,
     In,
+    While,
+    Break,
+    Continue,
     Return,
     True,
     False,
@@ -41,6 +44,12 @@ pub enum Tok {
     Star,
     Slash,
     Percent,
+    // Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`.
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
     Bang,
     Eq,
     EqEq,
@@ -68,6 +77,9 @@ impl Tok {
             Else => "else",
             For => "for",
             In => "in",
+            While => "while",
+            Break => "break",
+            Continue => "continue",
             Return => "return",
             True => "true",
             False => "false",
@@ -88,6 +100,11 @@ impl Tok {
             Star => "*",
             Slash => "/",
             Percent => "%",
+            PlusEq => "+=",
+            MinusEq => "-=",
+            StarEq => "*=",
+            SlashEq => "/=",
+            PercentEq => "%=",
             Bang => "!",
             Eq => "=",
             EqEq => "==",
@@ -119,10 +136,7 @@ impl Tok {
 pub const REMOVED: &[&str] = &["let", "fn", "mut"];
 
 pub const RESERVED: &[&str] = &[
-    "while",
     "loop",
-    "break",
-    "continue",
     "struct",
     "enum",
     "impl",
@@ -194,6 +208,9 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnosti
                 "else" => Tok::Else,
                 "for" => Tok::For,
                 "in" => Tok::In,
+                "while" => Tok::While,
+                "break" => Tok::Break,
+                "continue" => Tok::Continue,
                 "return" => Tok::Return,
                 "true" => Tok::True,
                 "false" => Tok::False,
@@ -306,6 +323,11 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnosti
                 (b'>', Some(b'=')) => (Tok::Ge, 2),
                 (b'&', Some(b'&')) => (Tok::AndAnd, 2),
                 (b'|', Some(b'|')) => (Tok::OrOr, 2),
+                (b'+', Some(b'=')) => (Tok::PlusEq, 2),
+                (b'-', Some(b'=')) => (Tok::MinusEq, 2),
+                (b'*', Some(b'=')) => (Tok::StarEq, 2),
+                (b'/', Some(b'=')) => (Tok::SlashEq, 2),
+                (b'%', Some(b'=')) => (Tok::PercentEq, 2),
                 (b'(', _) => (Tok::LParen, 1),
                 (b')', _) => (Tok::RParen, 1),
                 (b'{', _) => (Tok::LBrace, 1),
@@ -424,7 +446,7 @@ mod tests {
             lex("99999999999999999999").unwrap_err().code,
             Code::IntTooLarge
         );
-        assert_eq!(lex("while x").unwrap_err().code, Code::ReservedKeyword);
+        assert_eq!(lex("loop x").unwrap_err().code, Code::ReservedKeyword);
         // Rust-style syntax removed in 0.5.0 gets a migration hint.
         for word in ["let x = 1;", "fn main() {}", "mut"] {
             assert_eq!(lex(word).unwrap_err().code, Code::RemovedSyntax);

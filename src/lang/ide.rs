@@ -79,8 +79,8 @@ pub struct Item {
 
 /// Every keyword of the language; a test keeps this in sync with the lexer.
 pub const KEYWORDS: &[&str] = &[
-    "final", "var", "consume", "import", "public", "if", "else", "for", "in", "return", "true",
-    "false",
+    "final", "var", "consume", "import", "public", "if", "else", "for", "in", "while", "break",
+    "continue", "return", "true", "false",
 ];
 
 /// Type names as written in source.
@@ -283,6 +283,11 @@ impl Scopes {
                     });
                     self.block(body, func);
                 }
+                Stmt::While { cond, body, .. } => {
+                    self.expr(cond);
+                    self.block(body, func);
+                }
+                Stmt::Break { .. } | Stmt::Continue { .. } => {}
                 Stmt::Return { value, .. } => {
                     if let Some(v) = value {
                         self.expr(v);

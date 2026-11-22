@@ -56,6 +56,8 @@ struct FnLower<'p, 'a> {
     regions: usize,
     // Slots named after each base name so far, for unique dump names (`i`, `i.1`, ...).
     slot_names: HashMap<String, u32>,
+    // Enclosing loops: (`continue` target, `break` target, `regions` at the loop).
+    loops: Vec<(BlockId, BlockId, usize)>,
 }
 
 impl<'p, 'a> FnLower<'p, 'a> {
@@ -97,6 +99,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
             scopes: Vec::new(),
             regions: 0,
             slot_names: HashMap::new(),
+            loops: Vec::new(),
         }
     }
 
@@ -306,6 +309,9 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 end,
                 body,
             } => self.for_stmt(var, start, end, body),
+            Stmt::While { cond, body, span } => self.while_stmt(cond, body, *span),
+            Stmt::Break { span } => self.loop_exit(false, *span),
+            Stmt::Continue { span } => self.loop_exit(true, *span),
             Stmt::Return { value, .. } => self.return_stmt(value.as_ref()),
             Stmt::Expr(e) => {
                 self.expr(e);
@@ -364,6 +370,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
         });
         let head = self.new_block();
         let body_bb = self.new_block();
+        let latch = self.new_block();
         let exit = self.new_block();
         self.terminate(Term::Jump(head as BlockId));
         self.switch(head);
@@ -391,8 +398,13 @@ impl<'p, 'a> FnLower<'p, 'a> {
         let v = self.slot(&var.name, IrTy::I64);
         self.emit(Inst::Store { slot: v, src: k });
         self.scopes.push(vec![(&var.name, v)]);
+        self.loops
+            .push((latch as BlockId, exit as BlockId, self.regions));
         self.block(body);
+        self.loops.pop();
         self.scopes.pop();
+        self.terminate(Term::Jump(latch as BlockId));
+        self.switch(latch);
         // `k < b <= i64::MAX`, so the increment cannot overflow.
         let one = self.konst(Const::I64(1));
         let next = self.reg(IrTy::I64);
@@ -409,6 +421,46 @@ impl<'p, 'a> FnLower<'p, 'a> {
         });
         self.terminate(Term::Jump(head as BlockId));
         self.switch(exit);
+    }
+
+    // `while cond { body }`: the condition runs at the head of every iteration, then one step
+    // per iteration at the `while` keyword, as in the interpreter.
+    fn while_stmt(&mut self, cond: &'p Expr, body: &'p AstBlock, span: Span) {
+        let head = self.new_block();
+        let body_bb = self.new_block();
+        let exit = self.new_block();
+        self.terminate(Term::Jump(head as BlockId));
+        self.switch(head);
+        let c = self.expr(cond);
+        if self.ty(c) != IrTy::Bool {
+            self.trap(internal(cond.span));
+            self.switch(exit);
+            return;
+        }
+        self.terminate(Term::Br {
+            cond: c,
+            then: body_bb as BlockId,
+            els: exit as BlockId,
+        });
+        self.switch(body_bb);
+        self.charge(1, span);
+        self.loops
+            .push((head as BlockId, exit as BlockId, self.regions));
+        self.block(body);
+        self.loops.pop();
+        self.terminate(Term::Jump(head as BlockId));
+        self.switch(exit);
+    }
+
+    // `break` jumps to the loop exit, `continue` to the next iteration. The checker rejects
+    // both outside a loop and inside an `if` on a measured bit within the loop.
+    fn loop_exit(&mut self, cont: bool, span: Span) {
+        match self.loops.last() {
+            Some(&(next, exit, regions)) if regions == self.regions => {
+                self.terminate(Term::Jump(if cont { next } else { exit }));
+            }
+            _ => self.trap(internal(span)),
+        }
     }
 
     fn return_stmt(&mut self, value: Option<&'p Expr>) {

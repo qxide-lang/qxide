@@ -60,11 +60,11 @@
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.qx", "match": "\\b(if|else|for|in|return)\\b" },
+        { "name": "keyword.control.qx", "match": "\\b(if|else|for|in|while|break|continue|return)\\b" },
         { "name": "storage.modifier.qx", "match": "\\b(final|var|consume|public)\\b" },
         {
           "name": "keyword.other.reserved.qx",
-          "match": "\\b(while|loop|break|continue|struct|enum|impl|use|mod|const|match|with_ancilla|apply|let|fn|mut)\\b"
+          "match": "\\b(loop|struct|enum|impl|use|mod|const|match|with_ancilla|apply|let|fn|mut)\\b"
         }
       ]
     },
@@ -110,6 +110,7 @@
         { "name": "keyword.operator.arrow.qx", "match": "->" },
         { "name": "keyword.operator.comparison.qx", "match": "==|!=|<=|>=|<|>" },
         { "name": "keyword.operator.logical.qx", "match": "&&|\\|\\||!" },
+        { "name": "keyword.operator.assignment.compound.qx", "match": "[-+*/%]=" },
         { "name": "keyword.operator.assignment.qx", "match": "=" },
         { "name": "keyword.operator.arithmetic.qx", "match": "[-+*/%]" }
       ]

@@ -138,6 +138,18 @@ pub enum Stmt {
         end: Expr,
         body: Block,
     },
+    // `while cond { ... }`; `span` is the `while` keyword.
+    While {
+        cond: Expr,
+        body: Block,
+        span: Span,
+    },
+    Break {
+        span: Span,
+    },
+    Continue {
+        span: Span,
+    },
     Return {
         value: Option<Expr>,
         span: Span,

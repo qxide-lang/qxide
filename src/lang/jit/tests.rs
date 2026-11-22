@@ -70,6 +70,38 @@ void main() {
     assert_eq!(same(src, Limits::CLI), "ok\n6 1.5 true 2 1 2\n");
 }
 
+// `while`, `break`, `continue` and compound assignment are plain jumps, so such functions compile.
+#[test]
+fn loops_with_break_and_continue_compile() {
+    let src = "int collatz(int n) {
+    int steps = 0;
+    while n != 1 {
+        if n % 2 == 0 { n /= 2; } else { n = 3 * n + 1; }
+        steps += 1;
+    }
+    return steps;
+}
+int evens(int n) {
+    int total = 0;
+    for i in 0..n {
+        if i > 20 { break; }
+        if i % 2 == 1 { continue; }
+        total += i;
+    }
+    return total;
+}
+void main() {
+    println(\"{} {}\", collatz(27), evens(100));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in ["collatz", "evens"] {
+        assert!(jit.compiles(m.index[f]), "{f}");
+    }
+    assert_eq!(same(src, Limits::CLI), "ok\n111 110\n");
+}
+
 // Overflow, division, remainder, casts and IEEE 754 corner cases inside compiled functions.
 #[test]
 fn native_arithmetic_matches_the_interpreter() {

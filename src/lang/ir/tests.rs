@@ -158,7 +158,7 @@ bb0:
 bb1:
     %3 = load $i.next
     %4 = lt.i64 %3, %2
-    br %4, bb2, bb3
+    br %4, bb2, bb4
 bb2:
     charge 1
     store $i, %3
@@ -169,11 +169,13 @@ bb2:
     %7 = add.i64 %5, %6
     store $total, %7
     charge 2
+    jump bb3
+bb3:
     %8 = const.i64 1
     %9 = add.i64 %3, %8
     store $i.next, %9
     jump bb1
-bb3:
+bb4:
     charge 2
     %10 = load $total
     ret %10
@@ -373,6 +375,63 @@ fn other_budgets_agree() {
             },
         );
     }
+}
+
+// `while`, `break`, `continue` and compound assignment: same results and the same step budget
+// position at every limit, including inside native code.
+#[test]
+fn loops_agree_at_every_step_limit() {
+    let src = "int collatz(int n) {
+    int steps = 0;
+    while n != 1 {
+        if n % 2 == 0 { n /= 2; } else { n = 3 * n + 1; }
+        steps += 1;
+    }
+    return steps;
+}
+int firstAbove(int limit) {
+    int i = 0;
+    while true {
+        i += 1;
+        if i * i <= limit { continue; }
+        return i;
+    }
+}
+void main() {
+    int total = 0;
+    for i in 0..10 {
+        if i == 7 { break; }
+        if i % 2 == 1 { continue; }
+        total += i;
+    }
+    int k = 0;
+    while k < 2 {
+        Qubit q = qubit();
+        h(q);
+        Bit b = measure(q);
+        println(\"{}\", b);
+        k += 1;
+    }
+    println(\"{} {} {}\", total, collatz(6), firstAbove(10));
+}
+";
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 100, "{total}");
+    for max in 0..=total + 1 {
+        let limits = Limits {
+            max_steps: max,
+            ..Limits::CLI
+        };
+        same_outputs(src, 1, 3, limits);
+    }
+    same_outputs(src, 50, 9, Limits::CLI);
 }
 
 // Counts how often elaboration asks whether it was cancelled.
