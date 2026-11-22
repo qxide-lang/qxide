@@ -76,6 +76,7 @@ codes! {
     VarInfer => "Q0222",
     InvalidCast => "Q0223",
     LoopControl => "Q0224",
+    BadArrayElement => "Q0225",
     UseAfterConsume => "Q0301",
     NeverConsumed => "Q0302",
     DuplicateQubit => "Q0303",

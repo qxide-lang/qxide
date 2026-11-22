@@ -513,6 +513,7 @@ impl<'h> Machine<'h> {
             }
             Value::QReg(v) => Ok(Value::Int(v.len() as i64)),
             Value::Bits(v) => Ok(Value::Int(v.len() as i64)),
+            Value::Array(a) => Ok(Value::Int(a.borrow().len() as i64)),
             _ => Err(internal(span)),
         }
     }
@@ -732,6 +733,7 @@ pub fn index(b: Value, i: i64, span: Span) -> R<Value> {
     match b {
         Value::QReg(v) => Ok(Value::Qubit(v[checked_index(i, v.len(), span)?])),
         Value::Bits(v) => Ok(Value::Bit(v[checked_index(i, v.len(), span)?])),
+        Value::Array(a) => super::array::get(&a, i, span),
         _ => Err(internal(span)),
     }
 }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-use super::ast::{BinOp, FmtPiece, Ty, UnOp};
+use super::ast::{BinOp, FmtPiece, Ty, TyId, UnOp};
 use super::diag::{Diagnostic, Span};
 use super::machine::{Gate1, Rot};
 
@@ -38,6 +38,8 @@ pub enum IrTy {
     Qubit,
     QReg,
     Unit,
+    // A shared array of the given element type (`IrTy::of(elem)` for loads).
+    Array(TyId),
 }
 
 impl IrTy {
@@ -53,7 +55,16 @@ impl IrTy {
             Ty::ShotBinary => IrTy::ShotBinary,
             Ty::Qubit => IrTy::Qubit,
             Ty::QReg => IrTy::QReg,
+            Ty::Array(id) => IrTy::Array(id),
             Ty::Void | Ty::Error => IrTy::Unit,
+        }
+    }
+
+    /// The element type of an array.
+    pub fn elem(self) -> Option<IrTy> {
+        match self {
+            IrTy::Array(id) => Ty::Array(id).elem().map(IrTy::of),
+            _ => None,
         }
     }
 
@@ -70,6 +81,7 @@ impl IrTy {
             IrTy::Qubit => "qubit",
             IrTy::QReg => "qreg",
             IrTy::Unit => "unit",
+            IrTy::Array(id) => Ty::Array(id).name(),
         }
     }
 
@@ -193,6 +205,28 @@ pub enum Inst {
         dst: Reg,
         src: Reg,
         name: &'static str,
+        span: Span,
+    },
+    /// `new T[d1]...`: an array of type `ty` with the given lengths (src/lang/array.rs).
+    NewArray {
+        dst: Reg,
+        ty: Ty,
+        dims: Box<[Reg]>,
+        span: Span,
+    },
+    /// `{a, b}` or `new T[]{a, b}` of array type `ty`.
+    ArrayLit {
+        dst: Reg,
+        ty: Ty,
+        elems: Box<[Reg]>,
+        span: Span,
+    },
+    /// `a[i] = v` or `a[i] op= v`.
+    SetIndex {
+        base: Reg,
+        index: Reg,
+        op: Option<BinOp>,
+        value: Reg,
         span: Span,
     },
     /// A method of a `String` value (src/lang/pure.rs), charged per byte.
@@ -528,6 +562,30 @@ impl Func {
                 let args: Vec<String> = args.iter().map(|(a, _)| r(*a)).collect();
                 format!("{} = call.host {name}({})", r(*dst), args.join(", "))
             }
+            Inst::NewArray { dst, ty, dims, .. } => {
+                let dims: Vec<String> = dims.iter().map(|a| r(*a)).collect();
+                format!("{} = new {} [{}]", r(*dst), ty.name(), dims.join(", "))
+            }
+            Inst::ArrayLit { dst, ty, elems, .. } => {
+                let elems: Vec<String> = elems.iter().map(|a| r(*a)).collect();
+                format!("{} = array {} {{{}}}", r(*dst), ty.name(), elems.join(", "))
+            }
+            Inst::SetIndex {
+                base,
+                index,
+                op,
+                value,
+                ..
+            } => match op {
+                Some(op) => format!(
+                    "set.{} {}[{}], {}",
+                    op_name(*op),
+                    r(*base),
+                    r(*index),
+                    r(*value)
+                ),
+                None => format!("set {}[{}], {}", r(*base), r(*index), r(*value)),
+            },
             Inst::StrMethod {
                 name,
                 dst,

@@ -283,6 +283,40 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = machine::method(fr.get(*src), name, *span)?;
                 fr.set(*dst, v);
             }
+            Inst::NewArray {
+                dst,
+                ty,
+                dims,
+                span,
+            } => {
+                let mut lens = Vec::with_capacity(dims.len());
+                for d in dims.iter() {
+                    lens.push(fr.int(*d, *span)?);
+                }
+                let v = self.m.new_array(*ty, &lens, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::ArrayLit {
+                dst,
+                ty,
+                elems,
+                span,
+            } => {
+                let vals = elems.iter().map(|a| fr.get(*a)).collect();
+                let v = self.m.array_lit(*ty, vals, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::SetIndex {
+                base,
+                index,
+                op,
+                value,
+                span,
+            } => {
+                let i = fr.int(*index, *span)?;
+                self.m
+                    .set_index(fr.get(*base), i, *op, fr.get(*value), *span)?;
+            }
             Inst::StrMethod {
                 name,
                 dst,

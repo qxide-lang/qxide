@@ -225,6 +225,25 @@ impl Checker<'_> {
                 self.ty(*base)?;
             }
             Inst::View { src, .. } => self.want(*src, IrTy::Bits)?,
+            Inst::NewArray { dst, dims, .. } => {
+                for d in dims.iter() {
+                    self.want(*d, IrTy::I64)?;
+                }
+                self.ty(*dst)?;
+            }
+            Inst::ArrayLit { dst, elems, .. } => {
+                for a in elems.iter() {
+                    self.ty(*a)?;
+                }
+                self.ty(*dst)?;
+            }
+            Inst::SetIndex {
+                base, index, value, ..
+            } => {
+                self.ty(*base)?;
+                self.want(*index, IrTy::I64)?;
+                self.ty(*value)?;
+            }
             Inst::StrMethod {
                 dst, recv, args, ..
             } => {
@@ -267,7 +286,10 @@ impl Checker<'_> {
             }
             Inst::Len { dst, src, .. } => {
                 self.want(*dst, IrTy::I64)?;
-                if !matches!(self.ty(*src)?, IrTy::Str | IrTy::QReg | IrTy::Bits) {
+                if !matches!(
+                    self.ty(*src)?,
+                    IrTy::Str | IrTy::QReg | IrTy::Bits | IrTy::Array(_)
+                ) {
                     return Err("len of a value without a length".into());
                 }
             }

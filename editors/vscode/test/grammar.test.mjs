@@ -78,6 +78,8 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf(src, "boolean"), "storage.type.primitive.qx");
   assert.equal(scopeOf(src, "true"), "constant.language.boolean.qx");
   assert.equal(scopeOf(src, "while"), "keyword.control.qx");
+  assert.equal(scopeOf("int[] a = new int[3];", "new"), "keyword.other.new.qx");
+  assert.equal(scopeOf("int new = 1;", " new "), "source.qx");
   assert.equal(scopeOf(src, "helper"), "entity.name.function.call.qx");
   assert.equal(scopeOf(src, "as_int"), "support.function.method.qx");
 });

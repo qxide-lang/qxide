@@ -311,6 +311,24 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 body,
             } => self.for_stmt(var, start, end, body),
             Stmt::While { cond, body, span } => self.while_stmt(cond, body, *span),
+            Stmt::SetIndex {
+                base,
+                index,
+                op,
+                value,
+                span,
+            } => {
+                let base = self.expr(base);
+                let index = self.expr(index);
+                let value = self.expr(value);
+                self.emit(Inst::SetIndex {
+                    base,
+                    index,
+                    op: *op,
+                    value,
+                    span: *span,
+                });
+            }
             Stmt::Break { span } => self.loop_exit(false, *span),
             Stmt::Continue { span } => self.loop_exit(true, *span),
             Stmt::Return { value, .. } => self.return_stmt(value.as_ref()),
@@ -329,6 +347,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 IrTy::F64 => IrTy::F64,
                 IrTy::Bool => IrTy::Bool,
                 IrTy::Str => IrTy::Str,
+                t @ IrTy::Array(_) => t,
                 _ => IrTy::I64,
             },
         };
@@ -551,6 +570,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 let ty = match self.ty(b) {
                     IrTy::QReg => IrTy::Qubit,
                     IrTy::Bits => IrTy::Bit,
+                    t @ IrTy::Array(_) => t.elem().unwrap_or(IrTy::Unit),
                     _ => IrTy::Unit,
                 };
                 let dst = self.reg(ty);
@@ -558,6 +578,32 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     dst,
                     base: b,
                     index: i,
+                    span: e.span,
+                });
+                dst
+            }
+            ExprKind::NewArray { ty, dims } => {
+                let dims: Box<[Reg]> = dims.iter().map(|d| self.expr(d)).collect();
+                let dst = self.reg(IrTy::of(*ty));
+                self.emit(Inst::NewArray {
+                    dst,
+                    ty: *ty,
+                    dims,
+                    span: e.span,
+                });
+                dst
+            }
+            ExprKind::ArrayLit { ty, elems } => {
+                let elems: Box<[Reg]> = elems.iter().map(|x| self.expr(x)).collect();
+                let Some(ty) = *ty else {
+                    self.trap(internal(e.span));
+                    return self.reg(IrTy::Unit);
+                };
+                let dst = self.reg(IrTy::of(ty));
+                self.emit(Inst::ArrayLit {
+                    dst,
+                    ty,
+                    elems,
                     span: e.span,
                 });
                 dst

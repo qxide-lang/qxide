@@ -108,6 +108,22 @@ fn scan_block(b: &Block, out: &mut Scan) {
                     scan_expr(e, out);
                 }
             }
+            // Arrays are shared references, so a store may change the caller's data: a function
+            // that stores into an array cannot run inside an `if` on a measured bit.
+            Stmt::SetIndex {
+                base,
+                index,
+                value,
+                span,
+                ..
+            } => {
+                if out.op.is_none() {
+                    out.op = Some((*span, ARRAY_STORE.to_string()));
+                }
+                scan_expr(base, out);
+                scan_expr(index, out);
+                scan_expr(value, out);
+            }
             Stmt::Expr(e) => scan_expr(e, out),
         }
     }
@@ -153,6 +169,11 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
             scan_expr(lhs, out);
             scan_expr(rhs, out);
         }
+        ExprKind::NewArray { dims: items, .. } | ExprKind::ArrayLit { elems: items, .. } => {
+            for a in items {
+                scan_expr(a, out);
+            }
+        }
         ExprKind::Int(_)
         | ExprKind::Double(_)
         | ExprKind::Bool(_)
@@ -160,6 +181,9 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
         | ExprKind::Var(_) => {}
     }
 }
+
+// How an array element store is named in diagnostics.
+const ARRAY_STORE: &str = "a[i] = v";
 
 // An enclosing `for` or `while`, for `break` and `continue`.
 struct Loop {
@@ -329,12 +353,17 @@ impl Checker {
             if p.ty == Ty::Void {
                 self.err(Code::TypeMismatch, p.ty_span, msg::void_variable());
             }
-            let ty = if p.ty == Ty::Void { Ty::Error } else { p.ty };
+            let ty = if p.ty == Ty::Void || !self.array_ty_ok(p.ty, p.ty_span) {
+                Ty::Error
+            } else {
+                p.ty
+            };
             self.declare(&p.name, ty, true);
             if ty.is_quantum() && p.consume.is_none() {
                 self.vars.last_mut().unwrap().borrowed = Some(p.name.span);
             }
         }
+        self.array_ty_ok(f.ret, f.ret_span);
         let diverges = self.block(&f.body);
         if !diverges {
             // `consume` parameters live in the outermost scope, which `block` does not check.
@@ -452,7 +481,12 @@ impl Checker {
                 let var_ty = match *ty {
                     // `var` infers classical types only; quantum and per-shot values need a type.
                     None => match found {
-                        Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Error => found,
+                        Ty::Int
+                        | Ty::Double
+                        | Ty::Boolean
+                        | Ty::String
+                        | Ty::Array(_)
+                        | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
                             Ty::Error
@@ -464,6 +498,7 @@ impl Checker {
                     }
                     // The initializer was already rejected; do not also report a leak.
                     Some(t) if t.is_quantum() && found == Ty::Error => Ty::Error,
+                    Some(t) if !self.array_ty_ok(t, *ty_span) => Ty::Error,
                     Some(t) => {
                         self.expect_ty(init.span, t, found);
                         t
@@ -588,6 +623,16 @@ impl Checker {
                 self.restore(&before);
                 // Like Java, `while true` without `break` never completes normally.
                 matches!(cond.kind, ExprKind::Bool(true)) && !breaks
+            }
+            Stmt::SetIndex {
+                base,
+                index,
+                op,
+                value,
+                span,
+            } => {
+                self.set_index(base, index, *op, value, *span);
+                false
             }
             Stmt::Break { span } => self.loop_exit("break", *span),
             Stmt::Continue { span } => self.loop_exit("continue", *span),
@@ -922,6 +967,7 @@ impl Checker {
                 match b {
                     Ty::QReg => Ty::Qubit,
                     Ty::BitReg => Ty::Bit,
+                    Ty::Array(_) => b.elem().unwrap_or(Ty::Error),
                     Ty::Error => Ty::Error,
                     other => {
                         self.err(
@@ -933,6 +979,18 @@ impl Checker {
                     }
                 }
             }
+            ExprKind::NewArray { ty, dims } => {
+                for d in dims {
+                    let t = self.expr(d);
+                    self.expect_ty(d.span, Ty::Int, t);
+                }
+                if self.array_ty_ok(*ty, e.span) {
+                    *ty
+                } else {
+                    Ty::Error
+                }
+            }
+            ExprKind::ArrayLit { ty, elems } => self.array_lit(*ty, elems, e.span),
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
                 if t == Ty::String {
@@ -1055,6 +1113,101 @@ impl Checker {
     }
 
     // The right operand of `&&`/`||` may be skipped at run time, like a one-armed `if`.
+    // Arrays hold build-time classical values only (`Q0225`); reported once at the type.
+    fn array_ty_ok(&mut self, t: Ty, span: Span) -> bool {
+        let mut e = t;
+        while let Some(inner) = e.elem() {
+            e = inner;
+        }
+        if t.elem().is_some() && !e.is_element() {
+            self.err(
+                Code::BadArrayElement,
+                span,
+                msg::bad_array_element(e.name()),
+            );
+            return false;
+        }
+        true
+    }
+
+    // `{1, 2}` of a declaration or `new int[]{1, 2}`; the parser passed the array type down.
+    fn array_lit(&mut self, ty: Option<Ty>, elems: &[Expr], span: Span) -> Ty {
+        let t = match ty {
+            Some(t) if self.array_ty_ok(t, span) => Some(t),
+            Some(_) => None,
+            None => {
+                self.err(Code::TypeMismatch, span, msg::array_lit_needs_type());
+                None
+            }
+        };
+        let elem = t.and_then(Ty::elem);
+        for e in elems {
+            let found = self.expr(e);
+            if let Some(want) = elem {
+                self.expect_ty(e.span, want, found);
+            }
+        }
+        t.unwrap_or(Ty::Error)
+    }
+
+    // `a[i] = v` and `a[i] op= v`: like assigning `a[i]` as a variable of the element type.
+    fn set_index(
+        &mut self,
+        base: &Expr,
+        index: &Expr,
+        op: Option<BinOp>,
+        value: &Expr,
+        span: Span,
+    ) {
+        let b = self.expr(base);
+        let i = self.expr(index);
+        self.expect_ty(index.span, Ty::Int, i);
+        let v = self.expr(value);
+        if let Some(&at) = self.bit_ifs.last() {
+            self.err(
+                Code::ForbiddenInBitIf,
+                span,
+                msg::forbidden_in_bit_if(ARRAY_STORE),
+            )
+            .notes
+            .push(note(at, msg::note_bit_if_here()));
+            return;
+        }
+        let elem = match b {
+            Ty::Array(_) => b.elem().unwrap_or(Ty::Error),
+            Ty::Error => return,
+            other => {
+                self.err(
+                    Code::TypeMismatch,
+                    base.span,
+                    msg::element_not_assignable(other.name()),
+                );
+                return;
+            }
+        };
+        let found = match op {
+            None => v,
+            Some(_) if v == Ty::Error || elem == Ty::Error => Ty::Error,
+            Some(BinOp::Add) if elem == Ty::String => Ty::String,
+            Some(_) if elem.is_numeric() && v.is_numeric() => {
+                if elem == Ty::Double || v == Ty::Double {
+                    Ty::Double
+                } else {
+                    Ty::Int
+                }
+            }
+            Some(_) => {
+                self.err(
+                    Code::TypeMismatch,
+                    value.span,
+                    msg::type_mismatch(elem.name(), v.name()),
+                );
+                return;
+            }
+        };
+        self.expect_ty(value.span, elem, found);
+    }
+
     // `s.substring(0, 3)` and the other methods of `String` (src/lang/pure.rs).
     fn string_method(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {
         let sig = pure::string_method(&name.name);
@@ -1235,7 +1388,10 @@ impl Checker {
                 if self.arity(name, args, 1, span) {
                     let t = self.expr(&args[0]);
                     self.forbid_temp(&args[0], t);
-                    if !matches!(t, Ty::QReg | Ty::BitReg | Ty::String | Ty::Error) {
+                    if !matches!(
+                        t,
+                        Ty::QReg | Ty::BitReg | Ty::String | Ty::Array(_) | Ty::Error
+                    ) {
                         self.err(
                             Code::TypeMismatch,
                             args[0].span,

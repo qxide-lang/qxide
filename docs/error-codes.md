@@ -816,6 +816,29 @@ void main() {
 }
 ```
 
+## Q0225: array of an unsupported element type
+
+An array type in a declaration, parameter, return type, or `new` expression specifies an element type that arrays cannot hold. In `.qx`, arrays hold build-time classical values only: `int`, `double`, `boolean`, `String`, or arrays of these (such as `double[][]`). Qubits stay in a `QReg` and measurement results in a `BitReg`, because those are tracked by the qubit ownership rules and filled in per shot, which an ordinary array cannot follow.
+
+Erroneous code example:
+
+```qx
+void main() {
+    Qubit[] qs = new Qubit[2];  // error[Q0225]
+}
+```
+
+To fix it, keep qubits in a `QReg` register (allocated with `qreg`), which supports indexing like an array and is measured into a `BitReg`.
+
+```qx
+void main() {
+    QReg qs = qreg(2);
+    h(qs[0]);
+    BitReg m = measure(qs);
+    println("{}", m);
+}
+```
+
 ## Q0301: use of a consumed qubit
 
 A `Qubit` was used after it had already been consumed by being measured, discarded, or moved. In `.qx`, qubits have linear types checked at compile time, so once a qubit is consumed it is no longer available for further operations. This prevents a program from applying gates or other operations to a qubit whose quantum state has already been measured, discarded, or transferred.

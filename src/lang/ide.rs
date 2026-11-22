@@ -293,6 +293,13 @@ impl Scopes {
                         self.expr(v);
                     }
                 }
+                Stmt::SetIndex {
+                    base, index, value, ..
+                } => {
+                    self.expr(base);
+                    self.expr(index);
+                    self.expr(value);
+                }
                 Stmt::Expr(e) => self.expr(e),
             }
         }
@@ -339,6 +346,11 @@ impl Scopes {
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.expr(lhs);
                 self.expr(rhs);
+            }
+            ExprKind::NewArray { dims: items, .. } | ExprKind::ArrayLit { elems: items, .. } => {
+                for a in items {
+                    self.expr(a);
+                }
             }
             ExprKind::Int(_) | ExprKind::Double(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
         }

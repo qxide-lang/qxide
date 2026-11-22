@@ -85,6 +85,8 @@ struct Printer<'a> {
     continued: bool,
     // `)` tokens that close a cast such as `(int)`.
     cast_close: Vec<bool>,
+    // `{` and `}` of array initializers (`{1, 2}`, `new int[]{1}`): laid out like parentheses.
+    init_brace: Vec<bool>,
     prev: Option<usize>,
     last_end: usize,
     last_was_open: bool,
@@ -100,6 +102,27 @@ impl<'a> Printer<'a> {
                 }
             }
         }
+        // An initializer `{` follows `=`, `[]`, or `,`/`{` inside another initializer; blocks
+        // follow `)`, a condition or `else`.
+        let mut init_brace = vec![false; toks.len()];
+        let mut open: Vec<bool> = Vec::new();
+        for i in 0..toks.len() {
+            match toks[i].tok {
+                Tok::LBrace => {
+                    let prev = i.checked_sub(1).map(|p| &toks[p].tok);
+                    let init = match prev {
+                        Some(Tok::Eq) => true,
+                        Some(Tok::RBracket) => i >= 2 && toks[i - 2].tok == Tok::LBracket,
+                        Some(Tok::Comma | Tok::LBrace) => open.last() == Some(&true),
+                        _ => false,
+                    };
+                    init_brace[i] = init;
+                    open.push(init);
+                }
+                Tok::RBrace => init_brace[i] = open.pop().unwrap_or(false),
+                _ => {}
+            }
+        }
         Self {
             src,
             toks,
@@ -108,6 +131,7 @@ impl<'a> Printer<'a> {
             depth: 0,
             continued: false,
             cast_close,
+            init_brace,
             prev: None,
             last_end: 0,
             last_was_open: false,
@@ -139,7 +163,9 @@ impl<'a> Printer<'a> {
                     self.token(i, newlines);
                     if empty {
                         self.line.push('}');
-                        self.depth -= 1;
+                        if !self.init_brace[i] {
+                            self.depth -= 1;
+                        }
                         self.last_was_open = false;
                         self.prev = Some(i + 1);
                         self.last_end = self.toks[i + 1].span.end;
@@ -190,6 +216,9 @@ impl<'a> Printer<'a> {
 
     /// The layout the previous token asks for before the next one.
     fn break_after_prev(&self, next: &Tok) -> Break {
+        if self.prev.is_some_and(|p| self.init_brace[p]) {
+            return Break::Space;
+        }
         match self.prev_tok() {
             None => Break::Newline,
             Some(Tok::LBrace | Tok::Semi) => Break::Newline,
@@ -230,10 +259,11 @@ impl<'a> Printer<'a> {
     fn token(&mut self, i: usize, newlines: usize) {
         let tok = &self.toks[i].tok;
         let text = &self.src[self.toks[i].span.start..self.toks[i].span.end];
-        if *tok == Tok::RBrace {
+        let block = !self.init_brace[i];
+        if *tok == Tok::RBrace && block {
             self.depth = self.depth.saturating_sub(1);
         }
-        let brk = if *tok == Tok::RBrace {
+        let brk = if *tok == Tok::RBrace && block {
             Break::Newline
         } else {
             self.break_after_prev(tok)
@@ -254,10 +284,10 @@ impl<'a> Printer<'a> {
             self.line.push(' ');
         }
         self.line.push_str(text);
-        if *tok == Tok::LBrace {
+        if *tok == Tok::LBrace && block {
             self.depth += 1;
         }
-        self.last_was_open = *tok == Tok::LBrace;
+        self.last_was_open = *tok == Tok::LBrace && block;
         self.prev = Some(i);
     }
 
@@ -282,6 +312,13 @@ impl<'a> Printer<'a> {
         };
         let (prev, tok) = (&self.toks[p].tok, &self.toks[i].tok);
         if matches!(prev, Tok::LParen | Tok::LBracket | Tok::Dot | Tok::DotDot) {
+            return false;
+        }
+        // `{1, 2}` and `new int[]{1}`, like parentheses.
+        if (*prev == Tok::LBrace && self.init_brace[p])
+            || (*tok == Tok::RBrace && self.init_brace[i])
+            || (*tok == Tok::LBrace && self.init_brace[i] && *prev == Tok::RBracket)
+        {
             return false;
         }
         if matches!(prev, Tok::Minus | Tok::Bang) && self.is_unary(p) {

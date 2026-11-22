@@ -1,0 +1,37 @@
+// Arrays of classical values: a sieve of Eratosthenes in build-time code, then one rotation
+// angle per qubit taken from a `double[]`.
+int[] primesBelow(int n) {
+    boolean[] composite = new boolean[n];
+    int count = 0;
+    for i in 2..n {
+        if !composite[i] {
+            count += 1;
+            int j = i * i;
+            while j < n {
+                composite[j] = true;
+                j += i;
+            }
+        }
+    }
+    int[] primes = new int[count];
+    int k = 0;
+    for i in 2..n {
+        if !composite[i] {
+            primes[k] = i;
+            k += 1;
+        }
+    }
+    return primes;
+}
+
+void main() {
+    int[] primes = primesBelow(20);
+    println("{} primes below 20, the largest is {}", len(primes), primes[len(primes) - 1]);
+    double[] angles = {0.0, PI / 2, PI};
+    QReg r = qreg(len(angles));
+    for i in 0..len(angles) {
+        ry(r[i], angles[i]);
+    }
+    BitReg m = measure(r);
+    println("{}", m);
+}

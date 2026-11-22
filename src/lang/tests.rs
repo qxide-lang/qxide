@@ -1415,6 +1415,144 @@ fn string_method_and_std_math_errors() {
     );
 }
 
+pub(super) const ARRAYS: &str = "double sum(double[] xs) {
+    double total = 0;
+    for i in 0..len(xs) {
+        total += xs[i];
+    }
+    return total;
+}
+
+void fill(int[] a, int v) {
+    for i in 0..len(a) {
+        a[i] = v * i;
+    }
+}
+
+int[] primes(int n) {
+    boolean[] composite = new boolean[n];
+    int count = 0;
+    for i in 2..n {
+        if !composite[i] {
+            count += 1;
+            int j = i * i;
+            while j < n {
+                composite[j] = true;
+                j += i;
+            }
+        }
+    }
+    int[] out = new int[count];
+    int k = 0;
+    for i in 2..n {
+        if !composite[i] {
+            out[k] = i;
+            k += 1;
+        }
+    }
+    return out;
+}
+
+void main() {
+    double[] xs = {1, 2.5, 3};
+    int[] a = new int[4];
+    int[] alias = a;
+    fill(alias, 3);
+    a[1] += 10;
+    double[][] m = new double[2][3];
+    m[1][2] = 7.5;
+    String[] names = new String[]{\"ada\", \"alan\"};
+    names[0] += \"!\";
+    int[][] jag = new int[2][];
+    jag[1] = new int[]{4, 5, 6};
+    var p = primes(30);
+    int new = 1;
+    println(\"{} {} {} {} {} {}\", sum(xs), a[1], a[3], m[1][2], len(m[0]), names[0]);
+    println(\"{} {} {} {} {} {}\", len(jag[0]), jag[1][2], len(p), p[len(p) - 1], new, len(names[1]));
+}
+";
+
+#[test]
+fn arrays_are_shared_mutable_and_typed() {
+    assert_eq!(run_ok(ARRAYS, 1), "6.5 13 9 7.5 3 ada!\n0 6 10 29 1 4\n");
+    // Arrays and the qubit rules mix: a register measured per element into an int array.
+    let src = main_body(
+        "    QReg r = qreg(3);
+    x(r[1]);
+    BitReg m = measure(r);
+    int[] counts = new int[2];
+    counts[1] = len(m);
+    println(\"{} {}\", counts[1], m);",
+    );
+    assert_eq!(run_ok(&src, 1), "3 [0, 1, 0]\n");
+}
+
+#[test]
+fn array_errors() {
+    let m = |body: &str| codes(&main_body(body));
+    // Element types are build-time classical values (Q0225).
+    assert_eq!(m("    Qubit[] qs = new Qubit[2];"), ["Q0225", "Q0225"]);
+    assert_eq!(codes("void f(Bit[] b) {} void main() {}"), ["Q0225"]);
+    // `{...}` needs a declared array type; elements must match it.
+    assert_eq!(m("    var a = {1, 2};"), ["Q0204"]);
+    assert_eq!(m("    int[] a = {1, true};"), ["Q0204"]);
+    assert_eq!(m("    int[] a = {1.5};"), ["Q0204"]);
+    // Indices and lengths are ints; only arrays take element stores.
+    assert_eq!(m("    int[] a = new int[2.0];"), ["Q0204"]);
+    assert_eq!(m("    int[] a = {1};\n    a[true] = 1;"), ["Q0204"]);
+    assert_eq!(m("    String s = \"ab\";\n    s[0] = 1;"), ["Q0204"]);
+    assert_eq!(m("    int[] a = {1};\n    a[0] += 1.5;"), ["Q0204"]);
+    assert_eq!(m("    boolean[] a = {true};\n    a[0] += 1;"), ["Q0204"]);
+    // Arrays are not printable and have no `==`.
+    assert_eq!(m("    int[] a = {1};\n    println(\"{}\", a);"), ["Q0212"]);
+    assert_eq!(
+        m("    int[] a = {1};\n    boolean b = a == a;"),
+        ["Q0204", "Q0204"]
+    );
+    // Element stores may not run inside an `if` on a measured bit, directly or via a call.
+    assert_eq!(
+        m("    int[] a = {1};\n    Qubit q = qubit();\n    Bit b = measure(q);\n    if b {\n        a[0] = 2;\n    }"),
+        ["Q0308"]
+    );
+    assert_eq!(
+        codes(
+            "void set(int[] a) { a[0] = 1; }
+void main() {
+    int[] a = {0};
+    Qubit q = qubit();
+    Bit b = measure(q);
+    if b {
+        set(a);
+    }
+}"
+        ),
+        ["Q0314"]
+    );
+    // Runtime: bounds, negative lengths, and huge allocations stop at the step budget.
+    let rt = |body: &str| runtime_error(&main_body(body)).0;
+    assert_eq!(
+        rt("    int[] a = new int[2];\n    int i = 2;\n    println(\"{}\", a[i]);"),
+        "Q0403"
+    );
+    assert_eq!(
+        rt("    int[] a = new int[2];\n    int i = -1;\n    a[i] = 1;"),
+        "Q0403"
+    );
+    assert_eq!(rt("    int n = -1;\n    int[] a = new int[n];"), "Q0408");
+    assert_eq!(
+        rt("    int n = 1099511627776;\n    double[] a = new double[n];"),
+        "Q0413"
+    );
+    assert_eq!(
+        rt("    double[][] a = new double[1000000][1000000];"),
+        "Q0413"
+    );
+    assert_eq!(
+        rt("    int[] a = {1};\n    a[0] += 9223372036854775807;"),
+        "Q0401"
+    );
+}
+
 // Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`
 // (measured worst case: ~100 MiB unoptimized, ~45 MiB optimized). The parser and checker also
 // run on that thread, as in the CLI: unoptimized they need more than a test thread's 2 MiB.

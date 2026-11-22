@@ -1,8 +1,22 @@
 // Untyped AST produced by the parser; the checker validates it in place.
 
+use std::sync::Mutex;
+
 use super::diag::Span;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A compound type registered in `TYPES`; equal structures share one id, so ids from different
+/// programs in one process (LSP, parallel tests) never collide. Ids never appear in output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TyId(u32);
+
+// Append-only: (element type, source name). Bounded by the distinct array types ever written.
+static TYPES: Mutex<Vec<(Ty, &'static str)>> = Mutex::new(Vec::new());
+
+fn types() -> std::sync::MutexGuard<'static, Vec<(Ty, &'static str)>> {
+    TYPES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ty {
     Int,
     Double,
@@ -19,11 +33,43 @@ pub enum Ty {
     ShotBinary,
     // Placeholder after an error, so one mistake does not cascade.
     Error,
+    // `int[]`, `double[][]`: a reference to a mutable array of classical values.
+    Array(TyId),
 }
 
 impl Ty {
+    /// The array type with elements of type `elem`.
+    pub fn array_of(elem: Ty) -> Ty {
+        // `elem.name()` locks `TYPES` too, so it runs before the lock is taken here.
+        let elem_name = elem.name();
+        let mut t = types();
+        if let Some(i) = t.iter().position(|(e, _)| *e == elem) {
+            return Ty::Array(TyId(i as u32));
+        }
+        let name: &'static str = Box::leak(format!("{elem_name}[]").into_boxed_str());
+        t.push((elem, name));
+        Ty::Array(TyId((t.len() - 1) as u32))
+    }
+
+    /// The element type of an array type.
+    pub fn elem(self) -> Option<Ty> {
+        match self {
+            Ty::Array(TyId(i)) => types().get(i as usize).map(|(e, _)| *e),
+            _ => None,
+        }
+    }
+
+    /// Types an array may hold: build-time classical values and arrays of them.
+    pub fn is_element(self) -> bool {
+        matches!(
+            self,
+            Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Array(_)
+        )
+    }
+
     pub fn name(self) -> &'static str {
         match self {
+            Ty::Array(TyId(i)) => types().get(i as usize).map_or("{error}", |(_, n)| *n),
             Ty::Int => "int",
             Ty::Double => "double",
             Ty::Boolean => "boolean",
@@ -154,6 +200,14 @@ pub enum Stmt {
         value: Option<Expr>,
         span: Span,
     },
+    // `a[i] = v;` or `a[i] op= v;` (`base` may itself be an index, as in `m[i][j] = v`).
+    SetIndex {
+        base: Expr,
+        index: Expr,
+        op: Option<BinOp>,
+        value: Expr,
+        span: Span,
+    },
     Expr(Expr),
 }
 
@@ -239,5 +293,17 @@ pub enum ExprKind {
         op: BinOp,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+    },
+    // `new int[n]`, `new double[r][c]`, `new int[n][]`: `ty` is the resulting array type; one
+    // length per given dimension, missing inner dimensions are empty arrays.
+    NewArray {
+        ty: Ty,
+        dims: Vec<Expr>,
+    },
+    // `new int[]{1, 2}` (`ty` given) or the initializer `{1, 2}` of a declaration (`ty` is `None`
+    // until the checker fills it in from the declared type).
+    ArrayLit {
+        ty: Option<Ty>,
+        elems: Vec<Expr>,
     },
 }

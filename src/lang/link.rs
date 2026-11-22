@@ -608,6 +608,13 @@ impl Linker<'_> {
                         self.rewrite_expr(scope, e);
                     }
                 }
+                Stmt::SetIndex {
+                    base, index, value, ..
+                } => {
+                    self.rewrite_expr(scope, base);
+                    self.rewrite_expr(scope, index);
+                    self.rewrite_expr(scope, value);
+                }
                 Stmt::Expr(e) => self.rewrite_expr(scope, e),
             }
         }
@@ -674,6 +681,11 @@ impl Linker<'_> {
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.rewrite_expr(scope, lhs);
                 self.rewrite_expr(scope, rhs);
+            }
+            ExprKind::NewArray { dims: items, .. } | ExprKind::ArrayLit { elems: items, .. } => {
+                for a in items {
+                    self.rewrite_expr(scope, a);
+                }
             }
             ExprKind::Int(_)
             | ExprKind::Double(_)

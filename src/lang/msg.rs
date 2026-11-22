@@ -142,6 +142,22 @@ pub fn note_loop_exits_here(word: &str) -> String {
     format!("`{word}` exits the iteration here")
 }
 
+pub fn bad_array_element(ty: &str) -> String {
+    format!("arrays cannot have element type `{ty}`")
+}
+
+pub fn array_lit_needs_type() -> String {
+    "array initializer `{...}` requires a declared array type".into()
+}
+
+pub fn element_not_assignable(ty: &str) -> String {
+    format!("cannot assign to element of non-array type `{ty}`")
+}
+
+pub fn negative_array_size(n: i64) -> String {
+    format!("array length must not be negative, got {n}")
+}
+
 pub fn bit_at_build_time(ty: &str) -> String {
     format!("measurement result `{ty}` is only known per shot and cannot be used here")
 }

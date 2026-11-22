@@ -97,6 +97,8 @@ pub enum Value {
     ShotView(Rc<[Bit]>, BitsFmt),
     Qubit(usize),
     QReg(Rc<[usize]>),
+    // Shared and mutable, like a Java array reference (src/lang/array.rs).
+    Array(super::array::ArrayRef),
     Unit,
 }
 
@@ -250,6 +252,13 @@ impl<'p> Interp<'p, '_> {
                 body,
             } => self.for_stmt(c, f, var, start, end, body),
             Stmt::While { cond, body, span } => self.while_stmt(c, f, cond, body, *span),
+            Stmt::SetIndex {
+                base,
+                index,
+                op,
+                value,
+                span,
+            } => self.set_index(c, f, base, index, *op, value, *span),
             Stmt::Break { .. } => Ok(Flow::Break),
             Stmt::Continue { .. } => Ok(Flow::Continue),
             Stmt::Return { value, .. } => self.return_stmt(c, f, value.as_ref()),
@@ -413,7 +422,59 @@ impl<'p> Interp<'p, '_> {
             ExprKind::Cast { ty, expr } => self.cast(c, f, ty, expr, e.span),
             ExprKind::Unary { op, expr } => self.unary(c, f, op, expr, e.span),
             ExprKind::Binary { op, lhs, rhs } => self.binary_expr(c, f, op, lhs, rhs, e.span),
+            ExprKind::NewArray { ty, dims } => self.new_array(c, f, *ty, dims, e.span),
+            ExprKind::ArrayLit { ty, elems } => self.array_lit(c, f, *ty, elems, e.span),
         }
+    }
+
+    fn new_array(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        ty: Ty,
+        dims: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let mut lens = Vec::with_capacity(dims.len());
+        for d in dims {
+            lens.push(self.int(c, f, d)?);
+        }
+        self.m.new_array(ty, &lens, span)
+    }
+
+    fn array_lit(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        ty: Option<Ty>,
+        elems: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let ty = ty.ok_or_else(|| internal(span))?;
+        let mut vals = Vec::with_capacity(elems.len());
+        for e in elems {
+            vals.push(self.expr(c, f, e)?);
+        }
+        self.m.array_lit(ty, vals, span)
+    }
+
+    // `a[i] = v`: the array, the index and the value are evaluated in that order (like Java).
+    #[allow(clippy::too_many_arguments)]
+    fn set_index(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        base: &'p Expr,
+        index: &'p Expr,
+        op: Option<BinOp>,
+        value: &'p Expr,
+        span: Span,
+    ) -> R<Flow> {
+        let a = self.expr(c, f, base)?;
+        let i = self.int(c, f, index)?;
+        let v = self.expr(c, f, value)?;
+        self.m.set_index(a, i, op, v, span)?;
+        Ok(Flow::Next)
     }
 
     fn index(

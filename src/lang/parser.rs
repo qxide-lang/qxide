@@ -121,17 +121,96 @@ impl Parser {
             )),
             Tok::Ident(name) => {
                 let span = self.bump().span;
-                match Ty::from_name(&name) {
-                    Some(t) => Ok((t, span)),
-                    None => Err(Diagnostic::new(
+                let Some(mut t) = Ty::from_name(&name) else {
+                    return Err(Diagnostic::new(
                         Code::UnknownType,
                         span,
                         msg::unknown_type(&name),
-                    )),
+                    ));
+                };
+                // `int[]`, `double[][]`: each `[]` wraps the type in an array.
+                let mut end = span;
+                while self.peek() == &Tok::LBracket && self.peek_at(1) == &Tok::RBracket {
+                    self.enter()?;
+                    self.bump();
+                    end = self.bump().span;
+                    t = Ty::array_of(t);
                 }
+                self.depth -= array_depth(t);
+                Ok((t, span.to(end)))
             }
             t => Err(self.unexpected(msg::expected_type(&t.describe()))),
         }
+    }
+
+    // `new int[n][m]`, `new int[n][]` or `new int[]{1, 2}`, after the `new`.
+    fn new_array(&mut self, start: Span) -> PResult<Expr> {
+        let (elem, _) = match self.peek() {
+            Tok::Ident(n) if Ty::from_name(n).is_some() => self.ty()?,
+            t => return Err(self.unexpected(msg::expected_type(&t.describe()))),
+        };
+        let mut ty = elem;
+        let mut dims = Vec::new();
+        let mut end = self.prev_span();
+        let mut entered = 0;
+        while self.peek() == &Tok::LBracket {
+            self.enter()?;
+            entered += 1;
+            self.bump();
+            if self.peek() == &Tok::RBracket {
+                end = self.bump().span;
+            } else if dims.len() + 1 == array_depth(ty) + 1 {
+                dims.push(self.expr()?);
+                end = self.expect(Tok::RBracket)?;
+            } else {
+                // Lengths come first: `new int[n][]`, never `new int[][n]`.
+                return Err(self.unexpected(msg::expected_token("`]`", &self.peek().describe())));
+            }
+            ty = Ty::array_of(ty);
+        }
+        self.depth -= entered;
+        if array_depth(ty) == 0 {
+            return Err(self.unexpected(msg::expected_token("`[`", &self.peek().describe())));
+        }
+        if dims.is_empty() {
+            if self.peek() != &Tok::LBrace {
+                return Err(self.unexpected(msg::expected_token("`{`", &self.peek().describe())));
+            }
+            let lit = self.array_lit(Some(ty))?;
+            return Ok(Expr {
+                span: start.to(lit.span),
+                kind: lit.kind,
+            });
+        }
+        Ok(Expr {
+            kind: ExprKind::NewArray { ty, dims },
+            span: start.to(end),
+        })
+    }
+
+    // `{a, b, c}` for an array of type `ty` (`None` when the type is unknown); nested braces
+    // are the inner arrays.
+    fn array_lit(&mut self, ty: Option<Ty>) -> PResult<Expr> {
+        self.enter()?;
+        let start = self.expect(Tok::LBrace)?;
+        let inner = ty.and_then(Ty::elem);
+        let mut elems = Vec::new();
+        while self.peek() != &Tok::RBrace {
+            elems.push(if self.peek() == &Tok::LBrace {
+                self.array_lit(inner.filter(|t| matches!(t, Ty::Array(_))))?
+            } else {
+                self.expr()?
+            });
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        let end = self.expect(Tok::RBrace)?;
+        self.depth -= 1;
+        Ok(Expr {
+            kind: ExprKind::ArrayLit { ty, elems },
+            span: start.to(end),
+        })
     }
 
     fn enter(&mut self) -> PResult<()> {
@@ -224,8 +303,13 @@ impl Parser {
             match self.peek() {
                 Tok::RBrace => break,
                 Tok::Final | Tok::Var => stmts.push(self.decl()?),
-                // `Type name = ...`: two identifiers in a row start a declaration.
-                Tok::Ident(_) if matches!(self.peek_at(1), Tok::Ident(_)) => {
+                // `Type name = ...`: two identifiers in a row start a declaration, as does
+                // `Type[]`.
+                Tok::Ident(_)
+                    if matches!(self.peek_at(1), Tok::Ident(_))
+                        || (self.peek_at(1) == &Tok::LBracket
+                            && self.peek_at(2) == &Tok::RBracket) =>
+                {
                     stmts.push(self.decl()?)
                 }
                 Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
@@ -287,8 +371,29 @@ impl Parser {
                 }
                 _ => {
                     let e = self.expr()?;
-                    self.expect(Tok::Semi)?;
-                    stmts.push(Stmt::Expr(e));
+                    // `a[i] = v;` and `a[i] += v;`
+                    let op = match self.peek() {
+                        Tok::Eq => Some(None),
+                        t => compound_op(t).map(Some),
+                    };
+                    match (op, e.kind) {
+                        (Some(op), ExprKind::Index { base, index }) => {
+                            self.bump();
+                            let value = self.expr()?;
+                            let end = self.expect(Tok::Semi)?;
+                            stmts.push(Stmt::SetIndex {
+                                base: *base,
+                                index: *index,
+                                op,
+                                value,
+                                span: e.span.to(end),
+                            });
+                        }
+                        (_, kind) => {
+                            self.expect(Tok::Semi)?;
+                            stmts.push(Stmt::Expr(Expr { kind, span: e.span }));
+                        }
+                    }
                 }
             }
         }
@@ -308,7 +413,12 @@ impl Parser {
         };
         let name = self.name()?;
         self.expect(Tok::Eq)?;
-        let init = self.expr()?;
+        // `int[] a = {1, 2};`: an initializer takes the declared array type.
+        let init = if self.peek() == &Tok::LBrace {
+            self.array_lit(ty.filter(|t| matches!(t, Ty::Array(_))))?
+        } else {
+            self.expr()?
+        };
         self.expect(Tok::Semi)?;
         Ok(Stmt::Decl {
             is_final,
@@ -537,6 +647,15 @@ impl Parser {
                     span: span.to(end),
                 });
             }
+            // `new` is contextual (not a keyword): only `new` followed by a type name creates
+            // an array, so variables and functions named `new` keep working.
+            Tok::Ident(name)
+                if name == "new"
+                    && matches!(self.peek_at(1), Tok::Ident(t) if Ty::from_name(t).is_some()) =>
+            {
+                self.bump();
+                return self.new_array(span);
+            }
             Tok::Ident(name) => {
                 let name = Ident {
                     name,
@@ -578,6 +697,15 @@ impl Parser {
 }
 
 /// Splits a decoded string literal into text and `{}` holes; `{{`/`}}` are literal braces.
+fn array_depth(mut t: Ty) -> usize {
+    let mut n = 0;
+    while let Some(e) = t.elem() {
+        n += 1;
+        t = e;
+    }
+    n
+}
+
 fn compound_op(t: &Tok) -> Option<BinOp> {
     Some(match t {
         Tok::PlusEq => BinOp::Add,

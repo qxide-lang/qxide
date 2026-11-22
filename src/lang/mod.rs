@@ -1,6 +1,7 @@
 // The `.qx` language front end and interpreter (docs/design/qx-language.md).
 // Private to the `qxide` binary: it only uses the library's public API.
 
+mod array;
 mod ast;
 mod check;
 // The desktop runtime (crates/qxide-app-runtime) uses all of it; the CLI only checks commands.
