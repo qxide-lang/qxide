@@ -80,3 +80,43 @@ Each cell is `min / median`; `-` means the phase does not apply.
 - Simulation dominates `qft` and `ghz_stabilizer`, which a different elaborator cannot speed up.
 - The front end dominates the two `flat_8000` cases.
 - Later results (the typed IR interpreter) are appended to this document as new sections, measured in the same run as the tree-walking interpreter so they share the machine state.
+## Typed IR interpreter versus tree-walking interpreter (2026-11-22)
+
+The typed IR interpreter (`docs/design/qx-ir.md`, enabled with `--engine ir`) was measured against the tree-walking interpreter (`ast`) in the same run so both share the machine state:
+
+```sh
+QXIDE_BENCH_ENGINES=ast,ir QXIDE_BENCH_REPEAT=7 cargo test --release --bin qxide bench_suite -- --ignored --nocapture
+```
+
+The harness gained a `lower ms` column measuring the time to lower the checked program to the IR (IR engine only); `elaborate ms` includes lowering time for the IR engine. The IR verifier runs only in builds with debug assertions, so it is not part of these release numbers (it runs as part of every `cargo test` run).
+
+Environment: branch `feat/typed-ir` (working tree on top of commit `8f4e925`), `rustc 1.99.1`, release profile, same Windows 11 / i9-14900HX laptop, about 13 GB RAM free, CPU load about 2 % before the run, other sessions on the machine, 7 repetitions. The `ast` numbers differ from the baseline table above due to run-to-run noise and because the shared state was refactored into `Machine` (`src/lang/machine.rs`) in between; compare within this table.
+
+Each numeric cell reports `min / median`; `-` means not applicable.
+
+| Case | engine | front ms | lower ms | elaborate ms | run/qasm ms | total ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| arith | ast | 0.0 / 0.1 | - | 611.6 / 661.8 | 0.0 / 0.0 | 611.7 / 661.8 |
+| arith | ir | 0.1 / 0.1 | 0.0 / 0.0 | 486.3 / 498.9 | 0.0 / 0.0 | 486.4 / 499.0 |
+| circuit_build | ast | 0.0 / 0.1 | - | 129.2 / 131.1 | 50.8 / 67.9 | 182.5 / 199.8 |
+| circuit_build | ir | 0.1 / 0.1 | 0.0 / 0.0 | 71.0 / 76.7 | 67.5 / 68.3 | 140.8 / 149.7 |
+| ghz_stabilizer | ast | 0.0 / 0.0 | - | 0.3 / 0.3 | 744.1 / 780.9 | 744.5 / 781.3 |
+| ghz_stabilizer | ir | 0.0 / 0.1 | 0.0 / 0.0 | 0.2 / 0.3 | 747.0 / 769.1 | 747.4 / 769.4 |
+| loops | ast | 0.1 / 0.1 | - | 196.0 / 201.5 | 0.0 / 0.0 | 196.1 / 201.6 |
+| loops | ir | 0.1 / 0.1 | 0.0 / 0.0 | 57.5 / 58.0 | 0.0 / 0.0 | 57.6 / 58.1 |
+| qft | ast | 0.1 / 0.1 | - | 0.4 / 0.5 | 455.9 / 474.1 | 456.5 / 474.8 |
+| qft | ir | 0.1 / 0.1 | 0.0 / 0.0 | 0.4 / 0.4 | 463.9 / 469.5 | 464.5 / 470.0 |
+| recursion | ast | 0.1 / 0.1 | - | 157.6 / 163.1 | 0.0 / 0.0 | 157.7 / 163.1 |
+| recursion | ir | 0.1 / 0.1 | 0.0 / 0.0 | 95.6 / 100.3 | 0.0 / 0.0 | 95.7 / 100.4 |
+| check_flat_8000 | ast | 54.9 / 62.0 | - | - | - | 54.9 / 62.0 |
+| check_flat_8000 | ir | 57.9 / 59.4 | - | - | - | 57.9 / 59.4 |
+| run_flat_8000 | ast | 58.7 / 60.6 | - | 8.6 / 9.8 | 0.7 / 0.7 | 68.5 / 71.3 |
+| run_flat_8000 | ir | 60.5 / 62.7 | 20.8 / 23.0 | 32.2 / 34.1 | 0.7 / 0.8 | 95.2 / 97.9 |
+
+### Reading
+
+- Elaboration time, IR versus tree-walking, by minimum: `loops` 57.5 vs 196.0 ms (about 3.4x less), `circuit_build` 71.0 vs 129.2 ms (about 1.8x less), `recursion` 95.6 vs 157.6 ms (about 1.6x less), `arith` 486.3 vs 611.6 ms (about 1.3x less).
+- `qft` and `ghz_stabilizer` are dominated by simulation, which the elaborator does not change; their differences are within noise. `check_flat_8000` does not elaborate, so both engines run the same code there.
+- `run_flat_8000` is slower on the IR path (32.2 vs 8.6 ms elaboration), mostly from lowering 8000 functions (20.8 ms); every function is lowered before `main` runs, even though each one is called only once. Lowering is not cached between runs (for example in the REPL or a desktop app that runs the same program repeatedly); caching or lowering functions on first call are possible follow-ups, not implemented.
+- The IR interpreter stores values in typed virtual registers and stack slots indexed by number instead of looking variables up by name, and calls functions by index; budget accounting (steps, operations, output) uses the same code as the tree-walking interpreter and is charged at the same points.
+- Whether to make the IR engine the default is left to the maintainer; these numbers and the equivalence tests are the input for that decision.
