@@ -16,14 +16,18 @@ pub struct TyId(u32);
 enum Key {
     Array(Ty),
     Named(String),
+    Param(String),
 }
 
 // Append-only: (element type of an array, source name), with a hash index so N types intern in
-// O(N). Bounded by the distinct array types and struct and enum names ever written.
+// O(N). Bounded by the distinct array types, struct and enum names (generic instances included:
+// `Pair<int, String>` is the named type of that text) and type parameters ever written.
 #[derive(Default)]
 struct Interner {
     entries: Vec<(Option<Ty>, &'static str)>,
     index: HashMap<Key, u32>,
+    // Instance id -> (generic base type, type arguments).
+    insts: HashMap<u32, (Ty, Vec<Ty>)>,
 }
 
 fn types() -> MutexGuard<'static, Interner> {
@@ -73,6 +77,8 @@ pub enum Ty {
     Struct(TyId),
     // `Shape`: an immutable value of an `enum` declared in the program.
     Enum(TyId),
+    // `T` inside a generic declaration: an opaque classical type until monomorphization.
+    Param(TyId),
 }
 
 impl Ty {
@@ -90,6 +96,81 @@ impl Ty {
     /// The type of the `enum` named `name`.
     pub fn enum_named(name: &str) -> Ty {
         Ty::Enum(named(name))
+    }
+
+    /// The type parameter named `name`.
+    pub fn param_named(name: &str) -> Ty {
+        Ty::Param(intern(Key::Param(name.to_string()), None, name.to_string()))
+    }
+
+    /// `Base<args>`: an instance of the generic struct or enum `base`. Its name is the source
+    /// text, so `struct_named("Pair<int, String>")` is the same type.
+    pub fn instance(base: Ty, args: &[Ty]) -> Ty {
+        let names: Vec<&str> = args.iter().map(|a| a.name()).collect();
+        let name = format!("{}<{}>", base.name(), names.join(", "));
+        let id = named(&name);
+        types()
+            .insts
+            .entry(id.0)
+            .or_insert_with(|| (base, args.to_vec()));
+        match base {
+            Ty::Enum(_) => Ty::Enum(id),
+            _ => Ty::Struct(id),
+        }
+    }
+
+    /// The generic base and type arguments of an instance type.
+    pub fn generic_args(self) -> Option<(Ty, Vec<Ty>)> {
+        match self {
+            Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) => types().insts.get(&i).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The type with each type parameter replaced by `f` (unchanged where `f` gives `None`).
+    pub fn subst(self, f: &dyn Fn(Ty) -> Option<Ty>) -> Ty {
+        if !self.has_param() {
+            return self;
+        }
+        match self {
+            Ty::Param(_) => f(self).unwrap_or(self),
+            Ty::Array(_) => match self.elem() {
+                Some(e) => Ty::array_of(e.subst(f)),
+                None => self,
+            },
+            _ => match self.generic_args() {
+                Some((base, args)) => {
+                    let args: Vec<Ty> = args.iter().map(|a| a.subst(f)).collect();
+                    Ty::instance(base, &args)
+                }
+                None => self,
+            },
+        }
+    }
+
+    /// Whether a type parameter occurs in the type.
+    pub fn has_param(self) -> bool {
+        match self {
+            Ty::Param(_) => true,
+            Ty::Array(_) => self.elem().is_some_and(Ty::has_param),
+            Ty::Struct(_) | Ty::Enum(_) => self
+                .generic_args()
+                .is_some_and(|(_, a)| a.iter().any(|t| t.has_param())),
+            _ => false,
+        }
+    }
+
+    /// The number of type constructors in the type (`Pair<int, int[]>` is 4).
+    pub fn size(self) -> usize {
+        match self {
+            Ty::Array(_) => 1 + self.elem().map_or(0, Ty::size),
+            Ty::Struct(_) | Ty::Enum(_) => {
+                1 + self
+                    .generic_args()
+                    .map_or(0, |(_, a)| a.iter().map(|t| t.size()).sum())
+            }
+            _ => 1,
+        }
     }
 
     /// The element type of an array type.
@@ -112,15 +193,18 @@ impl Ty {
                 | Ty::Array(_)
                 | Ty::Struct(_)
                 | Ty::Enum(_)
+                | Ty::Param(_)
         )
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Ty::Array(TyId(i)) | Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) => types()
-                .entries
-                .get(i as usize)
-                .map_or("{error}", |(_, n)| *n),
+            Ty::Array(TyId(i)) | Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) | Ty::Param(TyId(i)) => {
+                types()
+                    .entries
+                    .get(i as usize)
+                    .map_or("{error}", |(_, n)| *n)
+            }
             Ty::Int => "int",
             Ty::Double => "double",
             Ty::Boolean => "boolean",
@@ -179,10 +263,12 @@ pub struct Program {
     pub fns: Vec<FnDecl>,
 }
 
-/// `enum Shape { Circle(double r), Empty }`
+/// `enum Shape { Circle(double r), Empty }` or `enum Option<T> { None, Some(T value) }`
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: Ident,
+    // Type parameters (`<T>`), empty for an ordinary enum.
+    pub params: Vec<Ident>,
     pub variants: Vec<Variant>,
 }
 
@@ -193,10 +279,12 @@ pub struct Variant {
     pub fields: Vec<Field>,
 }
 
-/// `struct Point { double x; double y; }`
+/// `struct Point { double x; double y; }` or `struct Pair<A, B> { A first; B second; }`
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: Ident,
+    // Type parameters (`<A, B>`), empty for an ordinary struct.
+    pub params: Vec<Ident>,
     pub fields: Vec<Field>,
 }
 
@@ -221,6 +309,8 @@ pub struct Import {
 pub struct FnDecl {
     // Span of the `public` keyword: other modules may import the function.
     pub public: Option<Span>,
+    // Type parameters of a generic function (`<T> T first(T[] a)`), empty otherwise.
+    pub tparams: Vec<Ident>,
     pub name: Ident,
     pub params: Vec<Param>,
     pub ret: Ty,

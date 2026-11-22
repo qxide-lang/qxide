@@ -797,3 +797,43 @@ pub fn bad_app_config(reason: &str) -> String {
 pub fn std_size_range(width: i64, height: i64) -> String {
     format!("invalid window size {width}x{height} in `std.app.set_size`: each side must be between 200 and 8192 pixels")
 }
+
+pub fn type_args_count(ty: &str, want: usize, got: usize) -> String {
+    format!("type `{ty}` takes {want} type argument(s) but {got} were supplied")
+}
+
+pub fn needs_type_args(ty: &str) -> String {
+    format!("missing type arguments for generic type `{ty}`")
+}
+
+pub fn help_needs_type_args(ty: &str) -> String {
+    format!("specify type arguments in angle brackets, as in `{ty}<int>`, or declare the variable with `var` to infer them")
+}
+
+pub fn bad_type_arg(ty: &str) -> String {
+    format!("type argument `{ty}` must be a classical value type")
+}
+
+pub fn cannot_infer(ty: &str) -> String {
+    format!("cannot infer type arguments for `{ty}`")
+}
+
+pub fn help_cannot_infer(ty: &str) -> String {
+    format!("specify the type arguments explicitly, as in `{ty}<int>.None`, or declare the variable with its full type")
+}
+
+pub fn unused_type_param(param: &str, name: &str) -> String {
+    format!("type parameter `{param}` of function `{name}` does not appear in any parameter type and cannot be inferred")
+}
+
+pub fn type_param_op(ty: &str) -> String {
+    format!("operation not supported on type parameter `{ty}`; values can only be moved")
+}
+
+pub fn instantiation_limit(limit: usize) -> String {
+    format!("exceeded the limit of {limit} generic instantiations; check for infinitely recursive generic calls")
+}
+
+pub fn type_too_large(limit: usize) -> String {
+    format!("exceeded the generic type nesting limit of {limit}; check for infinitely recursive generic calls")
+}

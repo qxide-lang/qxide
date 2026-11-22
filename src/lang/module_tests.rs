@@ -413,6 +413,15 @@ fn library_modules_need_no_main() {
 
 // Struct names are unique across the program; a struct type is named only in its own file, but
 // its values may cross files through `var`.
+// A public generic function is instantiated by the module that calls it.
+#[test]
+fn generic_functions_across_modules() {
+    let lib = "public <T> T pick(boolean c, T a, T b) {\n    if c {\n        return a;\n    }\n    return b;\n}\n";
+    let files = [("bell_utils/src/lib.qx", lib)];
+    let entry = "import bell_utils.pick;\n\nvoid main() {\n    println(\"{} {}\", pick(true, 1, 2), pick(false, \"a\", \"b\"));\n}\n";
+    assert_eq!(run_files(entry, &files, 1), Ok("1 b\n".to_string()));
+}
+
 #[test]
 fn structs_across_modules() {
     let lib = "struct Pt {\n    int x;\n}\n\npublic int make(int n) {\n    Pt p = new Pt(n);\n    return p.x;\n}\n";

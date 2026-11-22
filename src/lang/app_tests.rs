@@ -319,6 +319,18 @@ struct Pair {
 public Pair pair(int n) {
     return new Pair(n, n);
 }
+
+struct Box<T> {
+    T v;
+}
+
+public Box<int> boxed(int n) {
+    return new Box(n);
+}
+
+public <T> T same(T x) {
+    return x;
+}
 "#;
 
 fn app_call(
@@ -338,6 +350,8 @@ fn app_call(
         "total",
         "squares",
         "pair",
+        "boxed",
+        "same",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -463,6 +477,16 @@ fn command_errors() {
     );
     assert_eq!(
         code(app_call("pair", &[("n", JsArg::Int(2))], 1, 0)),
+        "Q0714"
+    );
+    // Nor can instances of generic types; a generic function is no command (it has no
+    // concrete signature).
+    assert_eq!(
+        code(app_call("boxed", &[("n", JsArg::Int(2))], 1, 0)),
+        "Q0714"
+    );
+    assert_eq!(
+        code(app_call("same", &[("x", JsArg::Int(2))], 1, 0)),
         "Q0714"
     );
     let e = app_call("flip", &[], 1, 0).unwrap_err();

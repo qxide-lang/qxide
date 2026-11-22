@@ -439,6 +439,13 @@ fn repl_declares_structs_and_uses_them() {
 }
 
 #[test]
+fn repl_declares_generic_functions_and_types() {
+    let src = "<T> T id(T x) {\n    return x;\n}\nenum Opt<T> {\n    No,\n    Yes(T v),\n}\nOpt<int> o = Opt.Yes(id(3));\nid(\"s\")\n";
+    let (out, err, code) = repl(src);
+    assert_eq!((out.as_str(), err.as_str(), code), ("s\n", "", 0));
+}
+
+#[test]
 fn repl_commands() {
     let (out, err, code) = repl(":help\nQubit q = qubit();\nh(q);\n:qasm\n:reset\nq\n:nope\n");
     assert!(out.contains("h q[0];"), "{out}");

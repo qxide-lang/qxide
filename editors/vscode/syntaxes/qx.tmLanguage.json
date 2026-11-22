@@ -8,6 +8,7 @@
     { "include": "#string" },
     { "include": "#import" },
     { "include": "#function-declaration" },
+    { "include": "#type-parameters" },
     { "include": "#keywords" },
     { "include": "#types" },
     { "include": "#constants" },
@@ -57,6 +58,35 @@
         "1": { "name": "storage.type.qx" },
         "2": { "name": "entity.name.function.qx" }
       }
+    },
+    "type-parameters": {
+      "patterns": [
+        {
+          "comment": "`<T, U>` before a generic function's return type",
+          "match": "^\\s*(?:(public)\\s+)?(<)([^<>]*)(>)",
+          "captures": {
+            "1": { "name": "storage.modifier.qx" },
+            "2": { "name": "punctuation.definition.typeparameters.begin.qx" },
+            "3": { "patterns": [{ "include": "#type-parameter-name" }] },
+            "4": { "name": "punctuation.definition.typeparameters.end.qx" }
+          }
+        },
+        {
+          "comment": "`struct Pair<A, B>` and `enum Option<T>`",
+          "match": "\\b(struct|enum)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(<)([^<>]*)(>)",
+          "captures": {
+            "1": { "patterns": [{ "include": "#keywords" }] },
+            "2": { "name": "entity.name.type.qx" },
+            "3": { "name": "punctuation.definition.typeparameters.begin.qx" },
+            "4": { "patterns": [{ "include": "#type-parameter-name" }] },
+            "5": { "name": "punctuation.definition.typeparameters.end.qx" }
+          }
+        }
+      ]
+    },
+    "type-parameter-name": {
+      "name": "entity.name.type.parameter.qx",
+      "match": "[\\p{L}_][\\p{L}\\p{N}_]*"
     },
     "keywords": {
       "patterns": [

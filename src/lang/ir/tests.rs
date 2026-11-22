@@ -531,6 +531,28 @@ fn enums_agree_at_every_step_limit() {
     }
 }
 
+// Generic code runs as its monomorphized instances: same results and step positions everywhere.
+#[test]
+fn generics_agree_at_every_step_limit() {
+    let src = super::super::tests::GENERICS;
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 500, "{total}");
+    for max in (0..=total + 1).step_by(3).chain([total - 1, total]) {
+        let limits = Limits {
+            max_steps: max,
+            ..Limits::CLI
+        };
+        same_outputs(src, 1, 3, limits);
+    }
+}
+
 // Counts how often elaboration asks whether it was cancelled.
 struct Polls {
     n: Cell<u64>,

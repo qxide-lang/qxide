@@ -408,7 +408,18 @@ fn signature(f: &FnDecl, name: &str) -> String {
         })
         .collect();
     let public = if f.public.is_some() { "public " } else { "" };
-    format!("{public}{} {name}({})", f.ret.name(), params.join(", "))
+    // `<A, B> Pair<B, A> swap(...)`
+    let tparams = if f.tparams.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = f.tparams.iter().map(|p| p.name.as_str()).collect();
+        format!("<{}> ", names.join(", "))
+    };
+    format!(
+        "{public}{tparams}{} {name}({})",
+        f.ret.name(),
+        params.join(", ")
+    )
 }
 
 // Module path of an import as the linker qualifies it: `pkg.lib` is the package root itself.

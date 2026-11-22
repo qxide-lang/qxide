@@ -18,6 +18,11 @@ pub struct Parser {
     // used before their declaration).
     structs: HashSet<String>,
     enums: HashSet<String>,
+    // The structs and enums declared with type parameters: only after one of these names is `<`
+    // a list of type arguments (`Pair<int, String>`), so `a < b` stays a comparison.
+    generics: HashSet<String>,
+    // Type parameters in scope (of the generic declaration being parsed).
+    tparams: Vec<String>,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
@@ -25,22 +30,27 @@ type PResult<T> = Result<T, Diagnostic>;
 pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     let mut structs = HashSet::new();
     let mut enums = HashSet::new();
+    let mut generics = HashSet::new();
     let mut depth = 0usize;
-    for w in toks.windows(2) {
-        match &w[0].tok {
-            Tok::LBrace => depth += 1,
-            Tok::RBrace => depth = depth.saturating_sub(1),
-            Tok::Struct if depth == 0 => {
-                if let Tok::Ident(n) = &w[1].tok {
-                    structs.insert(n.clone());
-                }
+    for (i, w) in toks.windows(2).enumerate() {
+        let set = match &w[0].tok {
+            Tok::LBrace => {
+                depth += 1;
+                continue;
             }
-            Tok::Enum if depth == 0 => {
-                if let Tok::Ident(n) = &w[1].tok {
-                    enums.insert(n.clone());
-                }
+            Tok::RBrace => {
+                depth = depth.saturating_sub(1);
+                continue;
             }
-            _ => {}
+            Tok::Struct if depth == 0 => &mut structs,
+            Tok::Enum if depth == 0 => &mut enums,
+            _ => continue,
+        };
+        if let Tok::Ident(n) = &w[1].tok {
+            set.insert(n.clone());
+            if toks.get(i + 2).is_some_and(|t| t.tok == Tok::Lt) {
+                generics.insert(n.clone());
+            }
         }
     }
     let mut p = Parser {
@@ -49,6 +59,8 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         depth: 0,
         structs,
         enums,
+        generics,
+        tparams: Vec::new(),
     };
     let mut imports = Vec::new();
     while p.peek() == &Tok::Import {
@@ -169,8 +181,17 @@ impl Parser {
                         msg::unknown_type(&name),
                     ));
                 };
-                // `int[]`, `double[][]`: each `[]` wraps the type in an array.
                 let mut end = span;
+                // `Pair<int, String>`: the arguments of a generic type.
+                if self.generics.contains(&name)
+                    && !self.tparams.contains(&name)
+                    && self.peek() == &Tok::Lt
+                {
+                    let (args, close) = self.type_args()?;
+                    t = Ty::instance(t, &args);
+                    end = close;
+                }
+                // `int[]`, `double[][]`: each `[]` wraps the type in an array.
                 while self.peek() == &Tok::LBracket && self.peek_at(1) == &Tok::RBracket {
                     self.enter()?;
                     self.bump();
@@ -182,6 +203,32 @@ impl Parser {
             }
             t => Err(self.unexpected(msg::expected_type(&t.describe()))),
         }
+    }
+
+    // `<int, String>`: type arguments, through the closing `>`.
+    fn type_args(&mut self) -> PResult<(Vec<Ty>, Span)> {
+        self.enter()?;
+        self.expect(Tok::Lt)?;
+        let mut args = vec![self.ty()?.0];
+        while self.eat(&Tok::Comma) {
+            args.push(self.ty()?.0);
+        }
+        let end = self.expect(Tok::Gt)?;
+        self.depth -= 1;
+        Ok((args, end))
+    }
+
+    // `<A, B>`: the type parameters of a generic declaration (none without a `<`).
+    fn type_params(&mut self) -> PResult<Vec<Ident>> {
+        let mut params = Vec::new();
+        if self.eat(&Tok::Lt) {
+            params.push(self.name()?);
+            while self.eat(&Tok::Comma) {
+                params.push(self.name()?);
+            }
+            self.expect(Tok::Gt)?;
+        }
+        Ok(params)
     }
 
     // `new int[n][m]`, `new int[n][]` or `new int[]{1, 2}`, after the `new`.
@@ -304,10 +351,12 @@ impl Parser {
         Ok(Import { module, item, span })
     }
 
-    // `struct Name { Type field; ... }`
+    // `struct Name { Type field; ... }` or `struct Name<A, B> { ... }`
     fn struct_decl(&mut self) -> PResult<StructDecl> {
         self.bump();
         let name = self.name()?;
+        let params = self.type_params()?;
+        self.tparams = params.iter().map(|p| p.name.clone()).collect();
         self.expect(Tok::LBrace)?;
         let mut fields = Vec::new();
         while self.peek() != &Tok::RBrace {
@@ -317,13 +366,20 @@ impl Parser {
             fields.push(Field { ty, ty_span, name });
         }
         self.expect(Tok::RBrace)?;
-        Ok(StructDecl { name, fields })
+        self.tparams.clear();
+        Ok(StructDecl {
+            name,
+            params,
+            fields,
+        })
     }
 
     // `enum Name { A, B(Type x, Type y), ... }` (a trailing comma is allowed).
     fn enum_decl(&mut self) -> PResult<EnumDecl> {
         self.bump();
         let name = self.name()?;
+        let params = self.type_params()?;
+        self.tparams = params.iter().map(|p| p.name.clone()).collect();
         self.expect(Tok::LBrace)?;
         let mut variants = Vec::new();
         while self.peek() != &Tok::RBrace {
@@ -353,18 +409,29 @@ impl Parser {
             return Err(self.unexpected(msg::expected_ident(&self.peek().describe())));
         }
         self.expect(Tok::RBrace)?;
-        Ok(EnumDecl { name, variants })
+        self.tparams.clear();
+        Ok(EnumDecl {
+            name,
+            params,
+            variants,
+        })
     }
 
-    // A built-in type name or a struct or enum of this file.
+    // A built-in type name, a type parameter in scope, or a struct or enum of this file.
     fn named_ty(&self, name: &str) -> Option<Ty> {
+        if self.tparams.iter().any(|p| p == name) {
+            return Some(Ty::param_named(name));
+        }
         Ty::from_name(name)
             .or_else(|| self.structs.contains(name).then(|| Ty::struct_named(name)))
             .or_else(|| self.enums.contains(name).then(|| Ty::enum_named(name)))
     }
 
     fn is_type_name(&self, name: &str) -> bool {
-        Ty::from_name(name).is_some() || self.structs.contains(name) || self.enums.contains(name)
+        Ty::from_name(name).is_some()
+            || self.structs.contains(name)
+            || self.enums.contains(name)
+            || self.tparams.iter().any(|p| p == name)
     }
 
     // `match e { pattern => { ... } ... }` (a comma after an arm is allowed).
@@ -444,13 +511,15 @@ impl Parser {
         })
     }
 
-    // `[public] ReturnType name(Type a, consume Type b) { ... }`
+    // `[public] [<T, U>] ReturnType name(Type a, consume Type b) { ... }`
     fn fn_decl(&mut self) -> PResult<FnDecl> {
         let public = if self.peek() == &Tok::Public {
             Some(self.bump().span)
         } else {
             None
         };
+        let tparams = self.type_params()?;
+        self.tparams = tparams.iter().map(|p| p.name.clone()).collect();
         let (ret, ret_span) = self.ty()?;
         let name = self.name()?;
         self.expect(Tok::LParen)?;
@@ -475,8 +544,10 @@ impl Parser {
         }
         self.expect(Tok::RParen)?;
         let body = self.block()?;
+        self.tparams.clear();
         Ok(FnDecl {
             public,
+            tparams,
             name,
             params,
             ret,
@@ -495,10 +566,13 @@ impl Parser {
                 Tok::Final | Tok::Var => stmts.push(self.decl()?),
                 // `Type name = ...`: two identifiers in a row start a declaration, as does
                 // `Type[]`.
-                Tok::Ident(_)
+                Tok::Ident(n)
                     if matches!(self.peek_at(1), Tok::Ident(_))
                         || (self.peek_at(1) == &Tok::LBracket
-                            && self.peek_at(2) == &Tok::RBracket) =>
+                            && self.peek_at(2) == &Tok::RBracket)
+                        || (self.peek_at(1) == &Tok::Lt
+                            && self.generics.contains(n)
+                            && !self.tparams.contains(n)) =>
                 {
                     stmts.push(self.decl()?)
                 }
@@ -871,16 +945,23 @@ impl Parser {
                 self.bump();
                 return self.new_array(span);
             }
-            // `Shape.Circle(2.0)` or `Shape.Empty`: a variant of an enum of this file.
+            // `Shape.Circle(2.0)` or `Shape.Empty`: a variant of an enum of this file;
+            // `Option<int>.None` names the instance of a generic enum.
             Tok::Ident(name)
                 if self.enums.contains(&name)
-                    && self.peek_at(1) == &Tok::Dot
-                    && matches!(self.peek_at(2), Tok::Ident(_)) =>
+                    && !self.tparams.contains(&name)
+                    && ((self.peek_at(1) == &Tok::Dot
+                        && matches!(self.peek_at(2), Tok::Ident(_)))
+                        || (self.peek_at(1) == &Tok::Lt && self.generics.contains(&name))) =>
             {
                 self.bump();
-                self.bump();
+                let mut ty = Ty::enum_named(&name);
+                if self.peek() == &Tok::Lt {
+                    let (args, _) = self.type_args()?;
+                    ty = Ty::instance(ty, &args);
+                }
+                self.expect(Tok::Dot)?;
                 let vname = self.ident()?;
-                let ty = Ty::enum_named(&name);
                 let (args, end) = if self.eat(&Tok::LParen) {
                     self.call_args()?
                 } else {

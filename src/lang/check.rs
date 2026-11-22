@@ -46,6 +46,70 @@ struct Sig {
     // (type, `consume`)
     params: Vec<(Ty, bool)>,
     ret: Ty,
+    // Type parameters of a generic function (inferred from the arguments at each call).
+    tparams: Vec<Ty>,
+}
+
+/// What type inference chose for generic code, keyed by expression span (`start`, `end`), for
+/// monomorphization (src/lang/mono.rs): the instance a `new`/variant expression creates, and the
+/// type arguments of each call of a generic function, in the callee's parameter order. Types may
+/// mention the type parameters of the enclosing generic function.
+#[derive(Debug, Default)]
+pub struct Inferred {
+    pub types: HashMap<(usize, usize), Ty>,
+    pub calls: HashMap<(usize, usize), Vec<Ty>>,
+}
+
+fn key(s: Span) -> (usize, usize) {
+    (s.start, s.end)
+}
+
+// A classical type, possibly inside arrays (what a type argument must be).
+fn shape_ok(mut t: Ty) -> bool {
+    while let Some(e) = t.elem() {
+        t = e;
+    }
+    t.is_element()
+}
+
+// Does type parameter `p` occur in `t`?
+fn mentions(t: Ty, p: Ty) -> bool {
+    if t == p {
+        return true;
+    }
+    if let Some(e) = t.elem() {
+        return mentions(e, p);
+    }
+    t.generic_args()
+        .is_some_and(|(_, args)| args.iter().any(|&a| mentions(a, p)))
+}
+
+// Binds the type parameters in `pat` (a callee's or a generic type's field type) by matching it
+// against the type `act` of a value. The first binding wins, except that `int` widens to
+// `double` (`pick(1, 2.5)` picks `double`).
+fn unify(pat: Ty, act: Ty, map: &mut HashMap<Ty, Ty>) {
+    match pat {
+        Ty::Param(_) if act != Ty::Error => {
+            let slot = map.entry(pat).or_insert(act);
+            if *slot == Ty::Int && act == Ty::Double {
+                *slot = Ty::Double;
+            }
+        }
+        Ty::Array(_) => {
+            if let (Some(p), Some(a)) = (pat.elem(), act.elem()) {
+                unify(p, a, map);
+            }
+        }
+        _ => {
+            if let (Some((pb, pa)), Some((ab, aa))) = (pat.generic_args(), act.generic_args()) {
+                if pb == ab {
+                    for (p, a) in pa.into_iter().zip(aa) {
+                        unify(p, a, map);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -225,6 +289,15 @@ struct Checker {
     structs: HashMap<Ty, (Vec<Ty>, HashMap<String, Ty>)>,
     // Variants of every enum in declaration order: (name, payload types).
     enums: HashMap<Ty, Vec<(String, Vec<Ty>)>>,
+    // Type parameters of each generic struct and enum, keyed by the generic (base) type; the
+    // tables above hold their fields with these parameters, substituted per instance.
+    gparams: HashMap<Ty, Vec<Ty>>,
+    // Every declared struct and enum type.
+    declared: HashSet<Ty>,
+    // The type the next expression is expected to have (a declaration, assignment, return,
+    // argument or store), so `Option.None` can take its type arguments from it.
+    hint: Option<Ty>,
+    inferred: Inferred,
     // Functions that cannot run inside an `if` on a `Bit`, with the first reason found.
     unconditional: HashMap<String, (Span, Unconditional)>,
     vars: Vec<Var>,
@@ -240,10 +313,19 @@ struct Checker {
 
 /// `require_main: false` checks a library module, which has no `main`.
 pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
+    check_infer(p, require_main).0
+}
+
+/// Checks the program and returns what inference chose for its generic code.
+pub fn check_infer(p: &Program, require_main: bool) -> (Vec<Diagnostic>, Inferred) {
     let mut c = Checker {
         fns: HashMap::new(),
         structs: HashMap::new(),
         enums: HashMap::new(),
+        gparams: HashMap::new(),
+        declared: HashSet::new(),
+        hint: None,
+        inferred: Inferred::default(),
         unconditional: HashMap::new(),
         vars: Vec::new(),
         scopes: Vec::new(),
@@ -260,7 +342,7 @@ pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
         c.function(f);
     }
     c.errors.sort_by_key(|d| (d.span.start, d.code.as_str()));
-    c.errors
+    (c.errors, c.inferred)
 }
 
 impl Checker {
@@ -272,6 +354,28 @@ impl Checker {
     // Struct names are unique, fields are unique and of build-time classical types, and no
     // struct contains itself (directly or through arrays): there is no `null` to end a chain.
     fn struct_decls(&mut self, p: &Program) {
+        let types: HashSet<&str> = p
+            .structs
+            .iter()
+            .map(|s| s.name.name.as_str())
+            .chain(p.enums.iter().map(|e| e.name.name.as_str()))
+            .collect();
+        let decls = p
+            .structs
+            .iter()
+            .map(|s| (Ty::struct_named(&s.name.name), &s.params))
+            .chain(
+                p.enums
+                    .iter()
+                    .map(|e| (Ty::enum_named(&e.name.name), &e.params)),
+            );
+        for (ty, params) in decls {
+            self.declared.insert(ty);
+            if !params.is_empty() {
+                let tys = self.type_params(params, &types);
+                self.gparams.entry(ty).or_insert(tys);
+            }
+        }
         // Structs and enums share one namespace of type names.
         let mut names = HashSet::new();
         for s in &p.structs {
@@ -299,14 +403,16 @@ impl Checker {
                 while let Some(e) = inner.elem() {
                     inner = e;
                 }
-                let ty = if inner.is_element() {
-                    f.ty
-                } else {
+                let ty = if !inner.is_element() {
                     self.err(
                         Code::BadFieldType,
                         f.ty_span,
                         msg::bad_field_type(inner.name()),
                     );
+                    Ty::Error
+                } else if self.generic_ok(f.ty, f.ty_span) {
+                    f.ty
+                } else {
                     Ty::Error
                 };
                 order.push(ty);
@@ -347,14 +453,16 @@ impl Checker {
                     while let Some(e) = inner.elem() {
                         inner = e;
                     }
-                    tys.push(if inner.is_element() {
-                        f.ty
-                    } else {
+                    tys.push(if !inner.is_element() {
                         self.err(
                             Code::BadFieldType,
                             f.ty_span,
                             msg::bad_payload_type(inner.name()),
                         );
+                        Ty::Error
+                    } else if self.generic_ok(f.ty, f.ty_span) {
+                        f.ty
+                    } else {
                         Ty::Error
                     });
                 }
@@ -385,15 +493,25 @@ impl Checker {
             .into_iter()
             .rev()
             .collect();
-        // (target, field span, through an array)
+        // (target, field span, through an array). An instance `Box<S>` links to its generic type
+        // and, conservatively, to each type argument as if through an array (a mutable path).
         let edge = |f: &Field| {
-            let mut t = f.ty;
-            let mut array = false;
-            while let Some(e) = t.elem() {
-                t = e;
-                array = true;
+            let mut out = Vec::new();
+            let mut stack = vec![(f.ty, false)];
+            while let Some((mut t, mut array)) = stack.pop() {
+                while let Some(e) = t.elem() {
+                    t = e;
+                    array = true;
+                }
+                if let Some((base, args)) = t.generic_args() {
+                    t = base;
+                    stack.extend(args.into_iter().map(|a| (a, true)));
+                }
+                if let Some(&v) = ids.get(&t) {
+                    out.push((v, f.ty_span, array));
+                }
             }
-            ids.get(&t).map(|&v| (v, f.ty_span, array))
+            out
         };
         let defaults = p.structs.iter().map(|s| s.fields.as_slice()).chain(
             p.enums
@@ -401,7 +519,7 @@ impl Checker {
                 .map(|e| e.variants.first().map_or(&[][..], |v| v.fields.as_slice())),
         );
         let edges: Vec<Vec<(usize, Span)>> = defaults
-            .map(|fs| fs.iter().filter_map(edge).map(|(v, s, _)| (v, s)).collect())
+            .map(|fs| fs.iter().flat_map(edge).map(|(v, s, _)| (v, s)).collect())
             .collect();
         let reported = self.default_cycles(p, &edges);
         let all: Vec<Vec<(usize, Span, bool)>> = p
@@ -410,14 +528,14 @@ impl Checker {
             .map(|s| {
                 s.fields
                     .iter()
-                    .filter_map(edge)
+                    .flat_map(edge)
                     .map(|(v, s, _)| (v, s, true))
                     .collect()
             })
             .chain(p.enums.iter().map(|e| {
                 e.variants
                     .iter()
-                    .flat_map(|v| v.fields.iter().filter_map(edge))
+                    .flat_map(|v| v.fields.iter().flat_map(edge))
                     .collect()
             }))
             .collect();
@@ -484,6 +602,12 @@ impl Checker {
     }
 
     fn signatures(&mut self, p: &Program, require_main: bool) {
+        let type_names: HashSet<&str> = p
+            .structs
+            .iter()
+            .map(|s| s.name.name.as_str())
+            .chain(p.enums.iter().map(|e| e.name.name.as_str()))
+            .collect();
         let mut main = None;
         for f in &p.fns {
             let name = &f.name.name;
@@ -524,6 +648,17 @@ impl Checker {
             if name == "main" {
                 main = Some(f);
             }
+            let tparams = self.type_params(&f.tparams, &type_names);
+            // Type arguments are inferred from the arguments only.
+            for (p, t) in f.tparams.iter().zip(&tparams) {
+                if !f.params.iter().any(|q| mentions(q.ty, *t)) {
+                    self.err(
+                        Code::TypeArgs,
+                        p.span,
+                        msg::unused_type_param(&p.name, base),
+                    );
+                }
+            }
             self.fns.insert(
                 name.clone(),
                 Sig {
@@ -533,6 +668,7 @@ impl Checker {
                         .map(|p| (p.ty, p.consume.is_some() && p.ty.is_quantum()))
                         .collect(),
                     ret: f.ret,
+                    tparams,
                 },
             );
         }
@@ -721,7 +857,9 @@ impl Checker {
                 name,
                 init,
             } => {
+                self.hint = *ty;
                 let found = self.let_init(init);
+                self.hint = None;
                 let var_ty = match *ty {
                     // `var` infers classical types only; quantum and per-shot values need a type.
                     None => match found {
@@ -732,6 +870,7 @@ impl Checker {
                         | Ty::Array(_)
                         | Ty::Struct(_)
                         | Ty::Enum(_)
+                        | Ty::Param(_)
                         | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
@@ -777,7 +916,9 @@ impl Checker {
                 false
             }
             Stmt::Assign { name, value } => {
+                self.hint = self.lookup(&name.name).map(|id| self.vars[id].ty);
                 let found = self.expr(value);
+                self.hint = None;
                 let Some(id) = self.lookup(&name.name) else {
                     if constant(&name.name).is_some() {
                         self.err(
@@ -913,7 +1054,7 @@ impl Checker {
                 // Returning a qubit moves it to the caller, which becomes responsible for it.
                 let found = match value {
                     Some(e) if want.is_quantum() => self.consume(e, *span, want),
-                    Some(e) => self.expr(e),
+                    Some(e) => self.expr_hint(e, want),
                     None => Ty::Void,
                 };
                 self.expect_ty(value.as_ref().map_or(*span, |e| e.span), want, found);
@@ -1193,7 +1334,25 @@ impl Checker {
         }
     }
 
+    // `expr` with an expected type (only the outermost expression sees it).
+    fn expr_hint(&mut self, e: &Expr, hint: Ty) -> Ty {
+        self.hint = Some(hint);
+        let t = self.expr(e);
+        self.hint = None;
+        t
+    }
+
+    // A value of a type parameter can only be moved; any other operation is `Q0230`.
+    fn param_op(&mut self, at: Span, tys: &[Ty]) -> bool {
+        let Some(p) = tys.iter().find(|t| matches!(t, Ty::Param(_))) else {
+            return false;
+        };
+        self.err(Code::TypeArgs, at, msg::type_param_op(p.name()));
+        true
+    }
+
     fn expr(&mut self, e: &Expr) -> Ty {
+        let hint = self.hint.take();
         match &e.kind {
             ExprKind::Int(_) => Ty::Int,
             ExprKind::Double(_) => Ty::Double,
@@ -1252,36 +1411,20 @@ impl Checker {
                 }
             }
             ExprKind::ArrayLit { ty, elems } => self.array_lit(*ty, elems, e.span),
-            ExprKind::NewStruct { ty, args } => {
-                let fields = self
-                    .structs
-                    .get(ty)
-                    .map(|(order, _)| order.clone())
-                    .unwrap_or_default();
-                if fields.len() != args.len() {
-                    self.err(
-                        Code::Arity,
-                        e.span,
-                        msg::arity(ty.name(), fields.len(), args.len()),
-                    );
-                    for a in args {
-                        self.expr(a);
-                    }
-                    return Ty::Error;
-                }
-                for (a, want) in args.iter().zip(fields) {
-                    let found = self.expr(a);
-                    self.expect_ty(a.span, want, found);
-                }
-                *ty
-            }
-            ExprKind::Variant { ty, name, args } => self.variant(*ty, name, args, e.span),
+            ExprKind::NewStruct { ty, args } => self.new_struct(*ty, args, e.span, hint),
+            ExprKind::Variant { ty, name, args } => self.variant(*ty, name, args, e.span, hint),
             ExprKind::Field { recv, name } => {
                 let t = self.expr(recv);
                 self.field_ty(t, name)
             }
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
+                if self.param_op(recv.span, &[t]) {
+                    for a in args {
+                        self.expr(a);
+                    }
+                    return Ty::Error;
+                }
                 if t == Ty::String {
                     return self.string_method(name, args, e.span);
                 }
@@ -1308,6 +1451,9 @@ impl Checker {
             }
             ExprKind::Cast { ty, expr } => {
                 let t = self.expr(expr);
+                if self.param_op(expr.span, &[t]) {
+                    return Ty::Error;
+                }
                 match (t, ty) {
                     (_, Ty::Int | Ty::Double) if t.is_numeric() || t == Ty::Error => *ty,
                     (Ty::Error, _) => Ty::Error,
@@ -1331,6 +1477,9 @@ impl Checker {
             }
             ExprKind::Unary { op, expr } => {
                 let t = self.expr(expr);
+                if self.param_op(expr.span, &[t]) {
+                    return Ty::Error;
+                }
                 match op {
                     UnOp::Neg => {
                         self.numeric(expr.span, t);
@@ -1353,6 +1502,9 @@ impl Checker {
                 } else {
                     self.expr(rhs)
                 };
+                if self.param_op(e.span, &[l, r]) {
+                    return Ty::Error;
+                }
                 use BinOp::*;
                 // `+` with a `String` on either side concatenates any build-time value.
                 if *op == Add && (l == Ty::String || r == Ty::String) {
@@ -1416,7 +1568,196 @@ impl Checker {
             );
             return false;
         }
-        true
+        self.generic_ok(t, span)
+    }
+
+    // Type arguments of a generic type (the right number, of classical types), and no generic
+    // type without them; reported once at the type (`Q0230`).
+    fn generic_ok(&mut self, t: Ty, span: Span) -> bool {
+        let mut t = t;
+        while let Some(e) = t.elem() {
+            t = e;
+        }
+        // A monomorphized program declares its instances as ordinary types.
+        if self.declared.contains(&t) && !self.gparams.contains_key(&t) {
+            return true;
+        }
+        match t.generic_args() {
+            Some((base, args)) => {
+                let want = self.gparams.get(&base).map_or(0, Vec::len);
+                if want != args.len() {
+                    self.err(
+                        Code::TypeArgs,
+                        span,
+                        msg::type_args_count(base.name(), want, args.len()),
+                    );
+                    return false;
+                }
+                args.into_iter().all(|a| self.type_arg_ok(a, span))
+            }
+            None if self.gparams.contains_key(&t) => {
+                self.err(Code::TypeArgs, span, msg::needs_type_args(t.name()))
+                    .help = Some(msg::help_needs_type_args(t.name()));
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn type_arg_ok(&mut self, a: Ty, span: Span) -> bool {
+        let mut inner = a;
+        while let Some(e) = inner.elem() {
+            inner = e;
+        }
+        if !inner.is_element() {
+            self.err(Code::TypeArgs, span, msg::bad_type_arg(a.name()));
+            return false;
+        }
+        self.generic_ok(a, span)
+    }
+
+    // The type parameters of a generic declaration: distinct, and not named like a type.
+    fn type_params(&mut self, params: &[Ident], types: &HashSet<&str>) -> Vec<Ty> {
+        let mut seen = HashSet::new();
+        for p in params {
+            if !seen.insert(p.name.as_str()) || types.contains(p.name.as_str()) {
+                self.err(Code::Duplicate, p.span, msg::duplicate_def(&p.name));
+            }
+        }
+        params.iter().map(|p| Ty::param_named(&p.name)).collect()
+    }
+
+    // An instance's generic type and the substitution of its type arguments.
+    fn inst(&self, t: Ty) -> Option<(Ty, HashMap<Ty, Ty>)> {
+        let (base, args) = t.generic_args()?;
+        let params = self.gparams.get(&base)?;
+        Some((base, params.iter().copied().zip(args).collect()))
+    }
+
+    // Field types of a struct (or struct instance) in declaration order.
+    fn field_types(&self, t: Ty) -> Option<Vec<Ty>> {
+        if let Some((order, _)) = self.structs.get(&t) {
+            return Some(order.clone());
+        }
+        let (base, map) = self.inst(t)?;
+        let (order, _) = self.structs.get(&base)?;
+        Some(
+            order
+                .iter()
+                .map(|f| f.subst(&|p| map.get(&p).copied()))
+                .collect(),
+        )
+    }
+
+    fn field_named(&self, t: Ty, name: &str) -> Option<Ty> {
+        if let Some((_, by_name)) = self.structs.get(&t) {
+            return by_name.get(name).copied();
+        }
+        let (base, map) = self.inst(t)?;
+        let f = *self.structs.get(&base)?.1.get(name)?;
+        Some(f.subst(&|p| map.get(&p).copied()))
+    }
+
+    // Variants of an enum (or enum instance): (name, payload types).
+    fn variants_of(&self, t: Ty) -> Option<Vec<(String, Vec<Ty>)>> {
+        if let Some(vs) = self.enums.get(&t) {
+            return Some(vs.clone());
+        }
+        let (base, map) = self.inst(t)?;
+        let vs = self.enums.get(&base)?;
+        Some(
+            vs.iter()
+                .map(|(n, tys)| {
+                    let tys = tys.iter().map(|f| f.subst(&|p| map.get(&p).copied()));
+                    (n.clone(), tys.collect())
+                })
+                .collect(),
+        )
+    }
+
+    // `new Pair(1, "a")` or `Option.Some(5)` of a generic type `base`: the type arguments come
+    // from the expected type, then from the values in order (`fields` mention the parameters).
+    // A value whose field type is already known gets it as its own expected type, so
+    // `Tree.Node(Tree.Leaf, 1, Tree.Leaf)` works inside out.
+    fn infer(
+        &mut self,
+        base: Ty,
+        fields: &[Ty],
+        args: &[Expr],
+        span: Span,
+        hint: Option<Ty>,
+    ) -> Ty {
+        let params = self.gparams.get(&base).cloned().unwrap_or_default();
+        let mut map = HashMap::new();
+        if let Some((hb, ha)) = hint.and_then(Ty::generic_args) {
+            if hb == base {
+                // The declared type is reported where it is written.
+                if !ha.iter().all(|&a| shape_ok(a)) {
+                    for a in args {
+                        self.expr(a);
+                    }
+                    return Ty::Error;
+                }
+                map.extend(params.iter().copied().zip(ha));
+            }
+        }
+        let mut found = Vec::with_capacity(args.len());
+        for (f, a) in fields.iter().zip(args) {
+            let known = f.subst(&|p| map.get(&p).copied());
+            let t = if known.has_param() {
+                self.expr(a)
+            } else {
+                self.expr_hint(a, known)
+            };
+            unify(*f, t, &mut map);
+            found.push(t);
+        }
+        let targs: Option<Vec<Ty>> = params.iter().map(|p| map.get(p).copied()).collect();
+        let Some(targs) = targs else {
+            if !found.contains(&Ty::Error) {
+                self.err(Code::TypeArgs, span, msg::cannot_infer(base.name()))
+                    .help = Some(msg::help_cannot_infer(base.name()));
+            }
+            return Ty::Error;
+        };
+        if !targs.iter().all(|&a| self.type_arg_ok(a, span)) {
+            return Ty::Error;
+        }
+        for ((f, t), a) in fields.iter().zip(found).zip(args) {
+            self.expect_ty(a.span, f.subst(&|p| map.get(&p).copied()), t);
+        }
+        let inst = Ty::instance(base, &targs);
+        self.inferred.types.insert(key(span), inst);
+        inst
+    }
+
+    // `new Point(1.0, 2.0)`: the field values in declaration order.
+    fn new_struct(&mut self, ty: Ty, args: &[Expr], span: Span, hint: Option<Ty>) -> Ty {
+        let generic = self.gparams.contains_key(&ty);
+        let fields = if generic {
+            self.structs.get(&ty).map(|(order, _)| order.clone())
+        } else if ty.generic_args().is_some() && !self.generic_ok(ty, span) {
+            None
+        } else {
+            self.field_types(ty)
+        };
+        let Some(fields) = fields.clone().filter(|f| f.len() == args.len()) else {
+            if let Some(n) = fields.map(|f| f.len()) {
+                self.err(Code::Arity, span, msg::arity(ty.name(), n, args.len()));
+            }
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        };
+        if generic {
+            return self.infer(ty, &fields, args, span, hint);
+        }
+        for (a, want) in args.iter().zip(fields) {
+            let found = self.expr_hint(a, want);
+            self.expect_ty(a.span, want, found);
+        }
+        ty
     }
 
     // `{1, 2}` of a declaration or `new int[]{1, 2}`; the parser passed the array type down.
@@ -1431,9 +1772,11 @@ impl Checker {
         };
         let elem = t.and_then(Ty::elem);
         for e in elems {
-            let found = self.expr(e);
             if let Some(want) = elem {
+                let found = self.expr_hint(e, want);
                 self.expect_ty(e.span, want, found);
+            } else {
+                self.expr(e);
             }
         }
         t.unwrap_or(Ty::Error)
@@ -1451,7 +1794,9 @@ impl Checker {
         let b = self.expr(base);
         let i = self.expr(index);
         self.expect_ty(index.span, Ty::Int, i);
+        self.hint = b.elem();
         let v = self.expr(value);
+        self.hint = None;
         if let Some(&at) = self.bit_ifs.last() {
             self.err(
                 Code::ForbiddenInBitIf,
@@ -1482,11 +1827,7 @@ impl Checker {
         if t == Ty::Error {
             return Ty::Error;
         }
-        let found = self
-            .structs
-            .get(&t)
-            .and_then(|(_, by_name)| by_name.get(&name.name))
-            .copied();
+        let found = self.field_named(t, &name.name);
         found.unwrap_or_else(|| {
             self.err(
                 Code::UnknownField,
@@ -1498,14 +1839,19 @@ impl Checker {
     }
 
     // `Shape.Circle(r)`: the payload values in declaration order.
-    fn variant(&mut self, ty: Ty, name: &Ident, args: &[Expr], span: Span) -> Ty {
-        let found = self
-            .enums
-            .get(&ty)
+    fn variant(&mut self, ty: Ty, name: &Ident, args: &[Expr], span: Span, hint: Option<Ty>) -> Ty {
+        let generic = self.gparams.contains_key(&ty);
+        let variants = if !generic && ty.generic_args().is_some() && !self.generic_ok(ty, span) {
+            None
+        } else {
+            self.variants_of(ty)
+        };
+        let found = variants
+            .as_ref()
             .and_then(|vs| vs.iter().find(|(n, _)| *n == name.name))
             .map(|(_, tys)| tys.clone());
         let Some(tys) = found else {
-            if self.enums.contains_key(&ty) {
+            if variants.is_some() {
                 self.err(
                     Code::BadPattern,
                     name.span,
@@ -1528,8 +1874,11 @@ impl Checker {
             }
             return Ty::Error;
         }
+        if generic {
+            return self.infer(ty, &tys, args, span, hint);
+        }
         for (a, want) in args.iter().zip(tys) {
-            let found = self.expr(a);
+            let found = self.expr_hint(a, want);
             self.expect_ty(a.span, want, found);
         }
         ty
@@ -1550,7 +1899,9 @@ impl Checker {
                 msg::bad_scrutinee(t.name()),
             );
         }
-        let variants = self.enums.get(&t).cloned().unwrap_or_default();
+        let variants = self.variants_of(t).unwrap_or_default();
+        // A pattern may name the enum: `Option.Some(x)` for an `Option<int>`.
+        let enum_name = t.generic_args().map_or(t, |(b, _)| b).name();
         let mut covered = vec![false; variants.len()];
         let mut ints = HashSet::new();
         let mut texts = HashSet::new();
@@ -1587,7 +1938,7 @@ impl Checker {
                     name,
                     binds: names,
                 } if matches!(t, Ty::Enum(_)) => {
-                    let qual_ok = qual.as_ref().is_none_or(|q| q.name == t.name());
+                    let qual_ok = qual.as_ref().is_none_or(|q| q.name == enum_name);
                     match variants.iter().position(|(n, _)| *n == name.name) {
                         Some(tag) if qual_ok => {
                             let tys = &variants[tag].1;
@@ -1742,7 +2093,9 @@ impl Checker {
         span: Span,
     ) {
         let b = self.expr(base);
+        self.hint = self.field_named(b, &name.name);
         let v = self.expr(value);
+        self.hint = None;
         if let Some(&at) = self.bit_ifs.last() {
             self.err(
                 Code::ForbiddenInBitIf,
@@ -1860,6 +2213,10 @@ impl Checker {
             return Ty::Error;
         };
         let (params, mut ret) = (sig.params.clone(), sig.ret);
+        let tparams = sig.tparams.clone();
+        // Generic calls: type parameters bound from the arguments, then their types checked.
+        let mut map = HashMap::new();
+        let mut deferred = Vec::new();
         if let Some(&cond) = self.bit_ifs.last() {
             if let Some((at, why)) = self.unconditional.get(n).cloned() {
                 let d = self.err(Code::ConditionalCall, span, msg::conditional_call(n));
@@ -1877,8 +2234,14 @@ impl Checker {
             let mut passed: Vec<(usize, (usize, Idx))> = Vec::new();
             for (j, (a, (want, consume))) in args.iter().zip(params).enumerate() {
                 if !want.is_quantum() {
-                    let t = self.expr(a);
-                    self.expect_ty(a.span, want, t);
+                    if want.has_param() {
+                        let t = self.expr(a);
+                        unify(want, t, &mut map);
+                        deferred.push((a.span, want, t));
+                    } else {
+                        let t = self.expr_hint(a, want);
+                        self.expect_ty(a.span, want, t);
+                    }
                     continue;
                 }
                 if let Some(key) = self.place_key(a) {
@@ -1905,7 +2268,24 @@ impl Checker {
             }
         }
         self.release(mark);
-        ret
+        if tparams.is_empty() {
+            return ret;
+        }
+        let targs: Option<Vec<Ty>> = tparams.iter().map(|p| map.get(p).copied()).collect();
+        let ok = targs
+            .as_ref()
+            .is_some_and(|ts| ts.iter().all(|&a| self.type_arg_ok(a, span)));
+        for (at, want, t) in deferred {
+            self.expect_ty(at, want.subst(&|p| map.get(&p).copied()), t);
+        }
+        match targs {
+            Some(ts) if ok => {
+                self.inferred.calls.insert(key(span), ts);
+                ret.subst(&|p| map.get(&p).copied())
+            }
+            _ if ret.has_param() => Ty::Error,
+            _ => ret,
+        }
     }
 
     fn builtin(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {
@@ -2001,6 +2381,9 @@ impl Checker {
                 }
                 for a in &args[1..] {
                     let t = self.expr(a);
+                    if self.param_op(a.span, &[t]) {
+                        continue;
+                    }
                     if !matches!(
                         t,
                         Ty::Int

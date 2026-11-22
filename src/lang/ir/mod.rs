@@ -62,7 +62,8 @@ impl IrTy {
             Ty::Array(id) => IrTy::Array(id),
             Ty::Struct(id) => IrTy::Struct(id),
             Ty::Enum(id) => IrTy::Enum(id),
-            Ty::Void | Ty::Error => IrTy::Unit,
+            // Monomorphization leaves no type parameter in a lowered program.
+            Ty::Void | Ty::Error | Ty::Param(_) => IrTy::Unit,
         }
     }
 

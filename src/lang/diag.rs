@@ -81,6 +81,7 @@ codes! {
     BadFieldType => "Q0227",
     NonExhaustive => "Q0228",
     BadPattern => "Q0229",
+    TypeArgs => "Q0230",
     UseAfterConsume => "Q0301",
     NeverConsumed => "Q0302",
     DuplicateQubit => "Q0303",

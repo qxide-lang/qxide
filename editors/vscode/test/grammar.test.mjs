@@ -82,6 +82,13 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf("int new = 1;", " new "), "source.qx");
   assert.equal(scopeOf("struct P { int x; }", "struct"), "storage.type.struct.qx");
   assert.equal(scopeOf("enum E { A, B }", "enum"), "storage.type.enum.qx");
+  assert.equal(scopeOf("<T> T id(T x) {}", "T"), "entity.name.type.parameter.qx");
+  assert.equal(scopeOf("public <A, B> int f(A a, B b) {}", "public"), "storage.modifier.qx");
+  assert.equal(scopeOf("public <A, B> int f(A a, B b) {}", "B"), "entity.name.type.parameter.qx");
+  assert.equal(scopeOf("struct Pair<A, B> { A a; }", "struct"), "storage.type.struct.qx");
+  assert.equal(scopeOf("enum Option<T> { None }", "Option"), "entity.name.type.qx");
+  assert.equal(scopeOf("enum Option<T> { None }", "T"), "entity.name.type.parameter.qx");
+  assert.equal(scopeOf("boolean c = a < b;", "<"), scopeOf("boolean c = a > b;", ">"));
   assert.equal(scopeOf("match e { A => {} }", "match"), "keyword.control.qx");
   assert.equal(scopeOf("match e { A => {} }", "=>"), "keyword.operator.arrow.qx");
   assert.equal(scopeOf(src, "helper"), "entity.name.function.call.qx");

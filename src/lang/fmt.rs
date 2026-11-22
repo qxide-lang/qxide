@@ -65,6 +65,58 @@ pub fn fingerprint(src: &str) -> Option<(Vec<Tok>, Vec<String>)> {
     ))
 }
 
+// Marks the `<` and `>` of type parameter lists (a `<` that starts a top-level item) and of type
+// arguments (a `<` right after the name of a generic struct or enum of the file).
+fn angle_brackets(toks: &[Token]) -> Vec<bool> {
+    let mut generics = std::collections::HashSet::new();
+    for w in toks.windows(3) {
+        if matches!(w[0].tok, Tok::Struct | Tok::Enum) && w[2].tok == Tok::Lt {
+            if let Tok::Ident(n) = &w[1].tok {
+                generics.insert(n.as_str());
+            }
+        }
+    }
+    let mut angle = vec![false; toks.len()];
+    let mut depth = 0usize;
+    for i in 0..toks.len() {
+        match &toks[i].tok {
+            Tok::LBrace => depth += 1,
+            Tok::RBrace => depth = depth.saturating_sub(1),
+            Tok::Lt if !angle[i] => {
+                let prev = i.checked_sub(1).map(|p| &toks[p].tok);
+                let starts_item = depth == 0
+                    && matches!(prev, None | Some(Tok::RBrace | Tok::Semi | Tok::Public));
+                let after_generic =
+                    matches!(prev, Some(Tok::Ident(n)) if generics.contains(n.as_str()));
+                if !(starts_item || after_generic) {
+                    continue;
+                }
+                angle[i] = true;
+                let mut level = 1usize;
+                for (j, t) in toks.iter().enumerate().skip(i + 1) {
+                    match t.tok {
+                        Tok::Lt => {
+                            angle[j] = true;
+                            level += 1;
+                        }
+                        Tok::Gt => {
+                            angle[j] = true;
+                            level -= 1;
+                            if level == 0 {
+                                break;
+                            }
+                        }
+                        Tok::Ident(_) | Tok::Comma | Tok::LBracket | Tok::RBracket => {}
+                        _ => break,
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    angle
+}
+
 fn comment_text(src: &str, s: Span) -> String {
     src[s.start..s.end].trim_end().to_string()
 }
@@ -89,6 +141,9 @@ struct Printer<'a> {
     init_brace: Vec<bool>,
     // Commas between the variants of an `enum`: one variant per line.
     enum_comma: Vec<bool>,
+    // `<` and `>` of type arguments and type parameters (`Pair<int, String>`, `<T> T f`):
+    // written without spaces inside, unlike comparisons.
+    angle: Vec<bool>,
     prev: Option<usize>,
     last_end: usize,
     last_was_open: bool,
@@ -126,10 +181,14 @@ impl<'a> Printer<'a> {
             }
         }
         let mut enum_comma = vec![false; toks.len()];
-        for i in 2..toks.len() {
-            if toks[i].tok != Tok::LBrace || toks[i - 2].tok != Tok::Enum {
+        for e in 0..toks.len() {
+            if toks[e].tok != Tok::Enum {
                 continue;
             }
+            // The body of `enum Name {` or `enum Name<T> {`.
+            let Some(i) = (e + 1..toks.len()).find(|&j| toks[j].tok == Tok::LBrace) else {
+                continue;
+            };
             let mut parens = 0usize;
             for (j, t) in toks.iter().enumerate().skip(i + 1) {
                 match t.tok {
@@ -141,6 +200,7 @@ impl<'a> Printer<'a> {
                 }
             }
         }
+        let angle = angle_brackets(toks);
         Self {
             src,
             toks,
@@ -151,6 +211,7 @@ impl<'a> Printer<'a> {
             cast_close,
             init_brace,
             enum_comma,
+            angle,
             prev: None,
             last_end: 0,
             last_was_open: false,
@@ -355,11 +416,20 @@ impl<'a> Printer<'a> {
         if matches!(prev, Tok::Minus | Tok::Bang) && self.is_unary(p) {
             return false;
         }
+        // `Pair<int, String>`, `new Pair<int, String>(1, "a")`, `<T> T first(T[] a)`.
+        if (*prev == Tok::Lt && self.angle[p]) || (*tok == Tok::Gt && self.angle[i]) {
+            return false;
+        }
+        if *tok == Tok::Lt && self.angle[i] {
+            return !matches!(prev, Tok::Ident(_));
+        }
+        let closes_type = *prev == Tok::Gt && self.angle[p];
         match tok {
             Tok::RParen | Tok::RBracket | Tok::Comma | Tok::Semi | Tok::Dot | Tok::DotDot => false,
             // Calls and indexing: `f(x)`, `r[i]`, `measure(q)[0]`.
             Tok::LParen | Tok::LBracket => {
-                !matches!(prev, Tok::Ident(_) | Tok::RParen | Tok::RBracket) || self.cast_close[p]
+                !(matches!(prev, Tok::Ident(_) | Tok::RParen | Tok::RBracket) || closes_type)
+                    || self.cast_close[p]
             }
             _ => true,
         }

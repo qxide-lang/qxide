@@ -1,0 +1,109 @@
+// Generic structs, enums and functions. Type arguments are written out (`Pair<int, String>`)
+// or inferred from the values; each use becomes its own concrete copy before running.
+struct Pair<A, B> {
+    A first;
+    B second;
+}
+
+enum Option<T> {
+    None,
+    Some(T value),
+}
+
+enum List<T> {
+    Nil,
+    Cons(T head, List<T> tail),
+}
+
+enum Result<T, E> {
+    Ok(T value),
+    Err(E error),
+}
+
+<T> T first(T[] items) {
+    return items[0];
+}
+
+<A, B> Pair<B, A> swap(Pair<A, B> p) {
+    return new Pair(p.second, p.first);
+}
+
+<T> T pick(boolean left, T a, T b) {
+    if left {
+        return a;
+    }
+    return b;
+}
+
+<T> List<T> push(List<T> list, T x) {
+    return List.Cons(x, list);
+}
+
+<T> int length(List<T> list) {
+    int n = 0;
+    var rest = list;
+    boolean more = true;
+    while more {
+        match rest {
+            Cons(_, tail) => {
+                n += 1;
+                rest = tail;
+            }
+            Nil => {
+                more = false;
+            }
+        }
+    }
+    return n;
+}
+
+Result<int, String> parse(String text) {
+    if text.length() == 0 {
+        return Result.Err("empty input");
+    }
+    return Result.Ok(text.parse_int());
+}
+
+int or_else(Option<int> o, int fallback) {
+    match o {
+        Some(v) => {
+            return v;
+        }
+        None => {
+            return fallback;
+        }
+    }
+}
+
+void main() {
+    int[] xs = {7, 8, 9};
+    String[] names = {"ada", "alan"};
+    println("{} {}", first(xs), first(names));
+
+    Pair<int, String> p = new Pair<int, String>(1, "one");
+    var q = swap(p);
+    println("{} {}", q.first, q.second);
+    println("{}", pick(false, 1, 2.5));
+
+    List<String> words = List.Nil;
+    words = push(push(words, "b"), "a");
+    println("{}", length(words));
+
+    Option<int> none = Option.None;
+    println("{} {} {}", or_else(none, -1), or_else(Option.Some(5), -1), or_else(Option<int>.None, 9));
+
+    for i in 0..2 {
+        String input = "42";
+        if i == 1 {
+            input = "";
+        }
+        match parse(input) {
+            Ok(v) => {
+                println("ok {}", v);
+            }
+            Err(e) => {
+                println("error: {}", e);
+            }
+        }
+    }
+}

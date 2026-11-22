@@ -109,6 +109,31 @@ void main() {
     assert_eq!(same(src, Limits::CLI), "ok\n10 20 7 3\n");
 }
 
+// Instances of generic functions are ordinary functions: those at `int` or `double` compile.
+#[test]
+fn numeric_instances_of_generic_functions_compile() {
+    let src = "<T> T pick(boolean c, T a, T b) {
+    if c {
+        return a;
+    }
+    return b;
+}
+<T> T id(T x) {
+    return pick(true, x, x);
+}
+void main() {
+    println(\"{} {} {}\", id(3), pick(false, 1, 2.5), id(\"s\"));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in ["pick<int>", "id<int>", "pick<double>"] {
+        assert!(jit.compiles(m.index[f]), "{f}");
+    }
+    assert!(!jit.compiles(m.index["id<String>"]));
+    assert_eq!(same(src, Limits::CLI), "ok\n3 2.5 s\n");
+}
+
 #[test]
 fn loops_with_break_and_continue_compile() {
     let src = "int collatz(int n) {

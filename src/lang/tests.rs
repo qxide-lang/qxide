@@ -9,6 +9,7 @@ const TELEPORT: &str = include_str!("../../examples/qx/teleport.qx");
 const FUNCTIONS: &str = include_str!("../../examples/qx/functions.qx");
 const ROTATION: &str = include_str!("../../examples/qx/rotation.qx");
 const TELEPORT_FN: &str = include_str!("../../examples/qx/teleport_fn.qx");
+pub(super) const GENERICS: &str = include_str!("../../examples/qx/generics.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -2047,6 +2048,110 @@ void main() {
 "),
         "Q0413"
     );
+}
+
+#[test]
+fn generic_types_and_functions() {
+    assert_eq!(
+        run_ok(GENERICS, 1),
+        "7 ada\none 1\n2.5\n2\n-1 5 9\nok 42\nerror: empty input\n"
+    );
+    // `<` after a value is still a comparison, and `>>` closes two argument lists.
+    let src = "struct Box<T> {\n    T v;\n}\n\nvoid main() {\n    int a = 1;\n    int b = 2;\n    boolean less = a < b;\n    Box<Box<int>> bb = new Box(new Box(a));\n    Box<int>[] boxes = new Box<int>[2];\n    println(\"{} {} {} {}\", less, bb.v.v, boxes[1].v, a > b);\n}\n";
+    assert_eq!(run_ok(src, 1), "true 1 0 false\n");
+    // Inference: from the expected type (declarations, assignments, returns, arguments, stores
+    // and fields) or from the values; `int` widens to `double`.
+    let src = "enum Option<T> {\n    None,\n    Some(T v),\n}\n\nstruct Holder {\n    Option<String> o;\n}\n\nOption<int> none() {\n    return Option.None;\n}\n\nint get(Option<int> o) {\n    match o {\n        Some(v) => {\n            return v;\n        }\n        None => {\n            return -1;\n        }\n    }\n}\n\n<T> T pick(boolean c, T a, T b) {\n    if c {\n        return a;\n    }\n    return b;\n}\n\nvoid main() {\n    Option<int> o = Option.None;\n    o = Option.Some(3);\n    Holder h = new Holder(Option.None);\n    h.o = Option.Some(\"x\");\n    Option<int>[] os = {Option.None, Option.Some(4)};\n    os[0] = Option.Some(5);\n    Option<double> d = Option.Some(1);\n    println(\"{} {} {} {} {} {}\", get(o), get(none()), get(Option.None), get(os[0]), pick(true, 1, 2.5), pick(false, \"a\", \"b\"));\n    match d {\n        Some(x) => {\n            println(\"{}\", x / 2);\n        }\n        None => {}\n    }\n}\n";
+    assert_eq!(run_ok(src, 1), "3 -1 -1 5 1.0 b\n0.5\n");
+    // Generic bodies are checked once, even when never called, and instances may recurse.
+    let src = "enum Tree<T> {\n    Leaf,\n    Node(Tree<T> left, T value, Tree<T> right),\n}\n\n<T> int size(Tree<T> t) {\n    match t {\n        Node(l, _, r) => {\n            return size(l) + 1 + size(r);\n        }\n        Leaf => {\n            return 0;\n        }\n    }\n}\n\n<T> T unused(T x) {\n    return x;\n}\n\nvoid main() {\n    Tree<String> t = Tree.Node(Tree.Leaf, \"a\", Tree.Node(Tree.Leaf, \"b\", Tree.Leaf));\n    println(\"{}\", size(t));\n}\n";
+    assert_eq!(run_ok(src, 1), "2\n");
+}
+
+#[test]
+fn generic_errors() {
+    let decls = "struct Pair<A, B> { A a; B b; } enum Option<T> { None, Some(T v) } ";
+    let with = |main: &str| format!("{decls}{main}");
+    // Type arguments: required, counted, classical.
+    assert_eq!(
+        codes(&with("void main() { Pair p = new Pair(1, 2); }")),
+        ["Q0230"]
+    );
+    assert_eq!(
+        codes(&with(
+            "void main() { Pair<int> p = new Pair<int, int>(1, 2); }"
+        )),
+        ["Q0230"]
+    );
+    assert_eq!(
+        codes(&with("void main() { Option<Qubit> o = Option.None; }")),
+        ["Q0230"]
+    );
+    assert_eq!(
+        codes(&with("void f(Option<void> o) {} void main() {}")),
+        ["Q0230"]
+    );
+    // Inference needs the values or an expected type.
+    assert_eq!(
+        codes(&with("void main() { var o = Option.None; }")),
+        ["Q0230"]
+    );
+    // A type parameter must be inferable from the parameters.
+    assert_eq!(
+        errors("<T> T make(int n) { return make(n); } void main() {}"),
+        [("Q0230", 1, 2)]
+    );
+    // A value of a type parameter can only be moved.
+    for body in [
+        "return a + b;",
+        "return a == b;",
+        "println(\"{}\", a); return true;",
+        "return a.length() == 0;",
+        "return (int) a == 0;",
+    ] {
+        let src = format!("<T> boolean f(T a, T b) {{ {body} }} void main() {{}}");
+        assert_eq!(codes(&src), ["Q0230"], "{src}");
+    }
+    // Quantum values are not type arguments.
+    assert_eq!(
+        codes("<T> T id(T x) { return x; } void main() { Qubit q = qubit(); id(q); discard(q); }"),
+        ["Q0230"]
+    );
+    // Arguments are checked against the inferred types.
+    assert_eq!(
+        codes("<T> T first(T[] a) { return a[0]; } void main() { int x = first(5); }"),
+        ["Q0204"]
+    );
+    assert_eq!(
+        codes(&with("void main() { Option<int> o = Option.Some(\"x\"); }")),
+        ["Q0204"]
+    );
+    // Type parameter names are distinct and are not type names.
+    assert_eq!(codes("<T, T> void f(T a) {} void main() {}"), ["Q0205"]);
+    assert_eq!(
+        codes("struct T { int x; } <T> void f(T a) {} void main() {}"),
+        ["Q0205"]
+    );
+    // A struct may not contain itself through an instance either.
+    assert_eq!(
+        codes(&with("struct N { Option<N> next; } void main() {}")),
+        ["Q0227"]
+    );
+}
+
+// Polymorphic recursion would instantiate forever: a size limit and a count limit stop it at the
+// use that asked for the next instance.
+#[test]
+fn instantiation_is_bounded() {
+    let deeper = "struct Box<T> {\n    T v;\n}\n\n<T> void f(T x) {\n    f(new Box(x));\n}\n\nvoid main() {\n    f(1);\n}\n";
+    assert_eq!(errors(deeper), [("Q0230", 6, 7)]);
+    let wider = "struct Box<T> {\n    T v;\n}\n\n<A, B> void f(int n, A a, B b) {\n    if n > 0 {\n        f(n - 1, new Box(a), b);\n        f(n - 1, a, new Box(b));\n    }\n}\n\nvoid main() {\n    f(3, 1, 2);\n}\n";
+    let e = errors(wider);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!(e[0].0, "Q0230");
+    // Within the limits, every instance is created once.
+    let src = "<T> T id(T x) {\n    return id2(x);\n}\n\n<T> T id2(T x) {\n    return x;\n}\n\nvoid main() {\n    println(\"{} {}\", id(1), id(id(\"s\")));\n}\n";
+    assert_eq!(run_ok(src, 1), "1 s\n");
 }
 
 // Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`

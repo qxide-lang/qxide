@@ -998,6 +998,38 @@ void main() {
 }
 ```
 
+## Q0230: invalid type arguments or generic code
+
+A generic type or function violated the rules for type arguments or generic code, such as naming a generic struct or enum without type arguments (`Pair p`), passing the wrong number of type arguments (`Pair<int>` for `Pair<A, B>`), or leaving type arguments that cannot be inferred because neither values nor an expected type fix them (such as `var o = Option.None;`). Type arguments must be classical value types—`int`, `double`, `boolean`, `String`, arrays, structs, or enums—rather than `Qubit`, `QReg`, `Bit`, `BitReg`, or `void`, so the qubit ownership rules never meet a generic value. Every type parameter of a generic function must appear in at least one parameter type, because call sites never write type arguments and an unused type parameter could never be inferred. Inside a generic body, a value of a type parameter `T` can only be moved (assigned, passed, returned, or stored): arithmetic, `==`, printing, casts, and methods are rejected because the body is checked once for every possible `T`. Finally, because generic code is copied once per set of type arguments before it runs, a generic function that calls itself with an ever larger type (such as `f(new Box(x))` inside `f`) stops at 1000 instances or at types with more than 64 type constructors, reported at the call or construction that asked for the next instance.
+
+Erroneous code example:
+
+```qx
+struct Pair<A, B> {
+    A first;
+    B second;
+}
+
+void main() {
+    Pair p = new Pair(1, "one");  // error[Q0230]
+    println("{}", p.first);
+}
+```
+
+To fix it, write the type arguments `<int, String>` in the declared type of `p` (or declare the variable with `var`).
+
+```qx
+struct Pair<A, B> {
+    A first;
+    B second;
+}
+
+void main() {
+    Pair<int, String> p = new Pair(1, "one");
+    println("{}", p.first);
+}
+```
+
 ## Q0301: use of a consumed qubit
 
 A `Qubit` was used after it had already been consumed by being measured, discarded, or moved. In `.qx`, qubits have linear types checked at compile time, so once a qubit is consumed it is no longer available for further operations. This prevents a program from applying gates or other operations to a qubit whose quantum state has already been measured, discarded, or transferred.

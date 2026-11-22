@@ -20,6 +20,7 @@ mod jit;
 mod lexer;
 mod link;
 mod machine;
+mod mono;
 mod msg;
 mod parser;
 mod pure;
@@ -125,12 +126,18 @@ fn front_input(
     let src = strip_bom(input.src);
     let (map, linked) = link::link(input.name, src, input.project, input.read, &input.perms);
     let checked = linked.and_then(|program| {
-        let errors = check::check_with(&program, require_main);
-        if errors.is_empty() {
-            Ok(program)
-        } else {
-            Err(errors)
+        let (errors, inferred) = check::check_infer(&program, require_main);
+        if !errors.is_empty() {
+            return Err(errors);
         }
+        let program = mono::monomorphize(program, &inferred).map_err(|d| vec![d])?;
+        // Instances are ordinary declarations: the concrete program checks cleanly again.
+        #[cfg(debug_assertions)]
+        {
+            let again = check::check_with(&program, require_main);
+            debug_assert!(again.is_empty(), "monomorphized program: {again:?}");
+        }
+        Ok(program)
     });
     (map, checked)
 }
