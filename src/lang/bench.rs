@@ -61,6 +61,22 @@ fn flat_functions(n: usize) -> String {
     s
 }
 
+// n small classical functions, each called once from `main`: per-function JIT compile cost.
+fn pure_calls(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        s.push_str(&format!(
+            "int p{i}(int x) {{\n    return x * 3 + {i};\n}}\n"
+        ));
+    }
+    s.push_str("void main() {\n    int t = 0;\n");
+    for i in 0..n {
+        s.push_str(&format!("    t = (t + p{i}(t)) % 1000003;\n"));
+    }
+    s.push_str("    println(\"{}\", t);\n}\n");
+    s
+}
+
 // One long `main` with n same-named loops and `&&` operands: lowering work per statement, which
 // no budget charges.
 fn many_loops(n: usize) -> String {
@@ -104,6 +120,11 @@ fn cases() -> Vec<Case> {
     v.push(Case {
         name: "run_flat_8000".into(),
         src: flat_functions(8000),
+        mode: Mode::Run(1),
+    });
+    v.push(Case {
+        name: "pure_calls_4000".into(),
+        src: pure_calls(4000),
         mode: Mode::Run(1),
     });
     v.push(Case {
@@ -189,6 +210,9 @@ fn bench_suite() {
 }
 
 fn run_suite() {
+    // Tests compile on the first call; measure with the real threshold.
+    #[cfg(feature = "jit")]
+    super::jit::set_hot_calls(super::jit::DEFAULT_HOT_CALLS);
     let repeat: usize = env_or("QXIDE_BENCH_REPEAT", "5").parse().expect("repeat");
     let only = env_or("QXIDE_BENCH_ONLY", "");
     let engines: Vec<Engine> = env_or("QXIDE_BENCH_ENGINES", "ast")

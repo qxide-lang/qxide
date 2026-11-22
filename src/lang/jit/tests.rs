@@ -231,3 +231,102 @@ void main() { println(\"{}\", work(300)); }";
     assert_eq!(ast, polls(Engine::Ir));
     assert_eq!(ast, polls(Engine::Jit));
 }
+
+// A recursive function with `n` locals that stay live across its recursive call.
+fn wide_recursion(n: usize, depth: usize) -> String {
+    let mut s = String::from("int f(int n) {\n");
+    for i in 0..n {
+        s.push_str(&format!("    int a{i} = n + {i};\n"));
+    }
+    s.push_str("    if n == 0 {\n        return 0;\n    }\n    int s = f(n - 1);\n");
+    for i in 0..n {
+        s.push_str(&format!("    s = (s + a{i}) % 1000003;\n"));
+    }
+    s.push_str(&format!(
+        "    return s;\n}}\nvoid main() {{\n    println(\"{{}}\", f({depth}));\n}}\n"
+    ));
+    s
+}
+
+fn on_stack<T: Send + 'static>(bytes: usize, f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(bytes)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+// The largest functions that still compile (`MAX_VALUES`) recurse to the depth limit in a stack
+// far smaller than the interpreter thread's (`STACK_SIZE`, 256 MiB).
+#[test]
+fn deepest_recursion_of_the_widest_compiled_function_fits_the_stack() {
+    let mut n = 64;
+    while supported(&module(&wide_recursion(n * 2, 1)).funcs[0]) {
+        n *= 2;
+    }
+    let src = wide_recursion(n, 198);
+    let m = module(&src);
+    assert!(Jit::new(&m).unwrap().compiles(m.index["f"]), "{n} locals");
+    let s = src.clone();
+    let want = on_stack(super::super::STACK_SIZE, move || {
+        outputs(Engine::Ast, &s, Limits::CLI)
+    });
+    assert!(want.0.starts_with("ok\n"), "{}", want.0);
+    let got = on_stack(16 << 20, move || outputs(Engine::Jit, &src, Limits::CLI));
+    assert_eq!(want, got);
+}
+
+// Outside tests, short functions are interpreted until their 16th call; loops and direct
+// recursion compile on the first call.
+#[test]
+fn short_functions_compile_once_they_are_hot() {
+    let src = "int sq(int x) { return x * x; }
+int sum(int n) { int t = 0; for i in 0..n { t = t + sq(i); } return t; }
+int fact(int n) { if n < 2 { return 1; } return n * fact(n - 1); }
+void main() { println(\"{} {} {}\", sum(3), sq(2), fact(5)); }";
+    let m = module(src);
+    set_hot_calls(DEFAULT_HOT_CALLS);
+    let mut jit = Jit::new(&m).unwrap();
+    let (sq, sum, fact) = (m.index["sq"], m.index["sum"], m.index["fact"]);
+    for _ in 1..DEFAULT_HOT_CALLS {
+        assert!(!jit.has(sq));
+    }
+    assert!(jit.has(sq), "compiled on call {DEFAULT_HOT_CALLS}");
+    assert!(
+        jit.has(sum) && jit.has(fact),
+        "a loop and recursion compile at once"
+    );
+    set_hot_calls(1);
+    same(src, Limits::CLI);
+}
+
+// After a failed compilation (a Cranelift bug), everything runs in the interpreter.
+#[test]
+fn a_failed_compilation_falls_back_to_the_interpreter() {
+    let src = "int sq(int x) { return x * x; }
+int sum(int n) { int t = 0; for i in 0..n { t = t + sq(i); } return t; }
+void main() { println(\"{} {}\", sum(10), sq(7)); }";
+    let m = module(src);
+    let mut jit = Jit::new(&m).unwrap();
+    jit.inject_failure = true;
+    assert!(!jit.has(m.index["sum"]));
+    assert!(!jit.has(m.index["sq"]), "nothing compiles after a failure");
+    let mut jit = Jit::new(&m).unwrap();
+    jit.inject_failure = true;
+    let p = front(src).unwrap();
+    let mut host = super::super::stdlib::LogOnly::default();
+    let (e, _) = super::super::ir::exec::run_with(
+        &m,
+        "main",
+        Vec::new(),
+        &mut host,
+        &Limits::CLI,
+        Some(&mut jit),
+    )
+    .unwrap();
+    let mut host = super::super::stdlib::LogOnly::default();
+    let want = super::super::interp::elaborate(&p, &mut host, &Limits::CLI).unwrap();
+    assert_eq!(format!("{:?}", e.output), format!("{:?}", want.output));
+    assert_eq!(e.usage.steps, want.usage.steps);
+}

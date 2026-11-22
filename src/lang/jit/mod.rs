@@ -98,10 +98,15 @@ fn cl_ty(t: IrTy) -> Option<cl::Type> {
     }
 }
 
+// Larger functions stay interpreted: with at most this many slots and registers a native frame
+// stays a few tens of KiB, so 200 nested calls fit easily in the interpreter's thread stack.
+const MAX_VALUES: usize = 4096;
+
 // Whether a function's own code can be compiled (its callees are checked by `jitable`).
 fn supported(f: &Func) -> bool {
     let reg = |r: u32| f.regs[r as usize];
     !f.host
+        && f.slots.len() + f.regs.len() <= MAX_VALUES
         && f.params.iter().all(|p| cl_ty(p.ty).is_some())
         && (f.ret == IrTy::Unit || cl_ty(f.ret).is_some())
         && f.slots.iter().all(|s| cl_ty(s.ty).is_some())
@@ -157,6 +162,43 @@ pub fn jitable(m: &Module) -> Vec<bool> {
 
 type Entry = unsafe extern "C" fn(*mut Ctx, *const u64) -> u8;
 
+// Calls after which a function without loops or direct recursion is compiled; until then the
+// IR interpreter runs it (compiling costs more than running a short function a few times).
+const HOT_CALLS: u32 = 16;
+
+thread_local! {
+    // Tests compile on the first call, so `dual` runs as much native code as possible.
+    static HOT: std::cell::Cell<u32> = const {
+        std::cell::Cell::new(if cfg!(test) { 1 } else { HOT_CALLS })
+    };
+}
+
+/// Sets this thread's compile threshold (the benchmarks use the real one).
+#[cfg(test)]
+pub fn set_hot_calls(n: u32) {
+    HOT.with(|h| h.set(n));
+}
+
+#[cfg(test)]
+pub const DEFAULT_HOT_CALLS: u32 = HOT_CALLS;
+
+// A loop (a branch back to an earlier block; lowering numbers blocks in source order) or a call
+// of itself: likely to run long, so it is compiled on its first call.
+fn eager(f: &Func, id: FuncId) -> bool {
+    f.blocks.iter().enumerate().any(|(k, b)| {
+        let back = |t: &u32| (*t as usize) <= k;
+        let loops = match &b.term {
+            Term::Jump(t) => back(t),
+            Term::Br { then, els, .. } => back(then) || back(els),
+            _ => false,
+        };
+        loops
+            || b.insts
+                .iter()
+                .any(|i| matches!(i, Inst::Call { func, .. } if *func == id))
+    })
+}
+
 /// Native code for one lowered module, compiled function by function on first call.
 pub struct Jit<'m> {
     ir: &'m Module,
@@ -169,6 +211,14 @@ pub struct Jit<'m> {
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     fctx: FunctionBuilderContext,
+    calls: Vec<u32>,
+    hot: u32,
+    // After a failed compilation nothing more runs natively (the module may hold declarations
+    // without code).
+    broken: bool,
+    // Tests: make the next compilation fail.
+    #[cfg(test)]
+    inject_failure: bool,
 }
 
 impl Drop for Jit<'_> {
@@ -184,9 +234,19 @@ impl Drop for Jit<'_> {
 impl<'m> Jit<'m> {
     /// `None` when Cranelift does not support this machine; the interpreter runs everything.
     pub fn new(ir: &'m Module) -> Option<Self> {
+        // Arguments and return values are 64-bit words whose low byte holds a `boolean`.
+        if cfg!(target_endian = "big") {
+            return None;
+        }
         cranelift_native::builder().ok()?;
-        let mut b =
-            JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names()).ok()?;
+        // Inline stack probes touch every page of a large frame (Windows grows the stack only
+        // through its guard page).
+        let flags = [
+            ("opt_level", "speed"),
+            ("enable_probestack", "true"),
+            ("probestack_strategy", "inline"),
+        ];
+        let mut b = JITBuilder::with_flags(&flags, default_libcall_names()).ok()?;
         b.symbol("qx_charge", qx_charge as *const u8);
         b.symbol("qx_fail", qx_fail as *const u8);
         b.symbol("qx_fmod", qx_fmod as *const u8);
@@ -215,6 +275,11 @@ impl<'m> Jit<'m> {
             charges: Vec::new(),
             fails: Vec::new(),
             fctx: FunctionBuilderContext::new(),
+            calls: vec![0; ir.funcs.len()],
+            hot: HOT.with(std::cell::Cell::get),
+            broken: false,
+            #[cfg(test)]
+            inject_failure: false,
         })
     }
 
@@ -226,11 +291,11 @@ impl<'m> Jit<'m> {
 
     // `id` and the functions it calls that are not compiled yet.
     fn closure(&self, id: FuncId) -> Vec<FuncId> {
-        let mut seen = vec![false; self.ir.funcs.len()];
+        let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         let mut stack = vec![id];
         while let Some(f) = stack.pop() {
-            if std::mem::replace(&mut seen[f as usize], true) || self.ids[f as usize].is_some() {
+            if !seen.insert(f) || self.ids[f as usize].is_some() {
                 continue;
             }
             out.push(f);
@@ -248,6 +313,10 @@ impl<'m> Jit<'m> {
     }
 
     fn compile(&mut self, id: FuncId) -> Result<(), String> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.inject_failure) {
+            return Err("injected failure".into());
+        }
         let batch = self.closure(id);
         if batch.iter().any(|&f| !self.ok[f as usize]) {
             return Err("calls a function that is not compiled".into());
@@ -333,19 +402,16 @@ impl<'m> Jit<'m> {
     ) -> Result<(), String> {
         let ir = self.ir;
         let src = &ir.funcs[f as usize];
-        let callees: Vec<Option<cl::FuncRef>> =
-            ir.funcs
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
-                    let used =
-                        src.blocks.iter().flat_map(|b| &b.insts).any(
-                            |inst| matches!(inst, Inst::Call { func, .. } if *func as usize == i),
-                        );
-                    used.then(|| self.ids[i].map(|(body, _)| cl.declare_func_in_func(body, func)))
-                        .flatten()
-                })
-                .collect();
+        let mut callees = std::collections::HashMap::new();
+        for inst in src.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::Call { func: callee, .. } = inst {
+                if let (Some((body, _)), false) =
+                    (self.ids[*callee as usize], callees.contains_key(callee))
+                {
+                    callees.insert(*callee, cl.declare_func_in_func(body, func));
+                }
+            }
+        }
         let helpers = self.helpers.map(|h| cl.declare_func_in_func(h, func));
         let g = Gen {
             config: cl.target_config(),
@@ -368,19 +434,26 @@ impl<'m> Jit<'m> {
 
 impl Native for Jit<'_> {
     fn has(&mut self, id: FuncId) -> bool {
-        if !self.ok[id as usize] {
+        if self.broken || !self.ok[id as usize] {
             return false;
         }
         if self.entries[id as usize].is_some() {
             return true;
         }
+        let calls = &mut self.calls[id as usize];
+        *calls = calls.saturating_add(1);
+        if *calls < self.hot && !eager(&self.ir.funcs[id as usize], id) {
+            return false;
+        }
         if let Err(e) = self.compile(id) {
-            // A Cranelift failure is a bug: tests and debug builds stop; release builds interpret.
-            debug_assert!(false, "JIT of {}: {e}", self.ir.funcs[id as usize].name);
-            for f in self.closure(id) {
-                self.ok[f as usize] = false;
-            }
-            self.ok[id as usize] = false;
+            // A Cranelift failure is a bug: tests and debug builds stop; release builds interpret
+            // everything from here on.
+            #[cfg(test)]
+            let injected = e == "injected failure";
+            #[cfg(not(test))]
+            let injected = false;
+            debug_assert!(injected, "JIT of {}: {e}", self.ir.funcs[id as usize].name);
+            self.broken = true;
             return false;
         }
         self.entries[id as usize].is_some()
@@ -439,7 +512,7 @@ struct Gen<'a, 'b> {
     b: FunctionBuilder<'b>,
     config: cranelift_codegen::isa::TargetFrontendConfig,
     src: &'a Func,
-    callees: Vec<Option<cl::FuncRef>>,
+    callees: std::collections::HashMap<FuncId, cl::FuncRef>,
     charge: cl::FuncRef,
     fail: cl::FuncRef,
     fmod: cl::FuncRef,
@@ -766,7 +839,7 @@ impl Gen<'_, '_> {
         for a in args {
             vals.push(self.get(*a)?);
         }
-        let callee = self.callees[func as usize].ok_or("callee not declared")?;
+        let callee = *self.callees.get(&func).ok_or("callee not declared")?;
         let call = self.b.ins().call(callee, &vals);
         let st = self.b.inst_results(call)[0];
         let depth = self.b.ins().load(types::I64, flags, ctx, DEPTH);
