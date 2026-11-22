@@ -127,52 +127,54 @@ Each timing cell reports `min / median`; `-` means not applicable.
 
 ## Cranelift JIT (2026-11-22)
 
-The `jit` engine (`docs/design/qx-jit.md`; build with `--features jit`, run with `--engine jit`) compiles build-time classical functions (`int`/`double`/`boolean` only, calling only such functions) to native code with Cranelift on their first call and runs everything else in the IR interpreter. It was measured against `ast` and `ir` in the same run:
+The `jit` engine (`docs/design/qx-jit.md`; build with `--features jit`, run with `--engine jit`) compiles build-time classical functions (`int`/`double`/`boolean` only, calling only such functions) to native code with Cranelift and runs everything else in the IR interpreter. A function with a loop or a direct recursive call is compiled on its first call; any other compilable function is compiled on its 16th call, running in the IR interpreter until then. Measured against `ast` and `ir` in the same run (the harness uses the real threshold; tests use 1). For `jit`, `elaborate ms` includes compiling.
 
 ```sh
 QXIDE_BENCH_ENGINES=ast,ir,jit QXIDE_BENCH_REPEAT=7 cargo test --release --features jit --bin qxide bench_suite -- --ignored --nocapture
 ```
 
-For `jit`, `elaborate ms` includes compiling the functions that are called.
+Added generated case `pure_calls_4000`: 4000 small classical functions, each called once from `main`, to measure compile cost when nothing is hot.
 
-Environment: branch `feat/cranelift-jit` at commit `06e6044`, `rustc 1.99.1`, release profile, Cranelift 0.138 with `opt_level` `speed`, same Windows 11 / i9-14900HX laptop, about 11 GB RAM free, CPU load about 34 % before the run from other sessions (noisy; compare within the table), 7 repetitions.
-
-Cells report `min / median` in ms (`-` = not applicable).
+Environment: branch `feat/cranelift-jit` at commit `e9b872d`, `rustc 1.99.1`, release profile, Cranelift 0.138 (`opt_level` `speed`, inline stack probes), same Windows 11 / i9-14900HX laptop, about 11 GB RAM free, CPU load about 49 % before the run from other sessions (noisy; compare engines within the table), 7 repetitions. Values are `min / median`; `-` indicates not applicable.
 
 | Case | engine | front ms | lower ms | elaborate ms | run/qasm ms | total ms |
-| --- | --- | --- | --- | --- | --- | --- |
-| arith | ast | 0.1 / 0.1 | - | 952.3 / 1344.2 | 0.0 / 0.0 | 952.4 / 1344.3 |
-| arith | ir | 0.1 / 0.1 | 0.0 / 0.0 | 680.8 / 717.7 | 0.0 / 0.0 | 680.9 / 717.8 |
-| arith | jit | 0.1 / 0.1 | 0.0 / 0.0 | 92.3 / 99.5 | 0.0 / 0.0 | 92.4 / 99.7 |
-| circuit_build | ast | 0.1 / 0.1 | - | 150.8 / 161.1 | 74.0 / 80.7 | 226.3 / 238.9 |
-| circuit_build | ir | 0.0 / 0.1 | 0.0 / 0.0 | 72.7 / 93.5 | 66.2 / 76.6 | 149.7 / 169.7 |
-| circuit_build | jit | 0.1 / 0.1 | 0.0 / 0.0 | 84.2 / 86.2 | 63.7 / 75.3 | 149.0 / 162.2 |
-| ghz_stabilizer | ast | 0.0 / 0.1 | - | 0.4 / 0.4 | 888.4 / 965.5 | 888.9 / 966.3 |
-| ghz_stabilizer | ir | 0.0 / 0.1 | 0.0 / 0.0 | 0.3 / 0.4 | 890.2 / 938.2 | 890.7 / 938.7 |
-| ghz_stabilizer | jit | 0.1 / 0.1 | 0.0 / 0.0 | 0.3 / 0.4 | 916.9 / 944.4 | 917.4 / 944.9 |
-| loops | ast | 0.1 / 0.1 | - | 253.0 / 264.4 | 0.0 / 0.0 | 253.1 / 264.5 |
-| loops | ir | 0.1 / 0.1 | 0.0 / 0.0 | 79.5 / 83.3 | 0.0 / 0.0 | 79.5 / 83.4 |
-| loops | jit | 0.1 / 0.1 | 0.0 / 0.0 | 84.3 / 87.4 | 0.0 / 0.0 | 84.4 / 87.4 |
-| qft | ast | 0.1 / 0.1 | - | 0.5 / 0.6 | 561.8 / 599.5 | 562.4 / 600.3 |
-| qft | ir | 0.1 / 0.1 | 0.0 / 0.0 | 0.4 / 0.4 | 533.4 / 575.6 | 533.9 / 576.3 |
-| qft | jit | 0.1 / 0.1 | 0.0 / 0.0 | 1.4 / 1.6 | 558.0 / 650.6 | 559.6 / 652.2 |
-| recursion | ast | 0.1 / 0.1 | - | 227.9 / 247.5 | 0.0 / 0.0 | 227.9 / 247.6 |
-| recursion | ir | 0.1 / 0.1 | 0.0 / 0.0 | 93.4 / 95.1 | 0.0 / 0.0 | 93.5 / 95.1 |
-| recursion | jit | 0.1 / 0.1 | 0.0 / 0.0 | 7.4 / 8.7 | 0.0 / 0.0 | 7.5 / 8.7 |
-| check_flat_8000 | ast | 79.8 / 84.8 | - | - | - | 79.8 / 84.8 |
-| check_flat_8000 | ir | 79.5 / 82.5 | - | - | - | 79.5 / 82.5 |
-| check_flat_8000 | jit | 80.0 / 94.2 | - | - | - | 80.0 / 94.2 |
-| run_flat_8000 | ast | 71.4 / 74.8 | - | 11.6 / 13.4 | 0.8 / 0.9 | 84.1 / 89.1 |
-| run_flat_8000 | ir | 71.8 / 84.4 | 30.5 / 33.7 | 52.9 / 55.2 | 1.0 / 1.2 | 130.0 / 141.4 |
-| run_flat_8000 | jit | 77.0 / 85.8 | 27.7 / 33.4 | 48.2 / 54.5 | 1.0 / 1.0 | 133.1 / 141.6 |
-| many_loops_4000 | ast | 86.2 / 86.4 | - | 3.2 / 3.7 | 0.0 / 0.0 | 89.4 / 90.2 |
-| many_loops_4000 | ir | 91.4 / 100.8 | 16.7 / 18.7 | 21.7 / 26.6 | 0.0 / 0.0 | 115.4 / 127.5 |
-| many_loops_4000 | jit | 101.1 / 103.8 | 14.9 / 18.2 | 20.1 / 24.5 | 0.0 / 0.0 | 121.4 / 127.3 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| arith | ast | 0.1 / 0.1 | - | 813.2 / 1101.9 | 0.0 / 0.0 | 813.2 / 1102.0 |
+| arith | ir | 0.1 / 0.1 | 0.0 / 0.0 | 542.9 / 590.4 | 0.0 / 0.0 | 544.6 / 590.5 |
+| arith | jit | 0.1 / 0.1 | 0.0 / 0.0 | 83.7 / 86.9 | 0.0 / 0.0 | 83.8 / 87.0 |
+| circuit_build | ast | 0.1 / 0.1 | - | 155.3 / 163.1 | 78.5 / 83.8 | 241.8 / 246.2 |
+| circuit_build | ir | 0.1 / 0.1 | 0.0 / 0.0 | 74.8 / 88.8 | 70.7 / 80.1 | 151.1 / 171.4 |
+| circuit_build | jit | 0.1 / 0.1 | 0.0 / 0.0 | 74.8 / 91.1 | 68.6 / 85.8 | 153.2 / 178.5 |
+| ghz_stabilizer | ast | 0.0 / 0.1 | - | 0.4 / 0.4 | 878.5 / 962.3 | 878.9 / 962.9 |
+| ghz_stabilizer | ir | 0.1 / 0.1 | 0.0 / 0.0 | 0.3 / 0.4 | 1021.6 / 1066.1 | 1022.3 / 1066.6 |
+| ghz_stabilizer | jit | 0.0 / 0.1 | 0.0 / 0.0 | 0.3 / 0.4 | 957.5 / 1027.3 | 957.9 / 1027.6 |
+| loops | ast | 0.1 / 0.1 | - | 253.0 / 260.2 | 0.0 / 0.0 | 253.1 / 260.3 |
+| loops | ir | 0.1 / 0.1 | 0.0 / 0.0 | 73.8 / 76.5 | 0.0 / 0.0 | 73.8 / 76.6 |
+| loops | jit | 0.1 / 0.1 | 0.0 / 0.0 | 70.0 / 74.9 | 0.0 / 0.0 | 70.0 / 75.0 |
+| qft | ast | 0.1 / 0.1 | - | 0.5 / 0.6 | 547.3 / 571.6 | 547.9 / 572.3 |
+| qft | ir | 0.1 / 0.1 | 0.0 / 0.0 | 0.3 / 0.4 | 467.7 / 500.2 | 468.3 / 500.7 |
+| qft | jit | 0.1 / 0.1 | 0.0 / 0.0 | 1.3 / 1.4 | 474.9 / 547.0 | 476.4 / 548.4 |
+| recursion | ast | 0.1 / 0.1 | - | 179.1 / 199.4 | 0.0 / 0.0 | 179.1 / 199.5 |
+| recursion | ir | 0.0 / 0.1 | 0.0 / 0.0 | 56.9 / 61.2 | 0.0 / 0.0 | 56.9 / 61.2 |
+| recursion | jit | 0.0 / 0.1 | 0.0 / 0.0 | 5.4 / 5.4 | 0.0 / 0.0 | 5.4 / 5.5 |
+| check_flat_8000 | ast | 70.9 / 77.6 | - | - | - | 70.9 / 77.6 |
+| check_flat_8000 | ir | 64.3 / 66.5 | - | - | - | 64.3 / 66.5 |
+| check_flat_8000 | jit | 62.5 / 75.5 | - | - | - | 62.5 / 75.5 |
+| run_flat_8000 | ast | 73.2 / 79.3 | - | 11.1 / 13.8 | 0.8 / 0.9 | 86.1 / 94.5 |
+| run_flat_8000 | ir | 69.6 / 75.1 | 28.8 / 30.5 | 44.1 / 47.8 | 0.9 / 1.0 | 115.0 / 125.1 |
+| run_flat_8000 | jit | 70.4 / 77.7 | 27.1 / 30.7 | 43.1 / 47.8 | 0.9 / 1.0 | 115.0 / 124.3 |
+| pure_calls_4000 | ast | 26.4 / 30.8 | - | 3.0 / 5.7 | 0.0 / 0.0 | 29.5 / 36.8 |
+| pure_calls_4000 | ir | 24.6 / 28.1 | 12.5 / 13.7 | 16.1 / 20.0 | 0.0 / 0.0 | 44.4 / 48.6 |
+| pure_calls_4000 | jit | 24.3 / 30.5 | 10.7 / 12.8 | 15.2 / 19.3 | 0.0 / 0.0 | 41.3 / 49.4 |
+| many_loops_4000 | ast | 84.0 / 96.6 | - | 3.2 / 3.7 | 0.0 / 0.0 | 87.9 / 100.3 |
+| many_loops_4000 | ir | 76.9 / 85.5 | 14.3 / 14.9 | 17.4 / 18.6 | 0.0 / 0.0 | 96.0 / 104.2 |
+| many_loops_4000 | jit | 98.7 / 101.7 | 14.7 / 22.1 | 16.8 / 28.6 | 0.0 / 0.0 | 117.2 / 132.5 |
 
 ### Reading
 
-- Where the work is in compiled functions, native code removes most of the elaboration time: `arith` is 92.3 ms (`jit`) vs 680.8 ms (`ir`) vs 952.3 ms (`ast`) minimum, with the primality test and integer square root compiled; `recursion` is 7.4 ms vs 93.4 ms vs 227.9 ms, with `fib`, `isEven`, and `isOdd` compiled.
-- `loops` and `circuit_build` do not change: the loops of `loops` are written in `main`, which prints, and the layer function of `circuit_build` applies gates, so neither is compiled (function granularity; outlining pure loops is an open item in `docs/design/qx-jit.md`). The `jit` and `ir` numbers there differ by noise.
-- `qft`: only the small `pow2` helper is compiled; compiling it costs about a millisecond (1.4 vs 0.4 ms elaboration), more than it saves at this size.
-- `qft` and `ghz_stabilizer` stay dominated by simulation; `check_flat_8000` does not elaborate; `run_flat_8000` and `many_loops_4000` compile nothing (their functions measure and print, or the work is in `main`), so `jit` equals `ir` within noise.
-- The machine was busier during this run (about 34 % CPU load) than in the previous section's run; compare engines within one table.
+- Work in compiled functions: `arith` 83.7 ms (`jit`) vs 542.9 (`ir`) vs 813.2 (`ast`), minimum (primality test and integer square root compiled); `recursion` 5.4 vs 56.9 vs 179.1 ms (`fib`, `isEven`, `isOdd` compiled).
+- `loops` and `circuit_build`: unchanged by the JIT; the loops of `loops` are in `main`, which prints, and `circuit_build`'s layer function applies gates, so neither compiles (function granularity; outlining pure loops is open in `qx-jit.md`).
+- `qft`: only `pow2` (it has a loop, so it compiles on its first call) is compiled; compiling costs about a millisecond (1.3 vs 0.3 ms elaboration), more than it saves at this size.
+- `pure_calls_4000`: no function reaches 16 calls, so nothing is compiled and `jit` matches `ir`. In an earlier version that compiled every function on its first call, this case took about 1.5 s of elaboration (1504 ms minimum) because each compilation and code finalization costs a few hundred microseconds.
+- `qft` and `ghz_stabilizer` stay dominated by simulation; `check_flat_8000` does not elaborate; `run_flat_8000` and `many_loops_4000` compile nothing.
+- The machine was busy during this run (about 49 % CPU load); compare engines within this table.
