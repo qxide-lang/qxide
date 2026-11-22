@@ -11,7 +11,7 @@ keywords = ["quantum", "qubit", "openqasm", "simulator"]
 categories = ["science", "simulation"]
 # Keep the website, brand assets, CI files and design docs out of the published crate.
 # Exceptions: `qxide explain` embeds docs/error-codes.md, and its tests read the design doc's code tables.
-include = ["/src/**", "/tests/**", "/examples/**", "/README.md", "/README.ko.md", "/CHANGELOG.md", "/LICENSE-*", "/Cargo.lock", "/docs/error-codes.md", "/docs/design/qx-language.md"]
+include = ["/src/**", "/tests/**", "/examples/**", "/bench/**", "/README.md", "/README.ko.md", "/CHANGELOG.md", "/LICENSE-*", "/Cargo.lock", "/docs/error-codes.md", "/docs/design/qx-language.md"]
 
 [features]
 default = ["cli"]

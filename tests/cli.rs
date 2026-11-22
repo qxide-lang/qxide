@@ -667,3 +667,92 @@ fn repl_runs_piped_input() {
         .unwrap()
         .contains("error[Q0302]"));
 }
+
+// `qxide args` with `QXIDE_ENGINE` set to `env` (or unset) and `input` on stdin.
+fn qxide_engine_env(args: &[&str], env: Option<&str>, input: &str) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut c = Command::new(env!("CARGO_BIN_EXE_qxide"));
+    c.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match env {
+        Some(e) => c.env("QXIDE_ENGINE", e),
+        None => c.env_remove("QXIDE_ENGINE"),
+    };
+    let mut child = c.spawn().expect("run qxide");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+// The typed IR interpreter (`--engine ir`, docs/design/qx-ir.md) prints exactly what the
+// tree-walking interpreter prints, chosen by the flag, the environment variable, or both (`dual`).
+#[test]
+fn engine_flag_and_env_give_identical_results() {
+    let error = tmp_qx(
+        "engine_div_zero.qx",
+        "void main() {\n    int z = 0;\n    println(\"{}\", 1 / z);\n}\n",
+    );
+    let mut files: Vec<String> = ["bell.qx", "teleport.qx", "functions.qx", "rotation.qx"]
+        .iter()
+        .map(|f| example(f))
+        .collect();
+    files.push(error);
+    let repl = "Qubit q = qubit();\nh(q);\nBit m = measure(q);\nm\n:qasm\n:quit\n";
+    let mut cases: Vec<(Vec<&str>, &str)> = vec![(vec!["repl", "--seed", "4"], repl)];
+    for f in &files {
+        cases.push((vec!["run", f, "--shots", "200", "--seed", "5"], ""));
+        cases.push((vec!["run", f, "--seed", "9"], ""));
+        cases.push((vec!["qasm", f], ""));
+    }
+    for (args, input) in cases {
+        let with = |engine: &str| {
+            let mut a = args.clone();
+            a.extend(["--engine", engine]);
+            qxide_engine_env(&a, None, input)
+        };
+        let ast = with("ast");
+        assert!(!ast.stdout.is_empty() || !ast.stderr.is_empty(), "{args:?}");
+        for other in [
+            with("ir"),
+            qxide_engine_env(&args, Some("ir"), input),
+            qxide_engine_env(&args, Some("dual"), input),
+        ] {
+            assert_eq!(other.status.code(), ast.status.code(), "{args:?}");
+            assert_eq!(other.stdout, ast.stdout, "{args:?}");
+            assert_eq!(other.stderr, ast.stderr, "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn engine_values_are_checked() {
+    let bell = example("bell.qx");
+    let bad = qxide_engine_env(&["run", &bell, "--engine", "fast"], None, "");
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8(bad.stderr).unwrap().contains("--engine"));
+    let missing = qxide_engine_env(&["qasm", &bell, "--engine"], None, "");
+    assert_eq!(missing.status.code(), Some(2));
+    let bad_env = qxide_engine_env(&["run", &bell], Some("fast"), "");
+    assert_eq!(bad_env.status.code(), Some(2));
+    assert!(String::from_utf8(bad_env.stderr)
+        .unwrap()
+        .contains("QXIDE_ENGINE"));
+    // The flag wins over the environment variable, which is then never read.
+    let args = ["run", &bell, "--engine", "ir", "--seed", "1"];
+    assert_eq!(
+        qxide_engine_env(&args, Some("fast"), "").status.code(),
+        Some(0)
+    );
+    // `check` builds no circuit, so it takes no engine.
+    let check = qxide_engine_env(&["check", &bell, "--engine", "ir"], None, "");
+    assert_eq!(check.status.code(), Some(2));
+    let repl = qxide_engine_env(&["repl", "--engine", "fast"], None, "");
+    assert_eq!(repl.status.code(), Some(2));
+}

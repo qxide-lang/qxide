@@ -206,7 +206,8 @@ fn app_limits_keep_their_headroom_over_normal_use() {
 // `cargo test --release --bin qxide app_worst_steps -- --ignored --nocapture`.
 fn worst(name: &str, src: &str, shots: u64, code: &str) {
     let start = std::time::Instant::now();
-    let r = run_with("t.qx", src, shots, 0, Limits::APP);
+    // The recorded timings are the tree-walking interpreter's (tests default to both engines).
+    let r = engine::with(Engine::Ast, || run_with("t.qx", src, shots, 0, Limits::APP));
     let secs = start.elapsed().as_secs_f64();
     let got = match &r {
         Ok(out) => format!("ok, {} bytes", out.len()),
