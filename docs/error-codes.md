@@ -839,6 +839,68 @@ void main() {
 }
 ```
 
+## Q0226: unknown struct field
+
+A field access (`p.f`) or field store (`p.f = v`) named a field that the struct type does not declare, or the value on the left of the dot is not a struct at all (for example, an `int` or a `Qubit`). In `.qx`, struct fields are checked at compile time against the `struct` declaration.
+
+Erroneous code example:
+
+```qx
+struct Point {
+    double x;
+    double y;
+}
+
+void main() {
+    Point p = new Point(1.0, 2.0);
+    println("{}", p.z);  // error[Q0226]
+}
+```
+
+To fix it, use a field that `Point` declares, here `y`, or add the field to the struct declaration.
+
+```qx
+struct Point {
+    double x;
+    double y;
+}
+
+void main() {
+    Point p = new Point(1.0, 2.0);
+    println("{}", p.y);
+}
+```
+
+## Q0227: struct field of an unsupported type
+
+A struct field was declared with a type that struct fields cannot hold, or the struct contains itself through this field, directly or through arrays or other structs. In `.qx`, struct fields hold build-time classical values: `int`, `double`, `boolean`, `String`, arrays, and other structs; `Qubit`, `QReg`, `Bit`, and `BitReg` stay outside structs because the qubit ownership rules track them. A struct that contains itself is rejected because the language has no `null` to end the chain and such structures could form reference cycles; lists and trees need an optional type, which is planned for later.
+
+Erroneous code example:
+
+```qx
+struct Node {
+    int value;
+    Node next;  // error[Q0227]
+}
+
+void main() {
+    println("{}", 1);
+}
+```
+
+To fix it, store the values of the chain in an array field instead of linking structs to each other.
+
+```qx
+struct Chain {
+    int[] values;
+}
+
+void main() {
+    Chain c = new Chain(new int[]{1, 2, 3});
+    println("{}", c.values[2]);
+}
+```
+
 ## Q0301: use of a consumed qubit
 
 A `Qubit` was used after it had already been consumed by being measured, discarded, or moved. In `.qx`, qubits have linear types checked at compile time, so once a qubit is consumed it is no longer available for further operations. This prevents a program from applying gates or other operations to a qubit whose quantum state has already been measured, discarded, or transferred.

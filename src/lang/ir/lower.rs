@@ -37,12 +37,17 @@ pub fn lower(p: &Program) -> Module {
             },
         );
     }
+    let layouts = super::super::record::Layouts::of(p);
     let funcs = p
         .fns
         .iter()
-        .map(|f| FnLower::new(f, &index, &sigs).lower(f))
+        .map(|f| FnLower::new(f, &index, &sigs, &layouts).lower(f))
         .collect();
-    Module { funcs, index }
+    Module {
+        funcs,
+        index,
+        layouts,
+    }
 }
 
 struct FnLower<'p, 'a> {
@@ -59,6 +64,7 @@ struct FnLower<'p, 'a> {
     slot_names: HashMap<String, u32>,
     // Enclosing loops: (`continue` target, `break` target, `regions` at the loop).
     loops: Vec<(BlockId, BlockId, usize)>,
+    layouts: &'a super::super::record::Layouts,
 }
 
 impl<'p, 'a> FnLower<'p, 'a> {
@@ -66,6 +72,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
         f: &'p FnDecl,
         index: &'a HashMap<String, FuncId>,
         sigs: &'a HashMap<&'p str, Sig>,
+        layouts: &'a super::super::record::Layouts,
     ) -> Self {
         let params = f
             .params
@@ -101,6 +108,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
             regions: 0,
             slot_names: HashMap::new(),
             loops: Vec::new(),
+            layouts,
         }
     }
 
@@ -252,6 +260,16 @@ impl<'p, 'a> FnLower<'p, 'a> {
         });
     }
 
+    // Index and type of field `name` of the struct in register `r`.
+    fn field_of(&self, r: Reg, name: &str) -> Option<(u32, Ty)> {
+        let IrTy::Struct(id) = self.ty(r) else {
+            return None;
+        };
+        self.layouts
+            .field(Ty::Struct(id), name)
+            .map(|(i, t)| (i as u32, t))
+    }
+
     fn konst(&mut self, value: Const) -> Reg {
         let ty = match value {
             Const::I64(_) => IrTy::I64,
@@ -328,6 +346,26 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     value,
                     span: *span,
                 });
+            }
+            Stmt::SetField {
+                base,
+                name,
+                op,
+                value,
+                span,
+            } => {
+                let base = self.expr(base);
+                let value = self.expr(value);
+                match self.field_of(base, &name.name) {
+                    Some((index, _)) => self.emit(Inst::SetField {
+                        base,
+                        index,
+                        op: *op,
+                        value,
+                        span: *span,
+                    }),
+                    None => self.trap(internal(*span)),
+                }
             }
             Stmt::Break { span } => self.loop_exit(false, *span),
             Stmt::Continue { span } => self.loop_exit(true, *span),
@@ -589,6 +627,44 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     dst,
                     ty: *ty,
                     dims,
+                    span: e.span,
+                });
+                dst
+            }
+            ExprKind::NewStruct { ty, args } => {
+                let tys: Vec<Ty> = self
+                    .layouts
+                    .fields(*ty)
+                    .map(|f| f.iter().map(|(_, t)| *t).collect())
+                    .unwrap_or_default();
+                let mut regs = Vec::with_capacity(args.len());
+                for (a, t) in args
+                    .iter()
+                    .zip(tys.iter().chain(std::iter::repeat(&Ty::Error)))
+                {
+                    let r = self.expr(a);
+                    regs.push(self.widen_to(r, IrTy::of(*t)));
+                }
+                let dst = self.reg(IrTy::of(*ty));
+                self.emit(Inst::NewStruct {
+                    dst,
+                    ty: *ty,
+                    args: regs.into(),
+                    span: e.span,
+                });
+                dst
+            }
+            ExprKind::Field { recv, name } => {
+                let r = self.expr(recv);
+                let Some((index, ty)) = self.field_of(r, &name.name) else {
+                    self.trap(internal(e.span));
+                    return self.reg(IrTy::Unit);
+                };
+                let dst = self.reg(IrTy::of(ty));
+                self.emit(Inst::GetField {
+                    dst,
+                    recv: r,
+                    index,
                     span: e.span,
                 });
                 dst

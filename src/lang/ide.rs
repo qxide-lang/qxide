@@ -79,8 +79,8 @@ pub struct Item {
 
 /// Every keyword of the language; a test keeps this in sync with the lexer.
 pub const KEYWORDS: &[&str] = &[
-    "final", "var", "consume", "import", "public", "if", "else", "for", "in", "while", "break",
-    "continue", "return", "true", "false",
+    "final", "var", "struct", "consume", "import", "public", "if", "else", "for", "in", "while",
+    "break", "continue", "return", "true", "false",
 ];
 
 /// Type names as written in source.
@@ -300,6 +300,10 @@ impl Scopes {
                     self.expr(index);
                     self.expr(value);
                 }
+                Stmt::SetField { base, value, .. } => {
+                    self.expr(base);
+                    self.expr(value);
+                }
                 Stmt::Expr(e) => self.expr(e),
             }
         }
@@ -347,11 +351,14 @@ impl Scopes {
                 self.expr(lhs);
                 self.expr(rhs);
             }
-            ExprKind::NewArray { dims: items, .. } | ExprKind::ArrayLit { elems: items, .. } => {
+            ExprKind::NewArray { dims: items, .. }
+            | ExprKind::ArrayLit { elems: items, .. }
+            | ExprKind::NewStruct { args: items, .. } => {
                 for a in items {
                     self.expr(a);
                 }
             }
+            ExprKind::Field { recv, .. } => self.expr(recv),
             ExprKind::Int(_) | ExprKind::Double(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
         }
     }

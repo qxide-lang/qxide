@@ -77,6 +77,8 @@ codes! {
     InvalidCast => "Q0223",
     LoopControl => "Q0224",
     BadArrayElement => "Q0225",
+    UnknownField => "Q0226",
+    BadFieldType => "Q0227",
     UseAfterConsume => "Q0301",
     NeverConsumed => "Q0302",
     DuplicateQubit => "Q0303",

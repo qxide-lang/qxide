@@ -50,7 +50,9 @@ impl ArrayData {
             (ArrayData::Double(a), Value::Double(x)) => a[i] = x,
             (ArrayData::Double(a), Value::Int(n)) => a[i] = n as f64,
             (ArrayData::Bool(a), Value::Bool(b)) => a[i] = b,
-            (ArrayData::Other(a), v @ (Value::Str(_) | Value::Array(_))) => a[i] = v,
+            (ArrayData::Other(a), v @ (Value::Str(_) | Value::Array(_) | Value::Struct(_))) => {
+                a[i] = v
+            }
             _ => return Err(internal(span)),
         }
         Ok(())
@@ -64,19 +66,6 @@ fn elem_bytes(elem: Ty) -> u64 {
         Ty::Boolean => 1,
         _ => std::mem::size_of::<Value>() as u64,
     }
-}
-
-// The value a new array's elements start with: zero, `false`, the empty string, or an empty
-// array (there is no `null`).
-fn default_value(elem: Ty, span: Span) -> R<Value> {
-    Ok(match elem {
-        Ty::String => Value::Str(Rc::from("")),
-        Ty::Array(_) => {
-            let inner = elem.elem().ok_or_else(|| internal(span))?;
-            Value::Array(Rc::new(RefCell::new(empty(inner))))
-        }
-        _ => return Err(internal(span)),
-    })
 }
 
 fn empty(elem: Ty) -> ArrayData {
@@ -93,6 +82,23 @@ fn array(data: ArrayData) -> Value {
 }
 
 impl Machine<'_> {
+    /// The value new array elements and struct fields start with: zero, `false`, the empty
+    /// string, an empty array, or a struct of defaults (there is no `null`).
+    pub fn default_value(&mut self, ty: Ty, span: Span) -> R<Value> {
+        Ok(match ty {
+            Ty::Int => Value::Int(0),
+            Ty::Double => Value::Double(0.0),
+            Ty::Boolean => Value::Bool(false),
+            Ty::String => Value::Str(Rc::from("")),
+            Ty::Array(_) => {
+                let inner = ty.elem().ok_or_else(|| internal(span))?;
+                Value::Array(Rc::new(RefCell::new(empty(inner))))
+            }
+            Ty::Struct(_) => self.default_struct(ty, span)?,
+            _ => return Err(internal(span)),
+        })
+    }
+
     fn charge_elems(&mut self, n: usize, elem: Ty, span: Span) -> R<()> {
         let bytes = (n as u64).saturating_mul(elem_bytes(elem));
         self.charge(bytes.saturating_mul(STR_BYTE_STEPS), span)
@@ -131,7 +137,7 @@ impl Machine<'_> {
             _ => {
                 let mut v = Vec::with_capacity(n);
                 for _ in 0..n {
-                    v.push(default_value(elem, span)?);
+                    v.push(self.default_value(elem, span)?);
                 }
                 ArrayData::Other(v)
             }

@@ -142,6 +142,18 @@ pub fn note_loop_exits_here(word: &str) -> String {
     format!("`{word}` exits the iteration here")
 }
 
+pub fn unknown_field(field: &str, ty: &str) -> String {
+    format!("no field `{field}` on type `{ty}`")
+}
+
+pub fn bad_field_type(ty: &str) -> String {
+    format!("struct field cannot have type `{ty}`")
+}
+
+pub fn recursive_struct(name: &str) -> String {
+    format!("struct `{name}` cannot recursively contain itself")
+}
+
 pub fn bad_array_element(ty: &str) -> String {
     format!("arrays cannot have element type `{ty}`")
 }

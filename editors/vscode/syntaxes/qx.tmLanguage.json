@@ -61,11 +61,12 @@
     "keywords": {
       "patterns": [
         { "name": "keyword.control.qx", "match": "\\b(if|else|for|in|while|break|continue|return)\\b" },
-        { "name": "keyword.other.new.qx", "match": "\\bnew\\b(?=\\s+(int|double|boolean|String)\\b)" },
+        { "name": "keyword.other.new.qx", "match": "\\bnew\\b(?=\\s+[A-Za-z_])" },
         { "name": "storage.modifier.qx", "match": "\\b(final|var|consume|public)\\b" },
+        { "name": "storage.type.struct.qx", "match": "\\bstruct\\b" },
         {
           "name": "keyword.other.reserved.qx",
-          "match": "\\b(loop|struct|enum|impl|use|mod|const|match|with_ancilla|apply|let|fn|mut)\\b"
+          "match": "\\b(loop|enum|impl|use|mod|const|match|with_ancilla|apply|let|fn|mut)\\b"
         }
       ]
     },

@@ -48,7 +48,7 @@ pub fn run_with(
         .ok_or_else(|| internal(Span::default()))?;
     let mut x = Exec {
         module,
-        m: Machine::new(host, limits),
+        m: Machine::new(host, limits, module.layouts.clone()),
         free: vec![Vec::new(); module.funcs.len()],
         native,
     };
@@ -305,6 +305,35 @@ impl<'m> Exec<'m, '_, '_> {
                 let vals = elems.iter().map(|a| fr.get(*a)).collect();
                 let v = self.m.array_lit(*ty, vals, *span)?;
                 fr.set(*dst, v);
+            }
+            Inst::NewStruct {
+                dst,
+                ty,
+                args,
+                span,
+            } => {
+                let vals = args.iter().map(|a| fr.get(*a)).collect();
+                let v = self.m.new_struct(*ty, vals, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::GetField {
+                dst,
+                recv,
+                index,
+                span,
+            } => {
+                let v = super::super::record::get_field(&fr.get(*recv), *index as usize, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::SetField {
+                base,
+                index,
+                op,
+                value,
+                span,
+            } => {
+                self.m
+                    .set_field(fr.get(*base), *index as usize, *op, fr.get(*value), *span)?;
             }
             Inst::SetIndex {
                 base,

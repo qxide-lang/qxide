@@ -121,10 +121,17 @@ pub fn link(
         .iter_mut()
         .flat_map(|m| std::mem::take(&mut m.program.fns))
         .collect();
+    // Struct names stay unqualified: they must be unique across the program (v1).
+    let structs = l
+        .modules
+        .iter_mut()
+        .flat_map(|m| std::mem::take(&mut m.program.structs))
+        .collect();
     (
         l.map,
         Ok(Program {
             imports: Vec::new(),
+            structs,
             fns,
         }),
     )
@@ -615,6 +622,10 @@ impl Linker<'_> {
                     self.rewrite_expr(scope, index);
                     self.rewrite_expr(scope, value);
                 }
+                Stmt::SetField { base, value, .. } => {
+                    self.rewrite_expr(scope, base);
+                    self.rewrite_expr(scope, value);
+                }
                 Stmt::Expr(e) => self.rewrite_expr(scope, e),
             }
         }
@@ -682,11 +693,14 @@ impl Linker<'_> {
                 self.rewrite_expr(scope, lhs);
                 self.rewrite_expr(scope, rhs);
             }
-            ExprKind::NewArray { dims: items, .. } | ExprKind::ArrayLit { elems: items, .. } => {
+            ExprKind::NewArray { dims: items, .. }
+            | ExprKind::ArrayLit { elems: items, .. }
+            | ExprKind::NewStruct { args: items, .. } => {
                 for a in items {
                     self.rewrite_expr(scope, a);
                 }
             }
+            ExprKind::Field { recv, .. } => self.rewrite_expr(scope, recv),
             ExprKind::Int(_)
             | ExprKind::Double(_)
             | ExprKind::Bool(_)

@@ -1,0 +1,37 @@
+// Structs are shared references like Java objects: a particle simulation updates them in
+// place, then the final speed picks a rotation angle.
+import std.math;
+
+struct Vec2 {
+    double x;
+    double y;
+}
+
+struct Particle {
+    Vec2 pos;
+    Vec2 vel;
+}
+
+void step(Particle p, double dt) {
+    p.vel.y -= 9.8 * dt;
+    p.pos.x += p.vel.x * dt;
+    p.pos.y += p.vel.y * dt;
+}
+
+void main() {
+    Particle[] ps = new Particle[2];
+    ps[0] = new Particle(new Vec2(0, 0), new Vec2(1, 4));
+    ps[1] = new Particle(new Vec2(0, 0), new Vec2(2, 3));
+    for t in 0..4 {
+        for i in 0..len(ps) {
+            step(ps[i], 0.25);
+        }
+    }
+    Particle fast = ps[1];
+    double speed = math.sqrt(fast.vel.x * fast.vel.x + fast.vel.y * fast.vel.y);
+    println("x = {}, speed = {}", fast.pos.x, speed);
+    Qubit q = qubit();
+    ry(q, math.min(speed, PI));
+    Bit b = measure(q);
+    println("{}", b);
+}

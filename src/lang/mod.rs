@@ -23,6 +23,7 @@ mod machine;
 mod msg;
 mod parser;
 mod pure;
+mod record;
 pub mod repl;
 pub mod stdlib;
 // Used by the desktop runtime for Qxide Studio (`std.qxide`).

@@ -13,6 +13,7 @@ pub enum Tok {
     // Keywords
     Final,
     Var,
+    Struct,
     Consume,
     Import,
     Public,
@@ -70,6 +71,7 @@ impl Tok {
         Some(match self {
             Final => "final",
             Var => "var",
+            Struct => "struct",
             Consume => "consume",
             Import => "import",
             Public => "public",
@@ -137,7 +139,6 @@ pub const REMOVED: &[&str] = &["let", "fn", "mut"];
 
 pub const RESERVED: &[&str] = &[
     "loop",
-    "struct",
     "enum",
     "impl",
     "use",
@@ -200,6 +201,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnosti
             }
             match word {
                 "final" => Tok::Final,
+                "struct" => Tok::Struct,
                 "var" => Tok::Var,
                 "consume" => Tok::Consume,
                 "import" => Tok::Import,

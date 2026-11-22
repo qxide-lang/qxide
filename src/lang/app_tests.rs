@@ -310,6 +310,15 @@ public int[] squares(int n) {
     int[] out = new int[n];
     return out;
 }
+
+struct Pair {
+    int a;
+    int b;
+}
+
+public Pair pair(int n) {
+    return new Pair(n, n);
+}
 "#;
 
 fn app_call(
@@ -328,6 +337,7 @@ fn app_call(
         "hidden",
         "total",
         "squares",
+        "pair",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -447,7 +457,14 @@ fn command_errors() {
     assert_eq!(code(app_call("hidden", &[], 1, 0)), "Q0714");
     // Arrays cannot cross the JavaScript boundary yet, in either direction.
     assert_eq!(code(app_call("total", &[], 1, 0)), "Q0714");
-    assert_eq!(code(app_call("squares", &[("n", JsArg::Int(2))], 1, 0)), "Q0714");
+    assert_eq!(
+        code(app_call("squares", &[("n", JsArg::Int(2))], 1, 0)),
+        "Q0714"
+    );
+    assert_eq!(
+        code(app_call("pair", &[("n", JsArg::Int(2))], 1, 0)),
+        "Q0714"
+    );
     let e = app_call("flip", &[], 1, 0).unwrap_err();
     assert_eq!(e.diagnostics[0].line, 30, "{e:?}");
     assert!(e.to_json().contains("\"endColumn\":"), "{}", e.to_json());

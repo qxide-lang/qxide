@@ -10,6 +10,7 @@ use qxide::{Circuit, Qubit};
 use super::ast::{BinOp, FmtPiece, Ty};
 use super::diag::{Code, Diagnostic, Span};
 use super::interp::{piece_bytes, BitsFmt, Elaborated, OpCounts, OutPiece, Usage, Value};
+use super::record::Layouts;
 use super::stdlib::{Host, HostValue, StdErrorKind};
 use super::{msg, Limits};
 
@@ -143,6 +144,8 @@ impl Rot {
 
 pub struct Machine<'h> {
     pub host: &'h mut dyn Host,
+    // Struct field layouts of the program being elaborated.
+    layouts: Rc<Layouts>,
     // `steps` at which the host is next asked whether the call was cancelled.
     next_poll: u64,
     pool: Vec<Option<Qubit>>,
@@ -165,9 +168,10 @@ pub struct Machine<'h> {
 }
 
 impl<'h> Machine<'h> {
-    pub fn new(host: &'h mut dyn Host, limits: &Limits) -> Self {
+    pub fn new(host: &'h mut dyn Host, limits: &Limits, layouts: Rc<Layouts>) -> Self {
         Machine {
             host,
+            layouts,
             next_poll: CANCEL_POLL,
             pool: Vec::new(),
             output: Vec::new(),
@@ -184,6 +188,10 @@ impl<'h> Machine<'h> {
             cond_depth: 0,
             peak_cond_depth: 0,
         }
+    }
+
+    pub fn layouts(&self) -> Rc<Layouts> {
+        self.layouts.clone()
     }
 
     pub fn finish(self, circuit: Circuit) -> Elaborated {

@@ -237,6 +237,20 @@ impl Checker<'_> {
                 }
                 self.ty(*dst)?;
             }
+            Inst::NewStruct { dst, args, .. } => {
+                for a in args.iter() {
+                    self.ty(*a)?;
+                }
+                self.ty(*dst)?;
+            }
+            Inst::GetField { dst, recv, .. } => {
+                self.ty(*recv)?;
+                self.ty(*dst)?;
+            }
+            Inst::SetField { base, value, .. } => {
+                self.ty(*base)?;
+                self.ty(*value)?;
+            }
             Inst::SetIndex {
                 base, index, value, ..
             } => {

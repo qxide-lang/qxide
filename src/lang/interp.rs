@@ -99,6 +99,8 @@ pub enum Value {
     QReg(Rc<[usize]>),
     // Shared and mutable, like a Java array reference (src/lang/array.rs).
     Array(super::array::ArrayRef),
+    // Shared and mutable, like a Java object reference (src/lang/record.rs).
+    Struct(Rc<super::record::StructVal>),
     Unit,
 }
 
@@ -179,7 +181,7 @@ pub fn elaborate_call(
 ) -> R<(Elaborated, Value)> {
     let mut it = Interp {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
-        m: Machine::new(host, limits),
+        m: Machine::new(host, limits, super::record::Layouts::of(p)),
     };
     let f = *it.fns.get(name).ok_or_else(|| internal(Span::default()))?;
     let mut c = Circuit::new();
@@ -259,6 +261,13 @@ impl<'p> Interp<'p, '_> {
                 value,
                 span,
             } => self.set_index(c, f, base, index, *op, value, *span),
+            Stmt::SetField {
+                base,
+                name,
+                op,
+                value,
+                span,
+            } => self.set_field(c, f, base, name, *op, value, *span),
             Stmt::Break { .. } => Ok(Flow::Break),
             Stmt::Continue { .. } => Ok(Flow::Continue),
             Stmt::Return { value, .. } => self.return_stmt(c, f, value.as_ref()),
@@ -424,7 +433,56 @@ impl<'p> Interp<'p, '_> {
             ExprKind::Binary { op, lhs, rhs } => self.binary_expr(c, f, op, lhs, rhs, e.span),
             ExprKind::NewArray { ty, dims } => self.new_array(c, f, *ty, dims, e.span),
             ExprKind::ArrayLit { ty, elems } => self.array_lit(c, f, *ty, elems, e.span),
+            ExprKind::NewStruct { ty, args } => self.new_struct(c, f, *ty, args, e.span),
+            ExprKind::Field { recv, name } => self.field(c, f, recv, name, e.span),
         }
+    }
+
+    fn new_struct(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        ty: Ty,
+        args: &'p [Expr],
+        span: Span,
+    ) -> R<Value> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.expr(c, f, a)?);
+        }
+        self.m.new_struct(ty, vals, span)
+    }
+
+    fn field(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        recv: &'p Expr,
+        name: &'p Ident,
+        span: Span,
+    ) -> R<Value> {
+        let v = self.expr(c, f, recv)?;
+        let i = self.m.field_index(&v, &name.name, span)?;
+        super::record::get_field(&v, i, span)
+    }
+
+    // `p.x = v`: the struct, then the value (like Java).
+    #[allow(clippy::too_many_arguments)]
+    fn set_field(
+        &mut self,
+        c: &mut Circuit,
+        f: &mut Frame<'p>,
+        base: &'p Expr,
+        name: &'p Ident,
+        op: Option<BinOp>,
+        value: &'p Expr,
+        span: Span,
+    ) -> R<Flow> {
+        let s = self.expr(c, f, base)?;
+        let v = self.expr(c, f, value)?;
+        let i = self.m.field_index(&s, &name.name, span)?;
+        self.m.set_field(s, i, op, v, span)?;
+        Ok(Flow::Next)
     }
 
     fn new_array(

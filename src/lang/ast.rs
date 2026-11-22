@@ -1,19 +1,49 @@
 // Untyped AST produced by the parser; the checker validates it in place.
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use super::diag::Span;
 
-/// A compound type registered in `TYPES`; equal structures share one id, so ids from different
-/// programs in one process (LSP, parallel tests) never collide. Ids never appear in output.
+/// A compound type registered in the process-wide interner: an array type (keyed by its
+/// element type) or a struct name. Programs in one process (LSP, parallel tests) share ids
+/// safely: an array id means the same element type everywhere, and struct fields are kept per
+/// program (`record::Layouts`), never here. Ids never appear in output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TyId(u32);
 
-// Append-only: (element type, source name). Bounded by the distinct array types ever written.
-static TYPES: Mutex<Vec<(Ty, &'static str)>> = Mutex::new(Vec::new());
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Key {
+    Array(Ty),
+    Struct(String),
+}
 
-fn types() -> std::sync::MutexGuard<'static, Vec<(Ty, &'static str)>> {
-    TYPES.lock().unwrap_or_else(|e| e.into_inner())
+// Append-only: (element type of an array, source name), with a hash index so N types intern in
+// O(N). Bounded by the distinct array types and struct names ever written.
+#[derive(Default)]
+struct Interner {
+    entries: Vec<(Option<Ty>, &'static str)>,
+    index: HashMap<Key, u32>,
+}
+
+fn types() -> MutexGuard<'static, Interner> {
+    static TYPES: OnceLock<Mutex<Interner>> = OnceLock::new();
+    TYPES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+// `name` runs before the lock is taken: naming an element type locks the interner too.
+fn intern(key: Key, elem: Option<Ty>, name: String) -> TyId {
+    let mut t = types();
+    if let Some(&i) = t.index.get(&key) {
+        return TyId(i);
+    }
+    let i = t.entries.len() as u32;
+    t.entries.push((elem, Box::leak(name.into_boxed_str())));
+    t.index.insert(key, i);
+    TyId(i)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,41 +65,48 @@ pub enum Ty {
     Error,
     // `int[]`, `double[][]`: a reference to a mutable array of classical values.
     Array(TyId),
+    // `Point`: a reference to a value of a `struct` declared in the program.
+    Struct(TyId),
 }
 
 impl Ty {
     /// The array type with elements of type `elem`.
     pub fn array_of(elem: Ty) -> Ty {
-        // `elem.name()` locks `TYPES` too, so it runs before the lock is taken here.
-        let elem_name = elem.name();
-        let mut t = types();
-        if let Some(i) = t.iter().position(|(e, _)| *e == elem) {
-            return Ty::Array(TyId(i as u32));
-        }
-        let name: &'static str = Box::leak(format!("{elem_name}[]").into_boxed_str());
-        t.push((elem, name));
-        Ty::Array(TyId((t.len() - 1) as u32))
+        let name = format!("{}[]", elem.name());
+        Ty::Array(intern(Key::Array(elem), Some(elem), name))
+    }
+
+    /// The type of the `struct` named `name`.
+    pub fn struct_named(name: &str) -> Ty {
+        Ty::Struct(intern(
+            Key::Struct(name.to_string()),
+            None,
+            name.to_string(),
+        ))
     }
 
     /// The element type of an array type.
     pub fn elem(self) -> Option<Ty> {
         match self {
-            Ty::Array(TyId(i)) => types().get(i as usize).map(|(e, _)| *e),
+            Ty::Array(TyId(i)) => types().entries.get(i as usize).and_then(|(e, _)| *e),
             _ => None,
         }
     }
 
-    /// Types an array may hold: build-time classical values and arrays of them.
+    /// Types arrays and struct fields may hold: build-time classical values, arrays and structs.
     pub fn is_element(self) -> bool {
         matches!(
             self,
-            Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Array(_)
+            Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Array(_) | Ty::Struct(_)
         )
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Ty::Array(TyId(i)) => types().get(i as usize).map_or("{error}", |(_, n)| *n),
+            Ty::Array(TyId(i)) | Ty::Struct(TyId(i)) => types()
+                .entries
+                .get(i as usize)
+                .map_or("{error}", |(_, n)| *n),
             Ty::Int => "int",
             Ty::Double => "double",
             Ty::Boolean => "boolean",
@@ -123,7 +160,22 @@ pub struct Ident {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub imports: Vec<Import>,
+    pub structs: Vec<StructDecl>,
     pub fns: Vec<FnDecl>,
+}
+
+/// `struct Point { double x; double y; }`
+#[derive(Debug, Clone)]
+pub struct StructDecl {
+    pub name: Ident,
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub ty: Ty,
+    pub ty_span: Span,
+    pub name: Ident,
 }
 
 /// `import pkg.module.function;` or `import pkg.module.*;`
@@ -198,6 +250,14 @@ pub enum Stmt {
     },
     Return {
         value: Option<Expr>,
+        span: Span,
+    },
+    // `p.x = v;` or `p.x op= v;` (`base` may be any expression of a struct type).
+    SetField {
+        base: Expr,
+        name: Ident,
+        op: Option<BinOp>,
+        value: Expr,
         span: Span,
     },
     // `a[i] = v;` or `a[i] op= v;` (`base` may itself be an index, as in `m[i][j] = v`).
@@ -293,6 +353,16 @@ pub enum ExprKind {
         op: BinOp,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+    },
+    // `new Point(1.0, 2.0)`: the fields in declaration order.
+    NewStruct {
+        ty: Ty,
+        args: Vec<Expr>,
+    },
+    // `p.x`
+    Field {
+        recv: Box<Expr>,
+        name: Ident,
     },
     // `new int[n]`, `new double[r][c]`, `new int[n][]`: `ty` is the resulting array type; one
     // length per given dimension, missing inner dimensions are empty arrays.

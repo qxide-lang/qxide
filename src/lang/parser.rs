@@ -5,6 +5,8 @@ use super::diag::{Code, Diagnostic, Span};
 use super::lexer::{Tok, Token};
 use super::msg;
 
+use std::collections::HashSet;
+
 // Bounds recursion on hostile input (deeply nested parentheses or blocks).
 pub const MAX_DEPTH: usize = 128;
 
@@ -12,21 +14,40 @@ pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     depth: usize,
+    // Names of the structs this file declares (found before parsing, so types may be used
+    // before their declaration).
+    structs: HashSet<String>,
 }
 
 type PResult<T> = Result<T, Diagnostic>;
 
 pub fn parse(toks: Vec<Token>) -> PResult<Program> {
+    let mut structs = HashSet::new();
+    let mut depth = 0usize;
+    for w in toks.windows(2) {
+        match &w[0].tok {
+            Tok::LBrace => depth += 1,
+            Tok::RBrace => depth = depth.saturating_sub(1),
+            Tok::Struct if depth == 0 => {
+                if let Tok::Ident(n) = &w[1].tok {
+                    structs.insert(n.clone());
+                }
+            }
+            _ => {}
+        }
+    }
     let mut p = Parser {
         toks,
         pos: 0,
         depth: 0,
+        structs,
     };
     let mut imports = Vec::new();
     while p.peek() == &Tok::Import {
         imports.push(p.import()?);
     }
     let mut fns = Vec::new();
+    let mut structs = Vec::new();
     while p.peek() != &Tok::Eof {
         if p.peek() == &Tok::Import {
             return Err(Diagnostic::new(
@@ -35,9 +56,17 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
                 msg::misplaced_import(),
             ));
         }
-        fns.push(p.fn_decl()?);
+        if p.peek() == &Tok::Struct {
+            structs.push(p.struct_decl()?);
+        } else {
+            fns.push(p.fn_decl()?);
+        }
     }
-    Ok(Program { imports, fns })
+    Ok(Program {
+        imports,
+        structs,
+        fns,
+    })
 }
 
 impl Parser {
@@ -121,7 +150,7 @@ impl Parser {
             )),
             Tok::Ident(name) => {
                 let span = self.bump().span;
-                let Some(mut t) = Ty::from_name(&name) else {
+                let Some(mut t) = self.named_ty(&name) else {
                     return Err(Diagnostic::new(
                         Code::UnknownType,
                         span,
@@ -146,9 +175,18 @@ impl Parser {
     // `new int[n][m]`, `new int[n][]` or `new int[]{1, 2}`, after the `new`.
     fn new_array(&mut self, start: Span) -> PResult<Expr> {
         let (elem, _) = match self.peek() {
-            Tok::Ident(n) if Ty::from_name(n).is_some() => self.ty()?,
+            Tok::Ident(n) if self.is_type_name(n) => self.ty()?,
             t => return Err(self.unexpected(msg::expected_type(&t.describe()))),
         };
+        // `new Point(1.0, 2.0)`
+        if matches!(elem, Ty::Struct(_)) && self.peek() == &Tok::LParen {
+            self.bump();
+            let (args, end) = self.call_args()?;
+            return Ok(Expr {
+                kind: ExprKind::NewStruct { ty: elem, args },
+                span: start.to(end),
+            });
+        }
         let mut ty = elem;
         let mut dims = Vec::new();
         let mut end = self.prev_span();
@@ -252,6 +290,31 @@ impl Parser {
             item = module.pop();
         }
         Ok(Import { module, item, span })
+    }
+
+    // `struct Name { Type field; ... }`
+    fn struct_decl(&mut self) -> PResult<StructDecl> {
+        self.bump();
+        let name = self.name()?;
+        self.expect(Tok::LBrace)?;
+        let mut fields = Vec::new();
+        while self.peek() != &Tok::RBrace {
+            let (ty, ty_span) = self.ty()?;
+            let name = self.name()?;
+            self.expect(Tok::Semi)?;
+            fields.push(Field { ty, ty_span, name });
+        }
+        self.expect(Tok::RBrace)?;
+        Ok(StructDecl { name, fields })
+    }
+
+    // A built-in type name or a struct of this file.
+    fn named_ty(&self, name: &str) -> Option<Ty> {
+        Ty::from_name(name).or_else(|| self.structs.contains(name).then(|| Ty::struct_named(name)))
+    }
+
+    fn is_type_name(&self, name: &str) -> bool {
+        Ty::from_name(name).is_some() || self.structs.contains(name)
     }
 
     // `[public] ReturnType name(Type a, consume Type b) { ... }`
@@ -377,6 +440,18 @@ impl Parser {
                         t => compound_op(t).map(Some),
                     };
                     match (op, e.kind) {
+                        (Some(op), ExprKind::Field { recv, name }) => {
+                            self.bump();
+                            let value = self.expr()?;
+                            let end = self.expect(Tok::Semi)?;
+                            stmts.push(Stmt::SetField {
+                                base: *recv,
+                                name,
+                                op,
+                                value,
+                                span: e.span.to(end),
+                            });
+                        }
                         (Some(op), ExprKind::Index { base, index }) => {
                             self.bump();
                             let value = self.expr()?;
@@ -594,6 +669,18 @@ impl Parser {
             } else if self.eat(&Tok::Dot) {
                 // `r.as_int()`, or a call through a module alias: `fs.read_text(path)`.
                 let name = self.ident()?;
+                // `p.x`: a field.
+                if self.peek() != &Tok::LParen {
+                    let span = e.span.to(name.span);
+                    e = Expr {
+                        kind: ExprKind::Field {
+                            recv: Box::new(e),
+                            name,
+                        },
+                        span,
+                    };
+                    continue;
+                }
                 self.expect(Tok::LParen)?;
                 let (args, end) = self.call_args()?;
                 let span = e.span.to(end);
@@ -651,7 +738,7 @@ impl Parser {
             // an array, so variables and functions named `new` keep working.
             Tok::Ident(name)
                 if name == "new"
-                    && matches!(self.peek_at(1), Tok::Ident(t) if Ty::from_name(t).is_some()) =>
+                    && matches!(self.peek_at(1), Tok::Ident(t) if self.is_type_name(t)) =>
             {
                 self.bump();
                 return self.new_array(span);

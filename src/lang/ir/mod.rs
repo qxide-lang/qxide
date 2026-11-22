@@ -40,6 +40,8 @@ pub enum IrTy {
     Unit,
     // A shared array of the given element type (`IrTy::of(elem)` for loads).
     Array(TyId),
+    // A shared struct value; fields are resolved to indices when lowering.
+    Struct(TyId),
 }
 
 impl IrTy {
@@ -56,6 +58,7 @@ impl IrTy {
             Ty::Qubit => IrTy::Qubit,
             Ty::QReg => IrTy::QReg,
             Ty::Array(id) => IrTy::Array(id),
+            Ty::Struct(id) => IrTy::Struct(id),
             Ty::Void | Ty::Error => IrTy::Unit,
         }
     }
@@ -82,6 +85,7 @@ impl IrTy {
             IrTy::QReg => "qreg",
             IrTy::Unit => "unit",
             IrTy::Array(id) => Ty::Array(id).name(),
+            IrTy::Struct(id) => Ty::Struct(id).name(),
         }
     }
 
@@ -219,6 +223,28 @@ pub enum Inst {
         dst: Reg,
         ty: Ty,
         elems: Box<[Reg]>,
+        span: Span,
+    },
+    /// `new Point(a, b)`: one register per field, already widened.
+    NewStruct {
+        dst: Reg,
+        ty: Ty,
+        args: Box<[Reg]>,
+        span: Span,
+    },
+    /// `p.f` by field index.
+    GetField {
+        dst: Reg,
+        recv: Reg,
+        index: u32,
+        span: Span,
+    },
+    /// `p.f = v` or `p.f op= v` by field index.
+    SetField {
+        base: Reg,
+        index: u32,
+        op: Option<BinOp>,
+        value: Reg,
         span: Span,
     },
     /// `a[i] = v` or `a[i] op= v`.
@@ -377,6 +403,8 @@ pub struct Func {
 pub struct Module {
     pub funcs: Vec<Func>,
     pub index: HashMap<String, FuncId>,
+    // Struct field layouts of the lowered program.
+    pub layouts: Rc<super::record::Layouts>,
 }
 
 /// Lowers a checked program and, in debug builds and tests, verifies the result.
@@ -570,6 +598,28 @@ impl Func {
                 let elems: Vec<String> = elems.iter().map(|a| r(*a)).collect();
                 format!("{} = array {} {{{}}}", r(*dst), ty.name(), elems.join(", "))
             }
+            Inst::NewStruct { dst, ty, args, .. } => {
+                let args: Vec<String> = args.iter().map(|a| r(*a)).collect();
+                format!("{} = new {}({})", r(*dst), ty.name(), args.join(", "))
+            }
+            Inst::GetField {
+                dst, recv, index, ..
+            } => format!("{} = field {}.{index}", r(*dst), r(*recv)),
+            Inst::SetField {
+                base,
+                index,
+                op,
+                value,
+                ..
+            } => match op {
+                Some(op) => format!(
+                    "setfield.{} {}.{index}, {}",
+                    op_name(*op),
+                    r(*base),
+                    r(*value)
+                ),
+                None => format!("setfield {}.{index}, {}", r(*base), r(*value)),
+            },
             Inst::SetIndex {
                 base,
                 index,

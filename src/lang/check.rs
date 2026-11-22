@@ -124,6 +124,16 @@ fn scan_block(b: &Block, out: &mut Scan) {
                 scan_expr(index, out);
                 scan_expr(value, out);
             }
+            // Structs are shared references too.
+            Stmt::SetField {
+                base, value, span, ..
+            } => {
+                if out.op.is_none() {
+                    out.op = Some((*span, FIELD_STORE.to_string()));
+                }
+                scan_expr(base, out);
+                scan_expr(value, out);
+            }
             Stmt::Expr(e) => scan_expr(e, out),
         }
     }
@@ -169,11 +179,14 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
             scan_expr(lhs, out);
             scan_expr(rhs, out);
         }
-        ExprKind::NewArray { dims: items, .. } | ExprKind::ArrayLit { elems: items, .. } => {
+        ExprKind::NewArray { dims: items, .. }
+        | ExprKind::ArrayLit { elems: items, .. }
+        | ExprKind::NewStruct { args: items, .. } => {
             for a in items {
                 scan_expr(a, out);
             }
         }
+        ExprKind::Field { recv, .. } => scan_expr(recv, out),
         ExprKind::Int(_)
         | ExprKind::Double(_)
         | ExprKind::Bool(_)
@@ -182,8 +195,9 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
     }
 }
 
-// How an array element store is named in diagnostics.
+// How array element and struct field stores are named in diagnostics.
 const ARRAY_STORE: &str = "a[i] = v";
+const FIELD_STORE: &str = "p.f = v";
 
 // An enclosing `for` or `while`, for `break` and `continue`.
 struct Loop {
@@ -198,6 +212,8 @@ struct Loop {
 
 struct Checker {
     fns: HashMap<String, Sig>,
+    // Fields of every struct, in declaration order.
+    structs: HashMap<Ty, Vec<(String, Ty)>>,
     // Functions that cannot run inside an `if` on a `Bit`, with the first reason found.
     unconditional: HashMap<String, (Span, Unconditional)>,
     vars: Vec<Var>,
@@ -215,6 +231,7 @@ struct Checker {
 pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
     let mut c = Checker {
         fns: HashMap::new(),
+        structs: HashMap::new(),
         unconditional: HashMap::new(),
         vars: Vec::new(),
         scopes: Vec::new(),
@@ -224,6 +241,7 @@ pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
         ret: Ty::Void,
         errors: Vec::new(),
     };
+    c.struct_decls(p);
     c.signatures(p, require_main);
     c.conditional_safety(p);
     for f in &p.fns {
@@ -237,6 +255,84 @@ impl Checker {
     fn err(&mut self, code: Code, span: Span, message: String) -> &mut Diagnostic {
         self.errors.push(Diagnostic::new(code, span, message));
         self.errors.last_mut().unwrap()
+    }
+
+    // Struct names are unique, fields are unique and of build-time classical types, and no
+    // struct contains itself (directly or through arrays): there is no `null` to end a chain.
+    fn struct_decls(&mut self, p: &Program) {
+        for s in &p.structs {
+            let ty = Ty::struct_named(&s.name.name);
+            if self.structs.contains_key(&ty) {
+                self.err(
+                    Code::Duplicate,
+                    s.name.span,
+                    msg::duplicate_def(&s.name.name),
+                );
+                continue;
+            }
+            let mut fields: Vec<(String, Ty)> = Vec::new();
+            for f in &s.fields {
+                if fields.iter().any(|(n, _)| *n == f.name.name) {
+                    self.err(
+                        Code::Duplicate,
+                        f.name.span,
+                        msg::duplicate_def(&f.name.name),
+                    );
+                    continue;
+                }
+                let mut inner = f.ty;
+                while let Some(e) = inner.elem() {
+                    inner = e;
+                }
+                let ty = if inner.is_element() {
+                    f.ty
+                } else {
+                    self.err(
+                        Code::BadFieldType,
+                        f.ty_span,
+                        msg::bad_field_type(inner.name()),
+                    );
+                    Ty::Error
+                };
+                fields.push((f.name.name.clone(), ty));
+            }
+            self.structs.insert(ty, fields);
+        }
+        let strip = |mut t: Ty| {
+            while let Some(e) = t.elem() {
+                t = e;
+            }
+            t
+        };
+        for s in &p.structs {
+            let me = Ty::struct_named(&s.name.name);
+            for f in &s.fields {
+                // Depth-first over the struct types reachable from this field.
+                let mut stack = vec![strip(f.ty)];
+                let mut seen = Vec::new();
+                let mut cycle = false;
+                while let Some(t) = stack.pop() {
+                    if t == me {
+                        cycle = true;
+                        break;
+                    }
+                    if !matches!(t, Ty::Struct(_)) || seen.contains(&t) {
+                        continue;
+                    }
+                    seen.push(t);
+                    if let Some(fs) = self.structs.get(&t) {
+                        stack.extend(fs.iter().map(|(_, ft)| strip(*ft)));
+                    }
+                }
+                if cycle {
+                    self.err(
+                        Code::BadFieldType,
+                        f.ty_span,
+                        msg::recursive_struct(&s.name.name),
+                    );
+                }
+            }
+        }
     }
 
     fn signatures(&mut self, p: &Program, require_main: bool) {
@@ -486,6 +582,7 @@ impl Checker {
                         | Ty::Boolean
                         | Ty::String
                         | Ty::Array(_)
+                        | Ty::Struct(_)
                         | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
@@ -632,6 +729,16 @@ impl Checker {
                 span,
             } => {
                 self.set_index(base, index, *op, value, *span);
+                false
+            }
+            Stmt::SetField {
+                base,
+                name,
+                op,
+                value,
+                span,
+            } => {
+                self.set_field(base, name, *op, value, *span);
                 false
             }
             Stmt::Break { span } => self.loop_exit("break", *span),
@@ -991,6 +1098,29 @@ impl Checker {
                 }
             }
             ExprKind::ArrayLit { ty, elems } => self.array_lit(*ty, elems, e.span),
+            ExprKind::NewStruct { ty, args } => {
+                let fields = self.structs.get(ty).cloned().unwrap_or_default();
+                if fields.len() != args.len() {
+                    self.err(
+                        Code::Arity,
+                        e.span,
+                        msg::arity(ty.name(), fields.len(), args.len()),
+                    );
+                    for a in args {
+                        self.expr(a);
+                    }
+                    return Ty::Error;
+                }
+                for (a, (_, want)) in args.iter().zip(fields) {
+                    let found = self.expr(a);
+                    self.expect_ty(a.span, want, found);
+                }
+                *ty
+            }
+            ExprKind::Field { recv, name } => {
+                let t = self.expr(recv);
+                self.field_ty(t, name)
+            }
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
                 if t == Ty::String {
@@ -1185,6 +1315,59 @@ impl Checker {
                 return;
             }
         };
+        self.store(elem, op, v, value);
+    }
+
+    // The type `p.f` has, or `Q0226`.
+    fn field_ty(&mut self, t: Ty, name: &Ident) -> Ty {
+        if t == Ty::Error {
+            return Ty::Error;
+        }
+        let found = self
+            .structs
+            .get(&t)
+            .and_then(|fs| fs.iter().find(|(n, _)| *n == name.name))
+            .map(|(_, ft)| *ft);
+        found.unwrap_or_else(|| {
+            self.err(
+                Code::UnknownField,
+                name.span,
+                msg::unknown_field(&name.name, t.name()),
+            );
+            Ty::Error
+        })
+    }
+
+    // `p.f = v` and `p.f op= v`: like `a[i] = v` with the field's type.
+    fn set_field(
+        &mut self,
+        base: &Expr,
+        name: &Ident,
+        op: Option<BinOp>,
+        value: &Expr,
+        span: Span,
+    ) {
+        let b = self.expr(base);
+        let v = self.expr(value);
+        if let Some(&at) = self.bit_ifs.last() {
+            self.err(
+                Code::ForbiddenInBitIf,
+                span,
+                msg::forbidden_in_bit_if(FIELD_STORE),
+            )
+            .notes
+            .push(note(at, msg::note_bit_if_here()));
+            return;
+        }
+        let ft = self.field_ty(b, name);
+        self.store(ft, op, v, value);
+    }
+
+    // Storing a value of type `v` (or `slot op v`) into a slot of type `slot`.
+    fn store(&mut self, elem: Ty, op: Option<BinOp>, v: Ty, value: &Expr) {
+        if elem == Ty::Error {
+            return;
+        }
         let found = match op {
             None => v,
             Some(_) if v == Ty::Error || elem == Ty::Error => Ty::Error,

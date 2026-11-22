@@ -1553,6 +1553,163 @@ void main() {
     );
 }
 
+pub(super) const STRUCTS: &str = "struct Vec2 {
+    double x;
+    double y;
+}
+
+struct Body {
+    String name;
+    Vec2 pos;
+    Vec2 vel;
+    double mass;
+    int[] tags;
+}
+
+void step(Body b, double dt) {
+    b.pos.x += b.vel.x * dt;
+    b.pos.y += b.vel.y * dt;
+}
+
+double energy(Body[] bodies) {
+    double e = 0;
+    for i in 0..len(bodies) {
+        Vec2 v = bodies[i].vel;
+        e += 0.5 * bodies[i].mass * (v.x * v.x + v.y * v.y);
+    }
+    return e;
+}
+
+void main() {
+    Body[] bodies = new Body[2];
+    bodies[0] = new Body(\"sun\", new Vec2(0, 0), new Vec2(0, 0), 100, new int[0]);
+    bodies[1] = new Body(\"probe\", new Vec2(1, 0), new Vec2(0, 2), 1, new int[]{7});
+    Body p = bodies[1];
+    for k in 0..10 {
+        step(p, 0.1);
+    }
+    bodies[1].mass *= 2;
+    Vec2 d = new Vec2(1, 2);
+    Vec2 alias = d;
+    alias.y = 5;
+    println(\"{} {} {} {} {}\", p.name, bodies[1].pos.y, energy(bodies), d.y, bodies[1].tags[0]);
+    Body[] blanks = new Body[1];
+    Body blank = blanks[0];
+    println(\"[{}] {} {} {}\", blank.name, blank.pos.x, len(blank.tags), blank.mass);
+}
+";
+
+#[test]
+fn structs_are_shared_references_with_defaults() {
+    assert_eq!(
+        run_ok(STRUCTS, 1),
+        "probe 1.9999999999999998 4.0 5.0 7
+[] 0.0 0 0.0
+"
+    );
+    // Types may be used before their declaration; `new` and field names stay usable as names.
+    ok(
+        "void main() { P p = new P(1); int new = p.x; println(\"{}\", new); }
+struct P { int x; }",
+    );
+}
+
+#[test]
+fn struct_errors() {
+    // Duplicate structs and fields, field types, recursion (directly, through arrays, mutually).
+    assert_eq!(
+        codes("struct P { int x; } struct P { int y; } void main() {}"),
+        ["Q0205"]
+    );
+    assert_eq!(
+        codes("struct P { int x; double x; } void main() {}"),
+        ["Q0205"]
+    );
+    assert_eq!(codes("struct P { Qubit q; } void main() {}"), ["Q0227"]);
+    assert_eq!(codes("struct N { N next; } void main() {}"), ["Q0227"]);
+    assert_eq!(codes("struct N { N[] kids; } void main() {}"), ["Q0227"]);
+    assert_eq!(
+        codes("struct A { B b; } struct B { A[] a; } void main() {}"),
+        ["Q0227", "Q0227"]
+    );
+    // Construction arity and types, unknown fields, field stores.
+    let p = |body: &str| {
+        codes(&format!(
+            "struct P {{ int x; String s; }}
+void main() {{
+{body}
+}}
+"
+        ))
+    };
+    assert_eq!(p("    P a = new P(1);"), ["Q0203"]);
+    assert_eq!(p("    P a = new P(1.5, \"s\");"), ["Q0204"]);
+    assert_eq!(
+        p("    P a = new P(1, \"s\");
+    int y = a.y;"),
+        ["Q0226"]
+    );
+    assert_eq!(
+        p("    int n = 1;
+    int y = n.x;"),
+        ["Q0226"]
+    );
+    assert_eq!(
+        p("    P a = new P(1, \"s\");
+    a.x = \"t\";"),
+        ["Q0204"]
+    );
+    assert_eq!(
+        p("    P a = new P(1, \"s\");
+    a.s += 1;
+    a.x += 2;"),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        p("    P a = new P(1, \"s\");
+    println(\"{}\", a);"),
+        ["Q0212"]
+    );
+    assert_eq!(
+        p("    Qubit q = qubit();
+    int y = q.x;
+    discard(q);"),
+        ["Q0226"]
+    );
+    // Field stores may not run inside an `if` on a measured bit, directly, through an array
+    // element, or via a call.
+    let bit = |body: &str| {
+        codes(&format!(
+            "struct P {{ int x; }}
+void set(P p) {{ p.x = 1; }}
+void main() {{
+    P a = new P(0);
+    P[] ps = {{a}};
+    Qubit q = qubit();
+    Bit b = measure(q);
+    if b {{
+{body}
+    }}
+}}
+"
+        ))
+    };
+    assert_eq!(bit("        a.x = 2;"), ["Q0308"]);
+    assert_eq!(bit("        ps[0].x = 2;"), ["Q0308"]);
+    assert_eq!(bit("        set(a);"), ["Q0314"]);
+    assert_eq!(bit("        int k = a.x + ps[0].x;"), Vec::<&str>::new());
+    // Construction is charged before the struct is built.
+    let rt = |src: &str| runtime_error(src).0;
+    assert_eq!(
+        rt("struct P { int x; double y; String s; }
+void main() {
+    P[] ps = new P[100000000];
+}
+"),
+        "Q0413"
+    );
+}
+
 // Each kind at the limit, inside the deepest allowed recursion, must run on half of `STACK_SIZE`
 // (measured worst case: ~100 MiB unoptimized, ~45 MiB optimized). The parser and checker also
 // run on that thread, as in the CLI: unoptimized they need more than a test thread's 2 MiB.
