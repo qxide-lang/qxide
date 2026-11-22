@@ -44,6 +44,8 @@ pub enum IrTy {
     Struct(TyId),
     // An immutable enum value; variants are resolved to tags when lowering.
     Enum(TyId),
+    // A struct or enum value seen through an interface; calls dispatch on its run-time type.
+    Iface(TyId),
 }
 
 impl IrTy {
@@ -62,6 +64,7 @@ impl IrTy {
             Ty::Array(id) => IrTy::Array(id),
             Ty::Struct(id) => IrTy::Struct(id),
             Ty::Enum(id) => IrTy::Enum(id),
+            Ty::Iface(id) => IrTy::Iface(id),
             // Monomorphization leaves no type parameter in a lowered program.
             Ty::Void | Ty::Error | Ty::Param(_) => IrTy::Unit,
         }
@@ -91,6 +94,7 @@ impl IrTy {
             IrTy::Array(id) => Ty::Array(id).name(),
             IrTy::Struct(id) => Ty::Struct(id).name(),
             IrTy::Enum(id) => Ty::Enum(id).name(),
+            IrTy::Iface(id) => Ty::Iface(id).name(),
         }
     }
 
@@ -147,6 +151,11 @@ pub enum Inst {
     },
     /// `int` to `double` (Java widening at declarations, assignments, calls and returns).
     Widen {
+        dst: Reg,
+        src: Reg,
+    },
+    /// A struct or enum value used where an interface is expected: the same value.
+    Upcast {
         dst: Reg,
         src: Reg,
     },
@@ -360,6 +369,14 @@ pub enum Inst {
         args: Box<[Reg]>,
         span: Span,
     },
+    /// `v.m(args)` on an interface value `v` (`args[0]`): the method `m` of the run-time type
+    /// of `v` (`Module::methods`).
+    CallDyn {
+        method: Rc<str>,
+        dst: Reg,
+        args: Box<[Reg]>,
+        span: Span,
+    },
     /// `if` on a measured bit: records the regions as conditional blocks of the circuit.
     /// Each region is a sub-graph entered at its block and left by `Term::RegionEnd`.
     IfBit {
@@ -431,6 +448,17 @@ pub struct Module {
     pub index: HashMap<String, FuncId>,
     // Struct field layouts of the lowered program.
     pub layouts: Rc<super::record::Layouts>,
+    // Method functions by receiver type, then method name.
+    pub methods: HashMap<Ty, HashMap<String, FuncId>>,
+}
+
+impl Module {
+    /// Every method function named `method`, of any type.
+    pub fn methods_named<'a>(&'a self, method: &'a str) -> impl Iterator<Item = FuncId> + 'a {
+        self.methods
+            .values()
+            .filter_map(move |ms| ms.get(method).copied())
+    }
 }
 
 /// Lowers a checked program and, in debug builds and tests, verifies the result.
@@ -547,6 +575,7 @@ impl Func {
             Inst::Load { dst, slot } => format!("{} = load {}", r(*dst), self.slot(*slot)),
             Inst::Store { slot, src } => format!("store {}, {}", self.slot(*slot), r(*src)),
             Inst::Widen { dst, src } => format!("{} = widen {}", r(*dst), r(*src)),
+            Inst::Upcast { dst, src } => format!("{} = upcast {}", r(*dst), r(*src)),
             Inst::IntOp { op, dst, a, b, .. } => {
                 format!("{} = {}.i64 {}, {}", r(*dst), op_name(*op), r(*a), r(*b))
             }
@@ -699,6 +728,16 @@ impl Func {
                     format!("call {name}({})", args.join(", "))
                 } else {
                     format!("{} = call {name}({})", r(*dst), args.join(", "))
+                }
+            }
+            Inst::CallDyn {
+                method, dst, args, ..
+            } => {
+                let args: Vec<String> = args.iter().map(|a| r(*a)).collect();
+                if self.regs[*dst as usize] == IrTy::Unit {
+                    format!("call.dyn {method}({})", args.join(", "))
+                } else {
+                    format!("{} = call.dyn {method}({})", r(*dst), args.join(", "))
                 }
             }
             Inst::IfBit { bit, then, els, .. } => match els {

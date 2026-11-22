@@ -67,8 +67,19 @@
           "captures": {
             "1": { "name": "storage.modifier.qx" },
             "2": { "name": "punctuation.definition.typeparameters.begin.qx" },
-            "3": { "patterns": [{ "include": "#type-parameter-name" }] },
+            "3": { "patterns": [{ "include": "#type-parameter-bound" }, { "include": "#type-parameter-name" }] },
             "4": { "name": "punctuation.definition.typeparameters.end.qx" }
+          }
+        },
+        {
+          "comment": "`interface Ordered<T>`",
+          "match": "\\b(interface)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(<)([^<>]*)(>)",
+          "captures": {
+            "1": { "name": "storage.type.interface.qx" },
+            "2": { "name": "entity.name.type.qx" },
+            "3": { "name": "punctuation.definition.typeparameters.begin.qx" },
+            "4": { "patterns": [{ "include": "#type-parameter-name" }] },
+            "5": { "name": "punctuation.definition.typeparameters.end.qx" }
           }
         },
         {
@@ -84,6 +95,14 @@
         }
       ]
     },
+    "type-parameter-bound": {
+      "comment": "`extends Shape` in `<T extends Shape>`",
+      "match": "\\b(extends)\\s+([\\p{L}_][\\p{L}\\p{N}_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.extends.qx" },
+        "2": { "name": "entity.name.type.qx" }
+      }
+    },
     "type-parameter-name": {
       "name": "entity.name.type.parameter.qx",
       "match": "[\\p{L}_][\\p{L}\\p{N}_]*"
@@ -95,6 +114,10 @@
         { "name": "storage.modifier.qx", "match": "\\b(final|var|consume|public)\\b" },
         { "name": "storage.type.struct.qx", "match": "\\bstruct\\b" },
         { "name": "storage.type.enum.qx", "match": "\\benum\\b" },
+        { "name": "storage.type.interface.qx", "match": "\\binterface\\b(?=\\s+[\\p{L}_])" },
+        { "name": "keyword.other.implements.qx", "match": "\\bimplements\\b(?=\\s+[\\p{L}_])" },
+        { "name": "keyword.other.extends.qx", "match": "\\bextends\\b(?=\\s+[\\p{L}_])" },
+        { "name": "variable.language.this.qx", "match": "\\bthis\\b" },
         {
           "name": "keyword.other.reserved.qx",
           "match": "\\b(loop|impl|use|mod|const|with_ancilla|apply|let|fn|mut)\\b"

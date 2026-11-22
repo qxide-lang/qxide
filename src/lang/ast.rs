@@ -79,6 +79,8 @@ pub enum Ty {
     Enum(TyId),
     // `T` inside a generic declaration: an opaque classical type until monomorphization.
     Param(TyId),
+    // `Shape`: a reference to a value of any struct or enum that implements the `interface`.
+    Iface(TyId),
 }
 
 impl Ty {
@@ -98,6 +100,11 @@ impl Ty {
         Ty::Enum(named(name))
     }
 
+    /// The type of the `interface` named `name`.
+    pub fn iface_named(name: &str) -> Ty {
+        Ty::Iface(named(name))
+    }
+
     /// The type parameter named `name`.
     pub fn param_named(name: &str) -> Ty {
         Ty::Param(intern(Key::Param(name.to_string()), None, name.to_string()))
@@ -115,6 +122,7 @@ impl Ty {
             .or_insert_with(|| (base, args.to_vec()));
         match base {
             Ty::Enum(_) => Ty::Enum(id),
+            Ty::Iface(_) => Ty::Iface(id),
             _ => Ty::Struct(id),
         }
     }
@@ -122,7 +130,9 @@ impl Ty {
     /// The generic base and type arguments of an instance type.
     pub fn generic_args(self) -> Option<(Ty, Vec<Ty>)> {
         match self {
-            Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) => types().insts.get(&i).cloned(),
+            Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) | Ty::Iface(TyId(i)) => {
+                types().insts.get(&i).cloned()
+            }
             _ => None,
         }
     }
@@ -153,7 +163,7 @@ impl Ty {
         match self {
             Ty::Param(_) => true,
             Ty::Array(_) => self.elem().is_some_and(Ty::has_param),
-            Ty::Struct(_) | Ty::Enum(_) => self
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) => self
                 .generic_args()
                 .is_some_and(|(_, a)| a.iter().any(|t| t.has_param())),
             _ => false,
@@ -164,7 +174,7 @@ impl Ty {
     pub fn size(self) -> usize {
         match self {
             Ty::Array(_) => 1 + self.elem().map_or(0, Ty::size),
-            Ty::Struct(_) | Ty::Enum(_) => {
+            Ty::Struct(_) | Ty::Enum(_) | Ty::Iface(_) => {
                 1 + self
                     .generic_args()
                     .map_or(0, |(_, a)| a.iter().map(|t| t.size()).sum())
@@ -194,17 +204,20 @@ impl Ty {
                 | Ty::Struct(_)
                 | Ty::Enum(_)
                 | Ty::Param(_)
+                | Ty::Iface(_)
         )
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Ty::Array(TyId(i)) | Ty::Struct(TyId(i)) | Ty::Enum(TyId(i)) | Ty::Param(TyId(i)) => {
-                types()
-                    .entries
-                    .get(i as usize)
-                    .map_or("{error}", |(_, n)| *n)
-            }
+            Ty::Array(TyId(i))
+            | Ty::Struct(TyId(i))
+            | Ty::Enum(TyId(i))
+            | Ty::Param(TyId(i))
+            | Ty::Iface(TyId(i)) => types()
+                .entries
+                .get(i as usize)
+                .map_or("{error}", |(_, n)| *n),
             Ty::Int => "int",
             Ty::Double => "double",
             Ty::Boolean => "boolean",
@@ -260,7 +273,84 @@ pub struct Program {
     pub imports: Vec<Import>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
+    pub ifaces: Vec<IfaceDecl>,
     pub fns: Vec<FnDecl>,
+}
+
+impl Program {
+    /// Moves the methods of every struct and enum into `fns` as ordinary functions: `len` of
+    /// `Vec2` becomes `Vec2.len` with a first parameter `this` of the type (`Box<T>` for a generic
+    /// type, whose parameters the method shares). Linking and the IDE call this once the bodies
+    /// are final; later passes see methods only through `FnDecl::method`.
+    pub fn lift_methods(&mut self) {
+        let mut lifted = Vec::new();
+        let owners = self
+            .structs
+            .iter_mut()
+            .map(|s| {
+                (
+                    Ty::struct_named(&s.name.name),
+                    &s.name,
+                    &s.params,
+                    &mut s.methods,
+                )
+            })
+            .chain(self.enums.iter_mut().map(|e| {
+                (
+                    Ty::enum_named(&e.name.name),
+                    &e.name,
+                    &e.params,
+                    &mut e.methods,
+                )
+            }));
+        for (base, name, params, methods) in owners {
+            let this = if params.is_empty() {
+                base
+            } else {
+                let args: Vec<Ty> = params.iter().map(|p| Ty::param_named(&p.name)).collect();
+                Ty::instance(base, &args)
+            };
+            for mut f in std::mem::take(methods) {
+                let method = std::mem::take(&mut f.name.name);
+                f.name.name = format!("{}.{method}", name.name);
+                f.tparams = params.clone();
+                f.bounds = vec![None; params.len()];
+                f.params.insert(
+                    0,
+                    Param {
+                        consume: None,
+                        name: Ident {
+                            name: "this".to_string(),
+                            span: f.name.span,
+                        },
+                        ty: this,
+                        ty_span: name.span,
+                    },
+                );
+                f.method = Some(method);
+                lifted.push(f);
+            }
+        }
+        self.fns.extend(lifted);
+    }
+}
+
+/// `interface Shape { double area(); }` or `interface Ordered<T> { int compare(T other); }`
+#[derive(Debug, Clone)]
+pub struct IfaceDecl {
+    pub name: Ident,
+    // Type parameters (`<T>`), empty for an ordinary interface.
+    pub params: Vec<Ident>,
+    pub methods: Vec<MethodSig>,
+}
+
+/// A method an interface requires: `double area();`
+#[derive(Debug, Clone)]
+pub struct MethodSig {
+    pub name: Ident,
+    pub params: Vec<Param>,
+    pub ret: Ty,
+    pub ret_span: Span,
 }
 
 /// `enum Shape { Circle(double r), Empty }` or `enum Option<T> { None, Some(T value) }`
@@ -269,7 +359,11 @@ pub struct EnumDecl {
     pub name: Ident,
     // Type parameters (`<T>`), empty for an ordinary enum.
     pub params: Vec<Ident>,
+    // `implements Shape, Ordered<Money>`: the interfaces and where each is written.
+    pub implements: Vec<(Ty, Span)>,
     pub variants: Vec<Variant>,
+    // Methods declared after the variants (`Program::lift_methods` moves them to `fns`).
+    pub methods: Vec<FnDecl>,
 }
 
 /// One variant of an `enum`: its payload fields are named like parameters.
@@ -285,7 +379,11 @@ pub struct StructDecl {
     pub name: Ident,
     // Type parameters (`<A, B>`), empty for an ordinary struct.
     pub params: Vec<Ident>,
+    // `implements Shape, Ordered<Money>`: the interfaces and where each is written.
+    pub implements: Vec<(Ty, Span)>,
     pub fields: Vec<Field>,
+    // Methods declared after the fields (`Program::lift_methods` moves them to `fns`).
+    pub methods: Vec<FnDecl>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,11 +409,16 @@ pub struct FnDecl {
     pub public: Option<Span>,
     // Type parameters of a generic function (`<T> T first(T[] a)`), empty otherwise.
     pub tparams: Vec<Ident>,
+    // The bound of each type parameter (`<T extends Shape>`), `None` where there is none.
+    pub bounds: Vec<Option<(Ty, Span)>>,
     pub name: Ident,
     pub params: Vec<Param>,
     pub ret: Ty,
     pub ret_span: Span,
     pub body: Block,
+    // For a method moved out of its type (`Vec2.len`): the method's own name (`len`). Its first
+    // parameter is `this`, of the type that declares it.
+    pub method: Option<String>,
 }
 
 #[derive(Debug, Clone)]

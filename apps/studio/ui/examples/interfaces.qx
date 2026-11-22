@@ -1,0 +1,121 @@
+// Methods, interfaces, bounded generics and interface values. Classical values only.
+import std.math;
+
+interface Shape {
+    double area();
+    String name();
+}
+
+interface Ordered<T> {
+    int compare(T other);
+}
+
+struct Circle implements Shape {
+    double r;
+
+    double area() {
+        return PI * this.r * this.r;
+    }
+
+    String name() {
+        return "circle";
+    }
+}
+
+struct Rect implements Shape {
+    double w;
+    double h;
+
+    double area() {
+        return this.w * this.h;
+    }
+
+    String name() {
+        return "rect";
+    }
+
+    void scale(double k) {
+        this.w *= k;
+        this.h *= k;
+    }
+}
+
+struct Money implements Ordered<Money> {
+    int cents;
+
+    int compare(Money other) {
+        return this.cents - other.cents;
+    }
+}
+
+enum Light implements Shape {
+    Red,
+    Green;
+
+    double area() {
+        return 0.0;
+    }
+
+    String name() {
+        match this {
+            Red => {
+                return "red";
+            }
+            Green => {
+                return "green";
+            }
+        }
+    }
+}
+
+// Static dispatch: one copy per element type.
+<T extends Shape> double total(T[] xs) {
+    double sum = 0.0;
+    for i in 0..len(xs) {
+        sum += xs[i].area();
+    }
+    return sum;
+}
+
+<T extends Ordered<T>> T max_of(T[] xs) {
+    T best = xs[0];
+    for i in 1..len(xs) {
+        if xs[i].compare(best) > 0 {
+            best = xs[i];
+        }
+    }
+    return best;
+}
+
+Result<int, String> parse_all(String[] texts) {
+    int sum = 0;
+    for i in 0..len(texts) {
+        sum += texts[i].try_parse_int()?;
+    }
+    return Result.Ok(sum);
+}
+
+void main() {
+    Rect r = new Rect(2, 3);
+    r.scale(2);
+    println("rect {} x {} = {}", r.w, r.h, r.area());
+
+    Circle[] circles = {new Circle(1), new Circle(2)};
+    println("circles: {}", math.round(total(circles)));
+
+    // Dynamic dispatch: each element runs its own type's methods.
+    Shape[] shapes = {new Circle(1), r, Light.Green};
+    for i in 0..len(shapes) {
+        Shape s = shapes[i];
+        println("{} {}", s.name(), math.round(s.area()));
+    }
+    println("all: {}", math.round(total(shapes)));
+
+    Money[] prices = {new Money(250), new Money(990), new Money(120)};
+    println("max: {}", max_of(prices).cents);
+
+    String[] good = {"1", "2", "3"};
+    String[] bad = {"1", "x"};
+    println("good: {}", parse_all(good).unwrap_or(-1));
+    println("bad: {} ok={}", parse_all(bad).unwrap_or(-1), parse_all(bad).is_ok());
+}

@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::super::ast::{
-    Arm, BinOp, Block as AstBlock, Else, Expr, ExprKind, FmtPiece, FnDecl, Ident, IfStmt, PatKind,
-    Program, Stmt, Ty, UnOp,
+    Arm, BinOp, Block as AstBlock, Else, Expr, ExprKind, FmtPiece, FnDecl, Ident, IfStmt,
+    IfaceDecl, PatKind, Program, Stmt, Ty, UnOp,
 };
 use super::super::check;
 use super::super::diag::{Code, Diagnostic, Span};
@@ -38,15 +38,27 @@ pub fn lower(p: &Program) -> Module {
         );
     }
     let layouts = super::super::record::Layouts::of(p);
+    let ifaces: HashMap<&str, &IfaceDecl> =
+        p.ifaces.iter().map(|d| (d.name.name.as_str(), d)).collect();
     let funcs = p
         .fns
         .iter()
-        .map(|f| FnLower::new(f, &index, &sigs, &layouts).lower(f))
+        .map(|f| FnLower::new(f, &index, &sigs, &layouts, &ifaces).lower(f))
         .collect();
+    let mut methods: HashMap<Ty, HashMap<String, FuncId>> = HashMap::new();
+    for (i, f) in p.fns.iter().enumerate() {
+        if let (Some(m), Some(this)) = (&f.method, f.params.first()) {
+            methods
+                .entry(this.ty)
+                .or_default()
+                .insert(m.clone(), i as FuncId);
+        }
+    }
     Module {
         funcs,
         index,
         layouts,
+        methods,
     }
 }
 
@@ -65,6 +77,8 @@ struct FnLower<'p, 'a> {
     // Enclosing loops: (`continue` target, `break` target, `regions` at the loop).
     loops: Vec<(BlockId, BlockId, usize)>,
     layouts: &'a super::super::record::Layouts,
+    // Interface declarations by name, for the signatures of interface calls.
+    ifaces: &'a HashMap<&'p str, &'p IfaceDecl>,
 }
 
 impl<'p, 'a> FnLower<'p, 'a> {
@@ -73,6 +87,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
         index: &'a HashMap<String, FuncId>,
         sigs: &'a HashMap<&'p str, Sig>,
         layouts: &'a super::super::record::Layouts,
+        ifaces: &'a HashMap<&'p str, &'p IfaceDecl>,
     ) -> Self {
         let params = f
             .params
@@ -109,7 +124,24 @@ impl<'p, 'a> FnLower<'p, 'a> {
             slot_names: HashMap::new(),
             loops: Vec::new(),
             layouts,
+            ifaces,
         }
+    }
+
+    // Parameter and return types of method `m` of the interface type `t` (an instance's type
+    // arguments substituted).
+    fn iface_sig(&self, t: Ty, m: &str) -> Option<(Vec<Ty>, Ty)> {
+        let (base, args) = t.generic_args().unwrap_or((t, Vec::new()));
+        let d = self.ifaces.get(base.name())?;
+        let map: HashMap<Ty, Ty> = d
+            .params
+            .iter()
+            .map(|p| Ty::param_named(&p.name))
+            .zip(args)
+            .collect();
+        let sub = |t: Ty| t.subst(&|p| map.get(&p).copied());
+        let s = d.methods.iter().find(|s| s.name.name == m)?;
+        Some((s.params.iter().map(|p| sub(p.ty)).collect(), sub(s.ret)))
     }
 
     fn lower(mut self, f: &'p FnDecl) -> Func {
@@ -283,9 +315,15 @@ impl<'p, 'a> FnLower<'p, 'a> {
 
     // Java widening of an `int` stored into a `double` slot, parameter or return value.
     fn widen_to(&mut self, r: Reg, want: IrTy) -> Reg {
-        if want == IrTy::F64 && self.ty(r) == IrTy::I64 {
+        let have = self.ty(r);
+        if want == IrTy::F64 && have == IrTy::I64 {
             let dst = self.reg(IrTy::F64);
             self.emit(Inst::Widen { dst, src: r });
+            dst
+        } else if matches!(want, IrTy::Iface(_)) && matches!(have, IrTy::Struct(_) | IrTy::Enum(_))
+        {
+            let dst = self.reg(want);
+            self.emit(Inst::Upcast { dst, src: r });
             dst
         } else {
             r
@@ -390,7 +428,7 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 IrTy::F64 => IrTy::F64,
                 IrTy::Bool => IrTy::Bool,
                 IrTy::Str => IrTy::Str,
-                t @ (IrTy::Array(_) | IrTy::Struct(_) | IrTy::Enum(_)) => t,
+                t @ (IrTy::Array(_) | IrTy::Struct(_) | IrTy::Enum(_) | IrTy::Iface(_)) => t,
                 _ => IrTy::I64,
             },
         };
@@ -926,6 +964,25 @@ impl<'p, 'a> FnLower<'p, 'a> {
                         dst,
                         recv: v,
                         args,
+                        span: e.span,
+                    });
+                    return dst;
+                }
+                if let IrTy::Iface(id) = self.ty(v) {
+                    let Some((params, ret)) = self.iface_sig(Ty::Iface(id), &name.name) else {
+                        self.trap(internal(e.span));
+                        return self.reg(IrTy::Unit);
+                    };
+                    let mut regs = vec![v];
+                    for (a, t) in args.iter().zip(params) {
+                        let r = self.expr(a);
+                        regs.push(self.widen_to(r, IrTy::of(t)));
+                    }
+                    let dst = self.reg(IrTy::of(ret));
+                    self.emit(Inst::CallDyn {
+                        method: Rc::from(name.name.as_str()),
+                        dst,
+                        args: regs.into(),
                         span: e.span,
                     });
                     return dst;

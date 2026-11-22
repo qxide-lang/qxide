@@ -261,10 +261,21 @@ fn if_has_return(i: &ast::IfStmt, from: usize) -> bool {
 }
 
 fn is_fn_decl(input: &str) -> bool {
-    lexer::lex(input)
-        .ok()
-        .and_then(|toks| parser::parse(toks).ok())
-        .is_some_and(|p| !p.fns.is_empty() || !p.structs.is_empty() || !p.enums.is_empty())
+    let Ok(toks) = lexer::lex(input) else {
+        return false;
+    };
+    // A type declaration may name types of earlier inputs (`implements Shape`), which parsing
+    // this input alone does not know: its first words decide.
+    match (toks.first().map(|t| &t.tok), toks.get(1).map(|t| &t.tok)) {
+        (Some(lexer::Tok::Struct | lexer::Tok::Enum), _) => return true,
+        (Some(lexer::Tok::Ident(w)), Some(lexer::Tok::Ident(_))) if w == "interface" => {
+            return true
+        }
+        _ => {}
+    }
+    parser::parse(toks).is_ok_and(|p| {
+        !p.fns.is_empty() || !p.structs.is_empty() || !p.enums.is_empty() || !p.ifaces.is_empty()
+    })
 }
 
 impl Session {

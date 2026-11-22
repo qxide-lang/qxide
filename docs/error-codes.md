@@ -818,7 +818,7 @@ void main() {
 
 ## Q0225: array of an unsupported element type
 
-An array type in a declaration, parameter, return type, or `new` expression specifies an element type that arrays cannot hold. In `.qx`, arrays hold build-time classical values only: `int`, `double`, `boolean`, `String`, or arrays of these (such as `double[][]`). Qubits stay in a `QReg` and measurement results in a `BitReg`, because those are tracked by the qubit ownership rules and filled in per shot, which an ordinary array cannot follow.
+An array type in a declaration, parameter, return type, or `new` expression specifies an element type that arrays cannot hold. In `.qx`, arrays hold build-time classical values only: `int`, `double`, `boolean`, `String`, or arrays of these (such as `double[][]`). Qubits stay in a `QReg` and measurement results in a `BitReg`, because those are tracked by the qubit ownership rules and filled in per shot, which an ordinary array cannot follow. The same code is reported for `new T[n]` when the element type has no default value to fill the new elements with—an interface type (since there is no null), a struct with a field of an interface type, or an enum whose first variant holds one—so such arrays must be written with an initializer listing the elements instead.
 
 Erroneous code example:
 
@@ -873,7 +873,7 @@ void main() {
 
 ## Q0227: struct field of an unsupported type
 
-A struct field or enum variant payload field was declared with a type that it cannot hold, or violates the recursion rules for composite types. In `.qx`, struct fields and enum payloads hold build-time classical values: `int`, `double`, `boolean`, `String`, arrays, structs, and enums; `Qubit`, `QReg`, `Bit`, and `BitReg` stay outside them because the qubit ownership rules track those types. A struct may not contain itself—directly, through arrays, or through other structs or enums—because structs are mutable shared references and the language has no `null` to end the chain. Because an enum's first variant is its default value (used for new array elements and struct fields), that variant may not contain the enum itself; its other variants may refer to the enum directly (for example `Cons(int head, List tail)`), but not through an array, since arrays (like structs) are mutable and a value could otherwise end up referring to itself in a reference cycle that is never freed. Lists and trees are written as recursive enums (see `enum` in the language design).
+A struct field or enum variant payload field was declared with a type that it cannot hold, or violates the recursion rules for composite types. In `.qx`, struct fields and enum payloads hold build-time classical values: `int`, `double`, `boolean`, `String`, arrays, structs, enums, and interfaces; `Qubit`, `QReg`, `Bit`, and `BitReg` stay outside them because the qubit ownership rules track those types. A struct may not contain itself—directly, through arrays, or through other structs or enums—because structs are mutable shared references and the language has no `null` to end the chain. Because an enum's first variant is its default value (used for new array elements and struct fields), that variant may not contain the enum itself; its other variants may refer to the enum directly (for example `Cons(int head, List tail)`), but not through an array, since arrays (like structs) are mutable and a value could otherwise end up referring to itself in a reference cycle that is never freed. The recursion rules also follow interfaces: a field of an interface type can hold any struct or enum that implements it, so a struct that implements an interface (or is reachable from one) may not have a field that leads back to that interface (for example `struct Node implements Link { Link next; }`), and the same check runs on generic instances once their type arguments are known (`Wrap<Link>` where `struct Wrap<T> implements Link { T v; }`). Enums may still chain through interface-typed payloads, since enum values are immutable. Lists and trees are written as recursive enums (see `enum` in the language design).
 
 Erroneous code example:
 
@@ -1000,7 +1000,7 @@ void main() {
 
 ## Q0230: invalid type arguments or generic code
 
-A generic type or function violated the rules for type arguments or generic code, such as naming a generic struct or enum without type arguments (`Pair p`), passing the wrong number of type arguments (`Pair<int>` for `Pair<A, B>`), or leaving type arguments that cannot be inferred because neither values nor an expected type fix them (such as `var o = Option.None;`). Type arguments must be classical value types—`int`, `double`, `boolean`, `String`, arrays, structs, or enums—rather than `Qubit`, `QReg`, `Bit`, `BitReg`, or `void`, so the qubit ownership rules never meet a generic value. Every type parameter of a generic function must appear in at least one parameter type, because call sites never write type arguments and an unused type parameter could never be inferred. Inside a generic body, a value of a type parameter `T` can only be moved (assigned, passed, returned, or stored): arithmetic, `==`, printing, casts, and methods are rejected because the body is checked once for every possible `T`. Finally, because generic code is copied once per set of type arguments before it runs, a generic function that calls itself with an ever larger type (such as `f(new Box(x))` inside `f`) stops at 1000 instances or at types with more than 64 type constructors, reported at the call or construction that asked for the next instance.
+A generic type or function violated the rules for type arguments or generic code, such as naming a generic struct or enum without type arguments (`Pair p`), passing the wrong number of type arguments (`Pair<int>` for `Pair<A, B>`), or leaving type arguments that cannot be inferred because neither values nor an expected type fix them (such as `var o = Option.None;`). Type arguments must be classical value types—`int`, `double`, `boolean`, `String`, arrays, structs, enums, or interfaces—rather than `Qubit`, `QReg`, `Bit`, `BitReg`, or `void`, so the qubit ownership rules never meet a generic value. Every type parameter of a generic function must appear in at least one parameter type, because call sites never write type arguments and an unused type parameter could never be inferred. Inside a generic body, a value of a type parameter `T` can only be moved (assigned, passed, returned, or stored): arithmetic, `==`, printing, casts, and methods are rejected because the body is checked once for every possible `T`, except that when `T` has an interface bound (`<T extends Shape>`), that interface's methods may be called on a `T` (see Q0232). Finally, because generic code is copied once per set of type arguments before it runs, a generic function that calls itself with an ever larger type (such as `f(new Box(x))` inside `f`) stops at 1000 instances or at types with more than 64 type constructors, reported at the call or construction that asked for the next instance.
 
 Erroneous code example:
 
@@ -1060,6 +1060,48 @@ void main() {
             println("error: {}", e);
         }
     }
+}
+```
+
+## Q0232: interface not implemented or not an interface
+
+A `struct` or `enum` declared with `implements I` either lacks a method that `I` requires (reported at the interface name after `implements`) or defines one whose parameter types, `consume` markers, or return type differ from the interface's declaration (reported at the method name). Each method signature must match the interface's declaration exactly after substituting the interface's type arguments—for example, `implements Ordered<Money>` turns `int compare(T other)` into `int compare(Money other)`. This error is also reported when a type listed after `implements` or a bound after `extends` in `<T extends I>` is not an interface, or when a call to a generic function supplies a type argument that does not implement its type parameter's bound (such as passing an `int[]` to `<T extends Shape> double total(T[] xs)`). In `.qx`, a value of a struct or enum may be used wherever an interface it implements is expected, and method calls on that value run the method of the value's own type, so every method the interface promises must exist with the exact same signature. Similarly, interface bounds let generic code call those methods on a `T` safely, which is only sound when every concrete type argument satisfies the bound.
+
+Erroneous code example:
+
+```qx
+interface Shape {
+    double area();
+}
+
+struct Square implements Shape {  // error[Q0232]
+    double side;
+}
+
+void main() {
+    Shape s = new Square(2);
+    println("{}", s.area());
+}
+```
+
+To fix it, add the method that the interface requires with the same signature.
+
+```qx
+interface Shape {
+    double area();
+}
+
+struct Square implements Shape {
+    double side;
+
+    double area() {
+        return this.side * this.side;
+    }
+}
+
+void main() {
+    Shape s = new Square(2);
+    println("{}", s.area());
 }
 ```
 

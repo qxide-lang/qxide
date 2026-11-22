@@ -2,7 +2,7 @@
 // (src/app.qx), which call the compiler through `std.qxide`.
 import { T } from "./strings.js";
 
-const EXAMPLES = ["bell.qx", "ghz.qx", "teleport.qx", "functions.qx", "rotation.qx", "teleport_fn.qx", "conditional_fn.qx", "loops.qx", "text.qx", "arrays.qx", "structs.qx", "enums.qx", "generics.qx", "errors.qx"];
+const EXAMPLES = ["bell.qx", "ghz.qx", "teleport.qx", "functions.qx", "rotation.qx", "teleport_fn.qx", "conditional_fn.qx", "loops.qx", "text.qx", "arrays.qx", "structs.qx", "enums.qx", "generics.qx", "errors.qx", "interfaces.qx"];
 // Same token rules as the playground highlighter (site/src/components/CodeBlock.tsx), plus
 // `import` and `public`.
 const KEYWORDS = new Set([

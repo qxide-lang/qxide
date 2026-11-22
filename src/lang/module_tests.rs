@@ -445,6 +445,19 @@ fn structs_across_modules() {
     );
 }
 
+// A type's methods travel with its values: another file calls them on a value it receives
+// through `var`, statically on a struct and dynamically on an interface value.
+#[test]
+fn methods_across_modules() {
+    let lib = "interface Shape {\n    double area();\n}\n\nstruct Sq implements Shape {\n    double s;\n\n    double area() {\n        return helper(this.s);\n    }\n\n    void grow() {\n        this.s += 1;\n    }\n}\n\ndouble helper(double s) {\n    return s * s;\n}\n\npublic Sq square(double s) {\n    return new Sq(s);\n}\n\npublic Shape shape(double s) {\n    return new Sq(s);\n}\n";
+    let files = [("bell_utils/src/lib.qx", lib)];
+    let entry = "import bell_utils.square;\nimport bell_utils.shape;\n\nvoid main() {\n    var a = square(2);\n    a.grow();\n    var b = shape(4);\n    println(\"{} {}\", a.area(), b.area());\n}\n";
+    assert_eq!(run_files(entry, &files, 1), Ok("9.0 16.0\n".to_string()));
+    // The interface name, like a struct name, belongs to its file.
+    let named = "import bell_utils.shape;\n\nvoid main() {\n    Shape s = shape(1);\n}\n";
+    assert_eq!(errs(named, &files)[0].0, "Q0108");
+}
+
 // The prelude's types work across modules: a dependency returns a `Result` the entry matches.
 #[test]
 fn prelude_types_across_modules() {

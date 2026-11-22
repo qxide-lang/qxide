@@ -360,7 +360,13 @@ impl Scopes {
                 self.expr(base);
                 self.expr(index);
             }
-            ExprKind::Method { recv, args, .. } => {
+            ExprKind::Method { recv, args, name } => {
+                // `.len`: resolved to the document's method of that name (`Analysis::call_sym`).
+                self.uses.push(Use {
+                    span: name.span,
+                    name: format!(".{}", name.name),
+                    call: true,
+                });
                 self.expr(recv);
                 for a in args {
                     self.expr(a);
@@ -398,18 +404,20 @@ fn contains(span: Span, at: usize) -> bool {
 }
 
 /// `public void prepare(Qubit a, consume Qubit b)`, with `name` as given (it may be qualified).
+/// A method shows as `double Vec2.len()`, without its `this`.
 fn signature(f: &FnDecl, name: &str) -> String {
     let params: Vec<String> = f
         .params
         .iter()
+        .skip(usize::from(f.method.is_some()))
         .map(|p| {
             let consume = if p.consume.is_some() { "consume " } else { "" };
             format!("{consume}{} {}", p.ty.name(), p.name.name)
         })
         .collect();
     let public = if f.public.is_some() { "public " } else { "" };
-    // `<A, B> Pair<B, A> swap(...)`
-    let tparams = if f.tparams.is_empty() {
+    // `<A, B> Pair<B, A> swap(...)`; a method shares its type's parameters.
+    let tparams = if f.tparams.is_empty() || f.method.is_some() {
         String::new()
     } else {
         let names: Vec<&str> = f.tparams.iter().map(|p| p.name.as_str()).collect();
@@ -431,7 +439,9 @@ fn import_prefix(segments: &[String]) -> String {
 }
 
 fn parse(src: &str) -> Option<Program> {
-    parser::parse(lexer::lex(src).ok()?).ok()
+    let mut p = parser::parse(lexer::lex(src).ok()?).ok()?;
+    p.lift_methods();
+    Some(p)
 }
 
 // The text with the line holding `at` replaced by spaces (same length, so offsets stay valid):
@@ -655,6 +665,18 @@ impl Analysis {
     }
 
     fn call_sym(&self, name: &str) -> Option<Sym> {
+        if let Some(m) = name.strip_prefix('.') {
+            // The method of that name, if the program has exactly one.
+            let program = self.linked.as_ref().or(self.entry.as_ref())?;
+            let mut found = program
+                .fns
+                .iter()
+                .filter(|f| f.method.as_deref() == Some(m));
+            return match (found.next(), found.next()) {
+                (Some(f), None) => Some(Self::fn_sym(f)),
+                _ => None,
+            };
+        }
         if let Some(f) = self.find_fn(name) {
             return Some(Self::fn_sym(f));
         }
@@ -686,11 +708,12 @@ impl Analysis {
                 .find(|(n, _)| *n == u.name)
                 .map(|(n, v)| Sym::Const(format!("final double {n} = {v:?}")));
         }
-        if let Some(l) = scopes.locals.iter().find(|l| contains(l.decl, at)) {
-            return Some(Sym::Local(l.clone()));
-        }
+        // Before locals: a method's `this` is declared at the method's name.
         if let Some(f) = fns.iter().find(|f| contains(f.name.span, at)) {
             return Some(Self::fn_sym(f));
+        }
+        if let Some(l) = scopes.locals.iter().find(|l| contains(l.decl, at)) {
+            return Some(Sym::Local(l.clone()));
         }
         for imp in self.entry.as_ref().map_or(&[][..], |p| &p.imports) {
             let segments: Vec<String> = imp.module.iter().map(|s| s.name.clone()).collect();
@@ -786,7 +809,7 @@ impl Analysis {
             return Vec::new();
         }
         if src[..word_start].ends_with('.') {
-            return METHODS
+            let mut items: Vec<Item> = METHODS
                 .iter()
                 .map(|(m, detail)| Item {
                     label: m.to_string(),
@@ -794,6 +817,28 @@ impl Analysis {
                     detail: Some(detail.to_string()),
                 })
                 .collect();
+            // The methods of the document's structs and enums (while typing, the document
+            // without the current line).
+            let blanked = match &self.entry {
+                Some(_) => None,
+                None => parse(&blank_line(src, at)),
+            };
+            let fns = match &blanked {
+                Some(p) => p.fns.iter().collect(),
+                None => self.nav_fns(),
+            };
+            for f in fns {
+                if let Some(m) = &f.method {
+                    if !items.iter().any(|i| i.label == *m) {
+                        items.push(Item {
+                            label: m.clone(),
+                            kind: ItemKind::Method,
+                            detail: Some(signature(f, &f.name.name)),
+                        });
+                    }
+                }
+            }
+            return items;
         }
         let mut items: Vec<Item> = Vec::new();
         let mut push = |label: &str, kind: ItemKind, detail: Option<String>| {
@@ -819,7 +864,7 @@ impl Analysis {
                 let fns = self.nav_fns();
                 let scopes = Scopes::of(&fns);
                 locals_at(&scopes, at, &mut push);
-                for f in &fns {
+                for f in fns.iter().filter(|f| f.method.is_none()) {
                     push(
                         &f.name.name,
                         ItemKind::Function,
@@ -832,7 +877,7 @@ impl Analysis {
             Some(p) => {
                 let fns: Vec<&FnDecl> = p.fns.iter().collect();
                 locals_at(&Scopes::of(&fns), at, &mut push);
-                for f in &fns {
+                for f in fns.iter().filter(|f| f.method.is_none()) {
                     push(
                         &f.name.name,
                         ItemKind::Function,

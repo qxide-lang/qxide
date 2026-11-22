@@ -853,3 +853,27 @@ pub fn try_parse_needs_result(method: &str) -> String {
 pub fn type_too_large(limit: usize) -> String {
     format!("exceeded the generic type nesting limit of {limit}; check for infinitely recursive generic calls")
 }
+
+pub fn not_an_interface(ty: &str) -> String {
+    format!("type `{ty}` is not an interface")
+}
+
+pub fn missing_iface_method(ty: &str, iface: &str, method: &str) -> String {
+    format!("type `{ty}` does not implement method `{method}` required by interface `{iface}`")
+}
+
+pub fn iface_method_mismatch(method: &str, iface: &str, want: &str) -> String {
+    format!("method `{method}` does not match its declaration in interface `{iface}`, which expects `{want}`")
+}
+
+pub fn bound_not_satisfied(arg: &str, bound: &str, param: &str) -> String {
+    format!("type `{arg}` does not implement `{bound}`, required by type parameter `{param}`")
+}
+
+pub fn no_default(ty: &str) -> String {
+    format!("cannot create an array of `{ty}` with a length because the element type has no default value")
+}
+
+pub fn help_no_default() -> String {
+    "list the elements in an array initializer with braces instead".into()
+}

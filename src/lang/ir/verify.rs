@@ -38,6 +38,16 @@ fn unconditional(i: &Inst) -> bool {
     )
 }
 
+// Whether a call may run a function that is not region-safe: a dynamic call may run any method
+// of its name.
+fn calls_unsafe(m: &Module, i: &Inst, safe: &[bool]) -> Option<FuncId> {
+    match i {
+        Inst::Call { func, .. } if !safe[*func as usize] => Some(*func),
+        Inst::CallDyn { method, .. } => m.methods_named(method).find(|f| !safe[*f as usize]),
+        _ => None,
+    }
+}
+
 // Functions that may run inside a region: no `consume` parameter, no quantum return value, no
 // unconditional instruction, and calls only to such functions (greatest fixpoint).
 fn conditional_safe(m: &Module) -> Vec<bool> {
@@ -57,12 +67,12 @@ fn conditional_safe(m: &Module) -> Vec<bool> {
             if !safe[i] {
                 continue;
             }
-            let calls_unsafe = f
+            let unsafe_call = f
                 .blocks
                 .iter()
                 .flat_map(|b| &b.insts)
-                .any(|inst| matches!(inst, Inst::Call { func, .. } if !safe[*func as usize]));
-            if calls_unsafe {
+                .any(|inst| calls_unsafe(m, inst, &safe).is_some());
+            if unsafe_call {
                 safe[i] = false;
                 changed = true;
             }
@@ -183,6 +193,28 @@ impl Checker<'_> {
             Inst::Widen { dst, src } => {
                 self.want(*src, IrTy::I64)?;
                 self.want(*dst, IrTy::F64)?;
+            }
+            Inst::Upcast { dst, src } => {
+                if !matches!(self.ty(*src)?, IrTy::Struct(_) | IrTy::Enum(_)) {
+                    return Err(format!("%{src} is not a struct or enum"));
+                }
+                if !matches!(self.ty(*dst)?, IrTy::Iface(_)) {
+                    return Err(format!("%{dst} is not an interface"));
+                }
+            }
+            Inst::CallDyn {
+                method, dst, args, ..
+            } => {
+                let Some(&recv) = args.first() else {
+                    return Err(format!("call.dyn {method} without a receiver"));
+                };
+                if !matches!(self.ty(recv)?, IrTy::Iface(_)) {
+                    return Err(format!("%{recv} is not an interface"));
+                }
+                for a in args.iter() {
+                    self.ty(*a)?;
+                }
+                self.ty(*dst)?;
             }
             Inst::IntOp { op, dst, a, b, .. } => {
                 self.want(*a, IrTy::I64)?;
@@ -452,11 +484,9 @@ impl Checker<'_> {
                     if unconditional(i) {
                         return Err(format!("bb{b}: {i:?} inside a region"));
                     }
-                    if let Inst::Call { func, .. } = i {
-                        if !self.safe[*func as usize] {
-                            let name = &self.m.funcs[*func as usize].name;
-                            return Err(format!("bb{b}: call of {name} inside a region"));
-                        }
+                    if let Some(func) = calls_unsafe(self.m, i, self.safe) {
+                        let name = &self.m.funcs[func as usize].name;
+                        return Err(format!("bb{b}: call of {name} inside a region"));
                     }
                 }
             }

@@ -131,6 +131,11 @@ fn front_input(
             return Err(errors);
         }
         let program = mono::monomorphize(program, &inferred).map_err(|d| vec![d])?;
+        // An instance such as `Wrap<Shape>` may reach itself through an interface.
+        let cycles = check::type_cycles(&program);
+        if !cycles.is_empty() {
+            return Err(cycles);
+        }
         // Instances are ordinary declarations: the concrete program checks cleanly again.
         #[cfg(debug_assertions)]
         {

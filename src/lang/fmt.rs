@@ -71,7 +71,9 @@ fn angle_brackets(toks: &[Token]) -> Vec<bool> {
     let mut generics = std::collections::HashSet::new();
     let mut declared = std::collections::HashSet::new();
     for w in toks.windows(3) {
-        if matches!(w[0].tok, Tok::Struct | Tok::Enum) {
+        let decl = matches!(&w[0].tok, Tok::Struct | Tok::Enum)
+            || matches!(&w[0].tok, Tok::Ident(k) if k == "interface");
+        if decl {
             if let Tok::Ident(n) = &w[1].tok {
                 declared.insert(n.as_str());
                 if w[2].tok == Tok::Lt {

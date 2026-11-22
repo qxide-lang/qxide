@@ -20,6 +20,10 @@ const EXAMPLES: &[(&str, &str)] = &[
         "conditional_fn.qx",
         include_str!("../../examples/qx/conditional_fn.qx"),
     ),
+    (
+        "interfaces.qx",
+        include_str!("../../examples/qx/interfaces.qx"),
+    ),
     ("template/main.qx", include_str!("../template/main.qx")),
 ];
 
@@ -173,6 +177,38 @@ void main() {
     assert_eq!(fmt_ok(messy), tidy);
     assert_eq!(fmt_ok(tidy), tidy);
     assert_eq!(run("t.qx", tidy, 1, 0).ok(), run("t.qx", messy, 1, 0).ok());
+}
+
+// Interfaces, `implements`, bounds and methods: type arguments stay tight, members one per line.
+#[test]
+fn fmt_lays_out_interfaces_and_methods() {
+    let messy = "interface Ord < T > { int cmp(T o); }\nstruct M implements Ord < M > { int c; int cmp(M o) { return this.c - o.c; } }\nenum L implements Ord < L > { A, B; int cmp(L o) { return 0; } }\n< T extends Ord < T > > T top(T a, T b) { if a.cmp(b) > 0 { return a; } return b; }\nvoid main() {}\n";
+    let tidy = "interface Ord<T> {
+    int cmp(T o);
+}
+struct M implements Ord<M> {
+    int c;
+    int cmp(M o) {
+        return this.c - o.c;
+    }
+}
+enum L implements Ord<L> {
+    A,
+    B;
+    int cmp(L o) {
+        return 0;
+    }
+}
+<T extends Ord<T>> T top(T a, T b) {
+    if a.cmp(b) > 0 {
+        return a;
+    }
+    return b;
+}
+void main() {}
+";
+    assert_eq!(fmt_ok(messy), tidy);
+    assert_eq!(fmt_ok(tidy), tidy);
 }
 
 #[test]
@@ -436,6 +472,13 @@ fn repl_declares_structs_and_uses_them() {
     let src = "struct P {\n    int a;\n}\nP p = new P(3);\np.a += 4;\np.a\n";
     let (out, err, code) = repl(src);
     assert_eq!((out.as_str(), err.as_str(), code), ("7\n", "", 0));
+}
+
+#[test]
+fn repl_declares_interfaces_and_methods() {
+    let src = "interface Shape {\n    double area();\n}\nstruct Sq implements Shape {\n    double s;\n    double area() {\n        return this.s * this.s;\n    }\n}\nShape s = new Sq(3);\ns.area()\n";
+    let (out, err, code) = repl(src);
+    assert_eq!((out.as_str(), err.as_str(), code), ("9.0\n", "", 0));
 }
 
 #[test]

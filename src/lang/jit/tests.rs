@@ -134,6 +134,20 @@ void main() {
     assert_eq!(same(src, Limits::CLI), "ok\n3 2.5 s\n");
 }
 
+// Methods take a struct or enum receiver and stay interpreted; numeric helpers they call
+// compile, and dynamic calls run the same in every engine.
+#[test]
+fn methods_and_interface_calls_run_alongside_native_code() {
+    let src = super::super::tests::INTERFACES;
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in ["Rect.area", "Light.name", "total<Shape>", "max_of<Money>"] {
+        assert!(!jit.compiles(m.index[f]), "{f}");
+    }
+    let out = same(src, Limits::CLI);
+    assert!(out.contains("all: 27.0"), "{out}");
+}
+
 #[test]
 fn loops_with_break_and_continue_compile() {
     let src = "int collatz(int n) {

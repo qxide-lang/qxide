@@ -48,6 +48,47 @@ struct Sig {
     ret: Ty,
     // Type parameters of a generic function (inferred from the arguments at each call).
     tparams: Vec<Ty>,
+    // The interface each type parameter must implement (`<T extends Shape>`).
+    bounds: Vec<Option<Ty>>,
+}
+
+// A method an interface requires: name, parameter types with `consume`, return type.
+#[derive(Clone)]
+struct IfaceMethod {
+    name: String,
+    params: Vec<(Ty, bool)>,
+    ret: Ty,
+}
+
+impl IfaceMethod {
+    // `double area(int)`, for diagnostics.
+    fn text(&self) -> String {
+        let params: Vec<String> = self
+            .params
+            .iter()
+            .map(|&(t, c)| {
+                if c {
+                    format!("consume {}", t.name())
+                } else {
+                    t.name().to_string()
+                }
+            })
+            .collect();
+        format!("{} {}({})", self.ret.name(), self.name, params.join(", "))
+    }
+}
+
+/// How the checker resolved a method call `v.m(...)` on a struct, enum, interface or bounded
+/// type parameter, for monomorphization.
+#[derive(Debug, Clone)]
+pub enum MethodCall {
+    /// The method function `Type.m` of a struct or enum (a generic one takes the receiver's type
+    /// arguments, recorded in `Inferred::calls`).
+    Static(String),
+    /// On a value of this bounded type parameter: static or dynamic once the type is known.
+    Bound(Ty),
+    /// On an interface value: dispatched on the run-time type.
+    Dynamic,
 }
 
 /// What type inference chose for generic code, keyed by expression span (`start`, `end`), for
@@ -58,6 +99,7 @@ struct Sig {
 pub struct Inferred {
     pub types: HashMap<(usize, usize), Ty>,
     pub calls: HashMap<(usize, usize), Vec<Ty>>,
+    pub methods: HashMap<(usize, usize), MethodCall>,
 }
 
 fn key(s: Span) -> (usize, usize) {
@@ -138,6 +180,16 @@ impl Unconditional {
             Unconditional::Calls(callee) => msg::note_cond_calls(callee),
         }
     }
+}
+
+// What `call_sig` needs to know about the function being called.
+struct Callee {
+    params: Vec<(Ty, bool)>,
+    ret: Ty,
+    tparams: Vec<Ty>,
+    bounds: Vec<Option<Ty>>,
+    // Why it cannot run inside an `if` on a `Bit`, if it cannot.
+    uncond: Option<(Span, Unconditional)>,
 }
 
 // Built-ins that cannot run inside a conditional block.
@@ -240,7 +292,10 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
             scan_expr(base, out);
             scan_expr(index, out);
         }
-        ExprKind::Method { recv, args, .. } => {
+        ExprKind::Method { recv, args, name } => {
+            // Resolved per method name by `conditional_safety`: the call may run any method
+            // of that name (its receiver's type is not known here).
+            out.calls.push((format!(".{}", name.name), e.span));
             scan_expr(recv, out);
             for a in args {
                 scan_expr(a, out);
@@ -294,6 +349,16 @@ struct Checker {
     gparams: HashMap<Ty, Vec<Ty>>,
     // Every declared struct and enum type.
     declared: HashSet<Ty>,
+    // The methods of every interface (keyed by the generic base; its parameters are in
+    // `gparams`).
+    ifaces: HashMap<Ty, Vec<IfaceMethod>>,
+    // The interfaces each struct and enum implements (keyed by the generic base; they may
+    // mention its type parameters).
+    impls: HashMap<Ty, Vec<Ty>>,
+    // Bounds of the type parameters of the function being checked.
+    bounds: HashMap<Ty, Ty>,
+    // Method functions by method name: `len` -> [`Vec2.len`, ...].
+    method_fns: HashMap<String, Vec<String>>,
     // The type the next expression is expected to have (a declaration, assignment, return,
     // argument or store), so `Option.None` can take its type arguments from it.
     hint: Option<Ty>,
@@ -316,27 +381,22 @@ pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
     check_infer(p, require_main).0
 }
 
+/// The recursion rules for declared types (`Q0227`) on a monomorphized program, whose instances
+/// are ordinary declarations: `Wrap<Shape>` may contain itself where `Wrap<T>` does not.
+pub fn type_cycles(p: &Program) -> Vec<Diagnostic> {
+    let mut c = Checker::new();
+    c.struct_decls(p);
+    c.errors.retain(|d| d.code == Code::BadFieldType);
+    c.errors.sort_by_key(|d| (d.span.start, d.code.as_str()));
+    c.errors
+}
+
 /// Checks the program and returns what inference chose for its generic code.
 pub fn check_infer(p: &Program, require_main: bool) -> (Vec<Diagnostic>, Inferred) {
-    let mut c = Checker {
-        fns: HashMap::new(),
-        structs: HashMap::new(),
-        enums: HashMap::new(),
-        gparams: HashMap::new(),
-        declared: HashSet::new(),
-        hint: None,
-        inferred: Inferred::default(),
-        unconditional: HashMap::new(),
-        vars: Vec::new(),
-        scopes: Vec::new(),
-        bit_ifs: Vec::new(),
-        held: Vec::new(),
-        loops: Vec::new(),
-        ret: Ty::Void,
-        errors: Vec::new(),
-    };
+    let mut c = Checker::new();
     c.struct_decls(p);
     c.signatures(p, require_main);
+    c.conformance(p);
     c.conditional_safety(p);
     for f in &p.fns {
         c.function(f);
@@ -346,6 +406,30 @@ pub fn check_infer(p: &Program, require_main: bool) -> (Vec<Diagnostic>, Inferre
 }
 
 impl Checker {
+    fn new() -> Self {
+        Checker {
+            fns: HashMap::new(),
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            gparams: HashMap::new(),
+            declared: HashSet::new(),
+            ifaces: HashMap::new(),
+            impls: HashMap::new(),
+            bounds: HashMap::new(),
+            method_fns: HashMap::new(),
+            hint: None,
+            inferred: Inferred::default(),
+            unconditional: HashMap::new(),
+            vars: Vec::new(),
+            scopes: Vec::new(),
+            bit_ifs: Vec::new(),
+            held: Vec::new(),
+            loops: Vec::new(),
+            ret: Ty::Void,
+            errors: Vec::new(),
+        }
+    }
+
     fn err(&mut self, code: Code, span: Span, message: String) -> &mut Diagnostic {
         self.errors.push(Diagnostic::new(code, span, message));
         self.errors.last_mut().unwrap()
@@ -359,6 +443,7 @@ impl Checker {
             .iter()
             .map(|s| s.name.name.as_str())
             .chain(p.enums.iter().map(|e| e.name.name.as_str()))
+            .chain(p.ifaces.iter().map(|i| i.name.name.as_str()))
             .collect();
         let decls = p
             .structs
@@ -368,6 +453,11 @@ impl Checker {
                 p.enums
                     .iter()
                     .map(|e| (Ty::enum_named(&e.name.name), &e.params)),
+            )
+            .chain(
+                p.ifaces
+                    .iter()
+                    .map(|i| (Ty::iface_named(&i.name.name), &i.params)),
             );
         for (ty, params) in decls {
             self.declared.insert(ty);
@@ -470,7 +560,213 @@ impl Checker {
             }
             self.enums.insert(Ty::enum_named(&e.name.name), variants);
         }
+        self.iface_decls(p, names);
         self.struct_cycles(p);
+    }
+
+    // Interface names share the namespace of struct and enum names; each interface's methods
+    // are distinct and of valid types. Then the interfaces each struct and enum claims to
+    // implement (`Q0232` for a type that is not an interface).
+    fn iface_decls<'p>(&mut self, p: &'p Program, mut names: HashSet<&'p str>) {
+        for d in &p.ifaces {
+            if !names.insert(d.name.name.as_str()) {
+                self.err(
+                    Code::Duplicate,
+                    d.name.span,
+                    msg::duplicate_def(&d.name.name),
+                );
+                continue;
+            }
+            let mut methods: Vec<IfaceMethod> = Vec::new();
+            for m in &d.methods {
+                if methods.iter().any(|x| x.name == m.name.name) {
+                    self.err(
+                        Code::Duplicate,
+                        m.name.span,
+                        msg::duplicate_def(&m.name.name),
+                    );
+                    continue;
+                }
+                let mut seen = HashSet::new();
+                for q in &m.params {
+                    if !seen.insert(q.name.name.as_str()) {
+                        self.err(
+                            Code::Duplicate,
+                            q.name.span,
+                            msg::duplicate_def(&q.name.name),
+                        );
+                    }
+                    if q.ty == Ty::Void {
+                        self.err(Code::TypeMismatch, q.ty_span, msg::void_variable());
+                    } else {
+                        self.array_ty_ok(q.ty, q.ty_span);
+                    }
+                    if let Some(at) = q.consume {
+                        if !q.ty.is_quantum() {
+                            self.err(
+                                Code::ConsumeNonQuantum,
+                                at,
+                                msg::consume_non_quantum(q.ty.name()),
+                            );
+                        }
+                    }
+                }
+                self.array_ty_ok(m.ret, m.ret_span);
+                methods.push(IfaceMethod {
+                    name: m.name.name.clone(),
+                    params: m
+                        .params
+                        .iter()
+                        .map(|q| (q.ty, q.consume.is_some() && q.ty.is_quantum()))
+                        .collect(),
+                    ret: m.ret,
+                });
+            }
+            self.ifaces.insert(Ty::iface_named(&d.name.name), methods);
+        }
+        let owners = p
+            .structs
+            .iter()
+            .map(|s| (Ty::struct_named(&s.name.name), &s.implements))
+            .chain(
+                p.enums
+                    .iter()
+                    .map(|e| (Ty::enum_named(&e.name.name), &e.implements)),
+            );
+        for (ty, list) in owners {
+            let mut out: Vec<Ty> = Vec::new();
+            for &(i, at) in list {
+                if !matches!(i, Ty::Iface(_)) {
+                    self.err(Code::Interface, at, msg::not_an_interface(i.name()));
+                    continue;
+                }
+                if !self.generic_ok(i, at) {
+                    continue;
+                }
+                if out.contains(&i) {
+                    self.err(Code::Duplicate, at, msg::duplicate_def(i.name()));
+                    continue;
+                }
+                out.push(i);
+            }
+            self.impls.entry(ty).or_insert(out);
+        }
+    }
+
+    // The methods an interface (or interface instance) requires, its type arguments substituted.
+    fn iface_methods(&self, t: Ty) -> Option<Vec<IfaceMethod>> {
+        if let Some(ms) = self.ifaces.get(&t) {
+            return Some(ms.clone());
+        }
+        let (base, map) = self.inst(t)?;
+        let sub = |t: Ty| t.subst(&|p| map.get(&p).copied());
+        Some(
+            self.ifaces
+                .get(&base)?
+                .iter()
+                .map(|m| IfaceMethod {
+                    name: m.name.clone(),
+                    params: m.params.iter().map(|&(t, c)| (sub(t), c)).collect(),
+                    ret: sub(m.ret),
+                })
+                .collect(),
+        )
+    }
+
+    // Whether a value of type `t` may be used where the interface `want` is expected: `t` is
+    // that interface, a struct or enum that implements it, or a type parameter bounded by it.
+    fn implements(&self, t: Ty, want: Ty) -> bool {
+        if t == want {
+            return true;
+        }
+        match t {
+            Ty::Param(_) => self.bounds.get(&t) == Some(&want),
+            Ty::Struct(_) | Ty::Enum(_) => {
+                if let Some(list) = self.impls.get(&t) {
+                    return list.contains(&want);
+                }
+                let Some((base, map)) = self.inst(t) else {
+                    return false;
+                };
+                self.impls.get(&base).is_some_and(|list| {
+                    list.iter()
+                        .any(|i| i.subst(&|p| map.get(&p).copied()) == want)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    // Whether `new T[n]` can fill elements of type `t`: interface values have no default, and
+    // neither has a struct with such a field or an enum whose first variant holds one.
+    fn has_default(&self, t: Ty, depth: usize) -> bool {
+        // Defaults never form cycles (`Q0227`); the cap only bounds the search after errors.
+        if depth > 256 {
+            return true;
+        }
+        match t {
+            Ty::Iface(_) => false,
+            Ty::Struct(_) => self
+                .field_types(t)
+                .is_none_or(|fs| fs.iter().all(|&f| self.has_default(f, depth + 1))),
+            Ty::Enum(_) => self.variants_of(t).is_none_or(|vs| {
+                vs.first()
+                    .is_none_or(|(_, fs)| fs.iter().all(|&f| self.has_default(f, depth + 1)))
+            }),
+            _ => true,
+        }
+    }
+
+    // Every struct and enum has each method of the interfaces it implements, with the same
+    // parameter types, `consume` markers and return type (`Q0232`).
+    fn conformance(&mut self, p: &Program) {
+        let owners = p
+            .structs
+            .iter()
+            .map(|s| (Ty::struct_named(&s.name.name), &s.name.name, &s.implements))
+            .chain(
+                p.enums
+                    .iter()
+                    .map(|e| (Ty::enum_named(&e.name.name), &e.name.name, &e.implements)),
+            );
+        for (ty, name, list) in owners {
+            let valid = self.impls.get(&ty).cloned().unwrap_or_default();
+            for &(i, at) in list {
+                if !valid.contains(&i) {
+                    continue;
+                }
+                for m in self.iface_methods(i).unwrap_or_default() {
+                    // A monomorphized instance `Box<int>` has the method `Box.get<int>`.
+                    let fname = match ty.generic_args() {
+                        Some((base, args)) => {
+                            let args: Vec<&str> = args.iter().map(|a| a.name()).collect();
+                            format!("{}.{}<{}>", base.name(), m.name, args.join(", "))
+                        }
+                        None => format!("{name}.{}", m.name),
+                    };
+                    let Some(sig) = self.fns.get(&fname) else {
+                        self.err(
+                            Code::Interface,
+                            at,
+                            msg::missing_iface_method(name, i.name(), &m.name),
+                        );
+                        continue;
+                    };
+                    if sig.params.get(1..) != Some(&m.params[..]) || sig.ret != m.ret {
+                        let decl = p
+                            .fns
+                            .iter()
+                            .find(|f| f.name.name == fname)
+                            .map_or(at, |f| f.name.span);
+                        self.err(
+                            Code::Interface,
+                            decl,
+                            msg::iface_method_mismatch(&m.name, i.name(), &m.text()),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // Two checks over "contains" edges between the structs and enums (nodes: the structs, then
@@ -482,11 +778,15 @@ impl Checker {
     //   cycle never freed). One error per such strongly connected component.
     fn struct_cycles(&mut self, p: &Program) {
         let ns = p.structs.len();
+        // Interfaces are nodes too (after the structs and enums), linked to every type that
+        // implements them: a struct can reach itself through an interface-typed field.
+        let typed = ns + p.enums.len();
         let ids: HashMap<Ty, usize> = p
             .structs
             .iter()
             .map(|s| Ty::struct_named(&s.name.name))
             .chain(p.enums.iter().map(|e| Ty::enum_named(&e.name.name)))
+            .chain(p.ifaces.iter().map(|i| Ty::iface_named(&i.name.name)))
             .enumerate()
             .map(|(i, t)| (t, i))
             .collect::<Vec<_>>()
@@ -503,6 +803,11 @@ impl Checker {
                     t = e;
                     array = true;
                 }
+                // A monomorphized program declares its instances: they are nodes themselves.
+                if let Some(&v) = ids.get(&t) {
+                    out.push((v, f.ty_span, array));
+                    continue;
+                }
                 if let Some((base, args)) = t.generic_args() {
                     t = base;
                     stack.extend(args.into_iter().map(|a| (a, true)));
@@ -518,8 +823,15 @@ impl Checker {
                 .iter()
                 .map(|e| e.variants.first().map_or(&[][..], |v| v.fields.as_slice())),
         );
+        // Interface values have no default, so defaults never lead through one.
         let edges: Vec<Vec<(usize, Span)>> = defaults
-            .map(|fs| fs.iter().flat_map(edge).map(|(v, s, _)| (v, s)).collect())
+            .map(|fs| {
+                fs.iter()
+                    .flat_map(edge)
+                    .filter(|&(v, _, _)| v < typed)
+                    .map(|(v, s, _)| (v, s))
+                    .collect()
+            })
             .collect();
         let reported = self.default_cycles(p, &edges);
         let all: Vec<Vec<(usize, Span, bool)>> = p
@@ -537,6 +849,23 @@ impl Checker {
                     .iter()
                     .flat_map(|v| v.fields.iter().flat_map(edge))
                     .collect()
+            }))
+            .chain(p.ifaces.iter().map(|d| {
+                let iface = Ty::iface_named(&d.name.name);
+                let owners = p
+                    .structs
+                    .iter()
+                    .map(|s| &s.implements)
+                    .chain(p.enums.iter().map(|e| &e.implements));
+                let mut out = Vec::new();
+                for (u, list) in owners.enumerate() {
+                    for &(i, at) in list {
+                        if i.generic_args().map_or(i, |(b, _)| b) == iface {
+                            out.push((u, at, false));
+                        }
+                    }
+                }
+                out
             }))
             .collect();
         let comp = components(&all);
@@ -607,13 +936,16 @@ impl Checker {
             .iter()
             .map(|s| s.name.name.as_str())
             .chain(p.enums.iter().map(|e| e.name.name.as_str()))
+            .chain(p.ifaces.iter().map(|i| i.name.name.as_str()))
             .collect();
         let mut main = None;
         for f in &p.fns {
             let name = &f.name.name;
             // Functions of imported modules carry qualified names such as `bell_utils.prepare`.
             let base = name.rsplit('.').next().unwrap_or(name);
-            if BUILTINS.contains(&base) {
+            // Methods are named through their receiver, so any method name is free.
+            let method = f.method.is_some();
+            if !method && BUILTINS.contains(&base) {
                 self.err(
                     Code::BuiltinRedefined,
                     f.name.span,
@@ -621,7 +953,7 @@ impl Checker {
                 );
                 continue;
             }
-            if constant(base).is_some() {
+            if !method && constant(base).is_some() {
                 self.err(
                     Code::BuiltinRedefined,
                     f.name.span,
@@ -633,6 +965,27 @@ impl Checker {
             if self.fns.contains_key(name) {
                 self.err(Code::Duplicate, f.name.span, msg::duplicate_def(name));
                 continue;
+            }
+            if let (Some(m), Some(this)) = (&f.method, f.params.first()) {
+                // A method and a field of one struct cannot share a name.
+                if self.field_named(this.ty, m).is_some() {
+                    self.err(Code::Duplicate, f.name.span, msg::duplicate_def(m));
+                }
+                self.method_fns
+                    .entry(m.clone())
+                    .or_default()
+                    .push(name.clone());
+            }
+            let mut bounds = Vec::with_capacity(f.tparams.len());
+            for b in &f.bounds {
+                bounds.push(match *b {
+                    Some((t, at)) if !matches!(t, Ty::Iface(_)) => {
+                        self.err(Code::Interface, at, msg::not_an_interface(t.name()));
+                        None
+                    }
+                    Some((t, at)) => self.generic_ok(t, at).then_some(t),
+                    None => None,
+                });
             }
             for p in &f.params {
                 if let Some(at) = p.consume {
@@ -669,6 +1022,7 @@ impl Checker {
                         .collect(),
                     ret: f.ret,
                     tparams,
+                    bounds,
                 },
             );
         }
@@ -711,6 +1065,26 @@ impl Checker {
             }
             edges.push((f.name.name.clone(), scan.calls));
         }
+        // A method call `.m` stands for a call of every method named `m`.
+        let mut by_method: HashMap<&str, Vec<&str>> = HashMap::new();
+        for f in &p.fns {
+            if let Some(m) = &f.method {
+                by_method.entry(m).or_default().push(&f.name.name);
+            }
+        }
+        for (_, calls) in &mut edges {
+            let all = std::mem::take(calls);
+            for (callee, at) in all {
+                match callee.strip_prefix('.') {
+                    Some(m) => {
+                        for f in by_method.get(m).into_iter().flatten() {
+                            calls.push((f.to_string(), at));
+                        }
+                    }
+                    None => calls.push((callee, at)),
+                }
+            }
+        }
         propagate(&edges, &mut self.unconditional);
     }
 
@@ -719,7 +1093,15 @@ impl Checker {
         self.loops.clear();
         self.scopes = vec![Vec::new()];
         self.ret = f.ret;
-        for p in &f.params {
+        self.bounds.clear();
+        if let Some(sig) = self.fns.get(&f.name.name) {
+            for (p, b) in sig.tparams.iter().zip(&sig.bounds) {
+                if let Some(b) = b {
+                    self.bounds.insert(*p, *b);
+                }
+            }
+        }
+        for (i, p) in f.params.iter().enumerate() {
             if self.scopes[0]
                 .iter()
                 .any(|&id| self.vars[id].name == p.name.name)
@@ -738,7 +1120,8 @@ impl Checker {
             } else {
                 p.ty
             };
-            self.declare(&p.name, ty, true);
+            // A method's `this` cannot be reassigned.
+            self.declare(&p.name, ty, i > 0 || f.method.is_none());
             if ty.is_quantum() && p.consume.is_none() {
                 self.vars.last_mut().unwrap().borrowed = Some(p.name.span);
             }
@@ -871,6 +1254,7 @@ impl Checker {
                         | Ty::Struct(_)
                         | Ty::Enum(_)
                         | Ty::Param(_)
+                        | Ty::Iface(_)
                         | Ty::Error => found,
                         other => {
                             self.err(Code::VarInfer, *ty_span, msg::var_infer(other.name()));
@@ -1292,6 +1676,7 @@ impl Checker {
             || want == Ty::Error
             || found == Ty::Error
             || (want == Ty::Double && found == Ty::Int)
+            || (matches!(want, Ty::Iface(_)) && self.implements(found, want))
         {
             return;
         }
@@ -1404,11 +1789,19 @@ impl Checker {
                     let t = self.expr(d);
                     self.expect_ty(d.span, Ty::Int, t);
                 }
-                if self.array_ty_ok(*ty, e.span) {
-                    *ty
-                } else {
-                    Ty::Error
+                if !self.array_ty_ok(*ty, e.span) {
+                    return Ty::Error;
                 }
+                let mut elem = *ty;
+                for _ in 0..dims.len() {
+                    elem = elem.elem().unwrap_or(Ty::Error);
+                }
+                if !self.has_default(elem, 0) {
+                    self.err(Code::BadArrayElement, e.span, msg::no_default(elem.name()))
+                        .help = Some(msg::help_no_default());
+                    return Ty::Error;
+                }
+                *ty
             }
             ExprKind::ArrayLit { ty, elems } => self.array_lit(*ty, elems, e.span),
             ExprKind::NewStruct { ty, args } => self.new_struct(*ty, args, e.span, hint),
@@ -1420,6 +1813,22 @@ impl Checker {
             ExprKind::Try { expr, op } => self.try_expr(expr, *op),
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
+                match t {
+                    Ty::Struct(_) | Ty::Enum(_) => {
+                        return self.user_method(t, recv.span, name, args, e.span)
+                    }
+                    Ty::Iface(_) => {
+                        let how = MethodCall::Dynamic;
+                        return self.iface_method(t, t, recv.span, name, args, e.span, how);
+                    }
+                    Ty::Param(_) => {
+                        if let Some(&b) = self.bounds.get(&t) {
+                            let how = MethodCall::Bound(t);
+                            return self.iface_method(t, b, recv.span, name, args, e.span, how);
+                        }
+                    }
+                    _ => {}
+                }
                 if self.param_op(recv.span, &[t]) {
                     for a in args {
                         self.expr(a);
@@ -2271,6 +2680,79 @@ impl Checker {
         true
     }
 
+    // `v.m(args)` on a struct or enum: a call of its method function `Type.m` with `v` first.
+    fn user_method(&mut self, t: Ty, at: Span, name: &Ident, args: &[Expr], span: Span) -> Ty {
+        let base = t.generic_args().map_or(t, |(b, _)| b);
+        let fname = format!("{}.{}", base.name(), name.name);
+        let Some(sig) = self.fns.get(&fname) else {
+            self.err(
+                Code::UnknownMethod,
+                name.span,
+                msg::unknown_method(&name.name, t.name()),
+            );
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        };
+        let call = Callee {
+            params: sig.params.clone(),
+            ret: sig.ret,
+            tparams: sig.tparams.clone(),
+            bounds: sig.bounds.clone(),
+            uncond: self.unconditional.get(&fname).cloned(),
+        };
+        self.inferred
+            .methods
+            .insert(key(span), MethodCall::Static(fname.clone()));
+        self.call_sig(&fname, name, call, Some((t, at)), args, span)
+    }
+
+    // `v.m(args)` on an interface value or a value of a type parameter bounded by `iface`.
+    #[allow(clippy::too_many_arguments)]
+    fn iface_method(
+        &mut self,
+        t: Ty,
+        iface: Ty,
+        at: Span,
+        name: &Ident,
+        args: &[Expr],
+        span: Span,
+        how: MethodCall,
+    ) -> Ty {
+        let found = self
+            .iface_methods(iface)
+            .and_then(|ms| ms.into_iter().find(|m| m.name == name.name));
+        let Some(m) = found else {
+            self.err(
+                Code::UnknownMethod,
+                name.span,
+                msg::unknown_method(&name.name, t.name()),
+            );
+            for a in args {
+                self.expr(a);
+            }
+            return Ty::Error;
+        };
+        self.inferred.methods.insert(key(span), how);
+        // The call may run any method of that name.
+        let uncond = self
+            .method_fns
+            .get(&name.name)
+            .and_then(|fs| fs.iter().find_map(|f| self.unconditional.get(f).cloned()));
+        let mut params = vec![(t, false)];
+        params.extend(m.params);
+        let call = Callee {
+            params,
+            ret: m.ret,
+            tparams: Vec::new(),
+            bounds: Vec::new(),
+            uncond,
+        };
+        let label = format!("{}.{}", iface.name(), name.name);
+        self.call_sig(&label, name, call, Some((t, at)), args, span)
+    }
+
     fn call(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {
         let n = name.name.as_str();
         if BUILTINS.contains(&n) {
@@ -2283,13 +2765,39 @@ impl Checker {
             }
             return Ty::Error;
         };
-        let (params, mut ret) = (sig.params.clone(), sig.ret);
-        let tparams = sig.tparams.clone();
+        let call = Callee {
+            params: sig.params.clone(),
+            ret: sig.ret,
+            tparams: sig.tparams.clone(),
+            bounds: sig.bounds.clone(),
+            uncond: self.unconditional.get(n).cloned(),
+        };
+        self.call_sig(n, name, call, None, args, span)
+    }
+
+    // A call of a function, method or interface method `n`; `recv` is the type and span of an
+    // already checked receiver, passed as the first parameter.
+    fn call_sig(
+        &mut self,
+        n: &str,
+        name: &Ident,
+        call: Callee,
+        recv: Option<(Ty, Span)>,
+        args: &[Expr],
+        span: Span,
+    ) -> Ty {
+        let Callee {
+            params,
+            mut ret,
+            tparams,
+            bounds,
+            uncond,
+        } = call;
         // Generic calls: type parameters bound from the arguments, then their types checked.
         let mut map = HashMap::new();
         let mut deferred = Vec::new();
         if let Some(&cond) = self.bit_ifs.last() {
-            if let Some((at, why)) = self.unconditional.get(n).cloned() {
+            if let Some((at, why)) = uncond {
                 let d = self.err(Code::ConditionalCall, span, msg::conditional_call(n));
                 d.notes.push(note(at, why.note()));
                 d.notes.push(note(cond, msg::note_bit_if_here()));
@@ -2300,10 +2808,24 @@ impl Checker {
             }
         }
         let mark = self.held.len();
-        if self.arity(name, args, params.len(), span) {
+        let skip = usize::from(recv.is_some());
+        if let (Some((t, at)), Some(&(want, _))) = (recv, params.first()) {
+            if want.has_param() {
+                unify(want, t, &mut map);
+                deferred.push((at, want, t));
+            } else {
+                self.expect_ty(at, want, t);
+            }
+        }
+        let want_args = params.len().saturating_sub(skip);
+        if self.arity(name, args, want_args, span) {
             // Quantum arguments already passed, as (argument index, place).
             let mut passed: Vec<(usize, (usize, Idx))> = Vec::new();
-            for (j, (a, (want, consume))) in args.iter().zip(params).enumerate() {
+            for (j, (a, (want, consume))) in args
+                .iter()
+                .zip(params.iter().skip(skip).copied())
+                .enumerate()
+            {
                 if !want.is_quantum() {
                     if want.has_param() {
                         let t = self.expr(a);
@@ -2351,6 +2873,17 @@ impl Checker {
         }
         match targs {
             Some(ts) if ok => {
+                for ((p, b), a) in tparams.iter().zip(&bounds).zip(&ts) {
+                    let Some(b) = b else { continue };
+                    let want = b.subst(&|q| map.get(&q).copied());
+                    if !self.implements(*a, want) {
+                        self.err(
+                            Code::Interface,
+                            span,
+                            msg::bound_not_satisfied(a.name(), want.name(), p.name()),
+                        );
+                    }
+                }
                 self.inferred.calls.insert(key(span), ts);
                 ret.subst(&|p| map.get(&p).copied())
             }

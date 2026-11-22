@@ -97,6 +97,14 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf(tried, "?"), "keyword.operator.try.qx");
   assert.equal(scopeOf(tried, "Ok"), "support.constant.variant.qx");
   assert.equal(scopeOf("Option<int> o = Option.None;", "None"), "support.constant.variant.qx");
+  const shapes = "interface Shape { double area(); }\nstruct Sq implements Shape { double s; double area() { return this.s; } }\n<T extends Shape> double sum(T x) { return x.area(); }";
+  assert.equal(scopeOf(shapes, "interface"), "storage.type.interface.qx");
+  assert.equal(scopeOf(shapes, "implements"), "keyword.other.implements.qx");
+  assert.equal(scopeOf(shapes, "extends"), "keyword.other.extends.qx");
+  assert.equal(scopeOf(shapes, "this"), "variable.language.this.qx");
+  assert.equal(scopeOf(shapes, "T"), "entity.name.type.parameter.qx");
+  assert.equal(scopeOf("interface Ordered<T> { int compare(T o); }", "Ordered"), "entity.name.type.qx");
+  assert.equal(scopeOf("int interface = 1;", " interface "), "source.qx");
   assert.equal(scopeOf(src, "helper"), "entity.name.function.call.qx");
   assert.equal(scopeOf(src, "as_int"), "support.function.method.qx");
 });

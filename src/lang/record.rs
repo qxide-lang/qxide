@@ -56,31 +56,41 @@ impl fmt::Debug for EnumVal {
 // recursive drops (a list of a million `Cons` cells would otherwise exhaust the stack).
 impl Drop for EnumVal {
     fn drop(&mut self) {
-        if !self.fields.iter().any(is_container) {
-            return;
-        }
-        let mut work = std::mem::take(&mut self.fields);
-        while let Some(v) = work.pop() {
-            match v {
-                Value::Enum(e) => {
-                    if let Ok(mut e) = Rc::try_unwrap(e) {
-                        work.append(&mut e.fields);
-                    }
+        drop_values(std::mem::take(&mut self.fields));
+    }
+}
+
+// Structs too: through interface-typed fields a chain of structs can be as long as a list.
+impl Drop for StructVal {
+    fn drop(&mut self) {
+        drop_values(std::mem::take(self.fields.get_mut()));
+    }
+}
+
+fn drop_values(mut work: Vec<Value>) {
+    if !work.iter().any(is_container) {
+        return;
+    }
+    while let Some(v) = work.pop() {
+        match v {
+            Value::Enum(e) => {
+                if let Ok(mut e) = Rc::try_unwrap(e) {
+                    work.append(&mut e.fields);
                 }
-                Value::Struct(s) => {
-                    if let Ok(s) = Rc::try_unwrap(s) {
-                        work.append(&mut s.fields.into_inner());
-                    }
-                }
-                Value::Array(a) => {
-                    if let Ok(a) = Rc::try_unwrap(a) {
-                        if let ArrayData::Other(mut items) = a.into_inner() {
-                            work.append(&mut items);
-                        }
-                    }
-                }
-                _ => {}
             }
+            Value::Struct(s) => {
+                if let Ok(mut s) = Rc::try_unwrap(s) {
+                    work.append(s.fields.get_mut());
+                }
+            }
+            Value::Array(a) => {
+                if let Ok(a) = Rc::try_unwrap(a) {
+                    if let ArrayData::Other(mut items) = a.into_inner() {
+                        work.append(&mut items);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

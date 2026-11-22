@@ -21,7 +21,8 @@ pub struct Parser {
     // used before their declaration).
     structs: HashSet<String>,
     enums: HashSet<String>,
-    // The structs and enums declared with type parameters: only after one of these names is `<`
+    ifaces: HashSet<String>,
+    // The structs, enums and interfaces declared with type parameters: only after one of these names is `<`
     // a list of type arguments (`Pair<int, String>`), so `a < b` stays a comparison.
     generics: HashSet<String>,
     // Type parameters in scope (of the generic declaration being parsed).
@@ -30,9 +31,13 @@ pub struct Parser {
 
 type PResult<T> = Result<T, Diagnostic>;
 
+// `extends I` of one type parameter, with the span of `I`.
+type Bound = Option<(Ty, Span)>;
+
 pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     let mut structs = HashSet::new();
     let mut enums = HashSet::new();
+    let mut ifaces = HashSet::new();
     let mut generics = HashSet::new();
     let mut depth = 0usize;
     for (i, w) in toks.windows(2).enumerate() {
@@ -47,6 +52,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
             }
             Tok::Struct if depth == 0 => &mut structs,
             Tok::Enum if depth == 0 => &mut enums,
+            Tok::Ident(w) if depth == 0 && w == INTERFACE => &mut ifaces,
             _ => continue,
         };
         if let Tok::Ident(n) = &w[1].tok {
@@ -59,7 +65,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     // The prelude's generic enums are known in every file that does not declare its own type of
     // that name (the linker adds their declarations, `link::add_prelude`).
     for name in PRELUDE_TYPES {
-        if !structs.contains(*name) && !enums.contains(*name) {
+        if !structs.contains(*name) && !enums.contains(*name) && !ifaces.contains(*name) {
             enums.insert(name.to_string());
             generics.insert(name.to_string());
         }
@@ -70,6 +76,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         depth: 0,
         structs,
         enums,
+        ifaces,
         generics,
         tparams: Vec::new(),
     };
@@ -80,6 +87,7 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     let mut fns = Vec::new();
     let mut structs = Vec::new();
     let mut enums = Vec::new();
+    let mut ifaces = Vec::new();
     while p.peek() != &Tok::Eof {
         if p.peek() == &Tok::Import {
             return Err(Diagnostic::new(
@@ -92,6 +100,8 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
             structs.push(p.struct_decl()?);
         } else if p.peek() == &Tok::Enum {
             enums.push(p.enum_decl()?);
+        } else if p.at_interface() {
+            ifaces.push(p.iface_decl()?);
         } else {
             fns.push(p.fn_decl()?);
         }
@@ -100,9 +110,15 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
         imports,
         structs,
         enums,
+        ifaces,
         fns,
     })
 }
+
+// Contextual keywords: ordinary identifiers everywhere else, so existing names keep working.
+const INTERFACE: &str = "interface";
+const IMPLEMENTS: &str = "implements";
+const EXTENDS: &str = "extends";
 
 impl Parser {
     fn peek(&self) -> &Tok {
@@ -242,6 +258,130 @@ impl Parser {
         Ok(params)
     }
 
+    // `<T, U extends Shape>`: the type parameters of a generic function and their bounds. Each
+    // parameter is in scope from its own bound on (`<T extends Ordered<T>>`).
+    fn bounded_type_params(&mut self) -> PResult<(Vec<Ident>, Vec<Bound>)> {
+        let (mut params, mut bounds) = (Vec::new(), Vec::new());
+        self.tparams.clear();
+        if self.eat(&Tok::Lt) {
+            loop {
+                let p = self.name()?;
+                self.tparams.push(p.name.clone());
+                params.push(p);
+                bounds.push(if self.eat_word(EXTENDS) {
+                    Some(self.ty()?)
+                } else {
+                    None
+                });
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(Tok::Gt)?;
+        }
+        Ok((params, bounds))
+    }
+
+    fn eat_word(&mut self, word: &str) -> bool {
+        if matches!(self.peek(), Tok::Ident(w) if w == word) {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    // `interface Name` at the start of a top-level item.
+    fn at_interface(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(w) if w == INTERFACE)
+            && matches!(self.peek_at(1), Tok::Ident(_))
+    }
+
+    // `implements A, B<int>` after the name of a struct or enum (none without the word).
+    fn implements(&mut self) -> PResult<Vec<(Ty, Span)>> {
+        let mut out = Vec::new();
+        if self.eat_word(IMPLEMENTS) {
+            out.push(self.ty()?);
+            while self.eat(&Tok::Comma) {
+                out.push(self.ty()?);
+            }
+        }
+        Ok(out)
+    }
+
+    // `interface Name<T> { Ret method(Type a); ... }`
+    fn iface_decl(&mut self) -> PResult<IfaceDecl> {
+        self.bump();
+        let name = self.name()?;
+        let params = self.type_params()?;
+        self.tparams = params.iter().map(|p| p.name.clone()).collect();
+        self.expect(Tok::LBrace)?;
+        let mut methods = Vec::new();
+        while self.peek() != &Tok::RBrace {
+            let (ret, ret_span) = self.ty()?;
+            let name = self.name()?;
+            let params = self.params()?;
+            self.expect(Tok::Semi)?;
+            methods.push(MethodSig {
+                name,
+                params,
+                ret,
+                ret_span,
+            });
+        }
+        self.expect(Tok::RBrace)?;
+        self.tparams.clear();
+        Ok(IfaceDecl {
+            name,
+            params,
+            methods,
+        })
+    }
+
+    // `(Type a, consume Type b)`
+    fn params(&mut self) -> PResult<Vec<Param>> {
+        self.expect(Tok::LParen)?;
+        let mut params = Vec::new();
+        while self.peek() != &Tok::RParen {
+            let consume = if self.peek() == &Tok::Consume {
+                Some(self.bump().span)
+            } else {
+                None
+            };
+            let (ty, ty_span) = self.ty()?;
+            let pname = self.name()?;
+            params.push(Param {
+                consume,
+                name: pname,
+                ty,
+                ty_span,
+            });
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(Tok::RParen)?;
+        Ok(params)
+    }
+
+    // A method of a struct or enum, after its return type and name: `(params) { ... }`. The
+    // type parameters of the declaring type stay in scope.
+    fn method(&mut self, ret: Ty, ret_span: Span, name: Ident) -> PResult<FnDecl> {
+        let params = self.params()?;
+        let body = self.block()?;
+        Ok(FnDecl {
+            public: None,
+            tparams: Vec::new(),
+            bounds: Vec::new(),
+            name,
+            params,
+            ret,
+            ret_span,
+            body,
+            method: None,
+        })
+    }
+
     // `new int[n][m]`, `new int[n][]` or `new int[]{1, 2}`, after the `new`.
     fn new_array(&mut self, start: Span) -> PResult<Expr> {
         let (elem, _) = match self.peek() {
@@ -362,17 +502,24 @@ impl Parser {
         Ok(Import { module, item, span })
     }
 
-    // `struct Name { Type field; ... }` or `struct Name<A, B> { ... }`
+    // `struct Name<A, B> implements I { Type field; ... Ret method(...) { ... } ... }`: fields
+    // and methods, in any order.
     fn struct_decl(&mut self) -> PResult<StructDecl> {
         self.bump();
         let name = self.name()?;
         let params = self.type_params()?;
         self.tparams = params.iter().map(|p| p.name.clone()).collect();
+        let implements = self.implements()?;
         self.expect(Tok::LBrace)?;
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         while self.peek() != &Tok::RBrace {
             let (ty, ty_span) = self.ty()?;
             let name = self.name()?;
+            if self.peek() == &Tok::LParen {
+                methods.push(self.method(ty, ty_span, name)?);
+                continue;
+            }
             self.expect(Tok::Semi)?;
             fields.push(Field { ty, ty_span, name });
         }
@@ -381,19 +528,23 @@ impl Parser {
         Ok(StructDecl {
             name,
             params,
+            implements,
             fields,
+            methods,
         })
     }
 
-    // `enum Name { A, B(Type x, Type y), ... }` (a trailing comma is allowed).
+    // `enum Name { A, B(Type x, Type y), ... }` (a trailing comma is allowed); methods follow the
+    // variants after a `;`: `enum Name implements I { A, B; Ret method() { ... } }`.
     fn enum_decl(&mut self) -> PResult<EnumDecl> {
         self.bump();
         let name = self.name()?;
         let params = self.type_params()?;
         self.tparams = params.iter().map(|p| p.name.clone()).collect();
+        let implements = self.implements()?;
         self.expect(Tok::LBrace)?;
         let mut variants = Vec::new();
-        while self.peek() != &Tok::RBrace {
+        while !matches!(self.peek(), Tok::RBrace | Tok::Semi) {
             let vname = self.name()?;
             let mut fields = Vec::new();
             if self.eat(&Tok::LParen) {
@@ -419,16 +570,27 @@ impl Parser {
         if variants.is_empty() {
             return Err(self.unexpected(msg::expected_ident(&self.peek().describe())));
         }
+        let mut methods = Vec::new();
+        if self.eat(&Tok::Semi) {
+            while self.peek() != &Tok::RBrace {
+                let (ty, ty_span) = self.ty()?;
+                let name = self.name()?;
+                methods.push(self.method(ty, ty_span, name)?);
+            }
+        }
         self.expect(Tok::RBrace)?;
         self.tparams.clear();
         Ok(EnumDecl {
             name,
             params,
+            implements,
             variants,
+            methods,
         })
     }
 
-    // A built-in type name, a type parameter in scope, or a struct or enum of this file.
+    // A built-in type name, a type parameter in scope, or a struct, enum or interface of this
+    // file.
     fn named_ty(&self, name: &str) -> Option<Ty> {
         if self.tparams.iter().any(|p| p == name) {
             return Some(Ty::param_named(name));
@@ -436,12 +598,14 @@ impl Parser {
         Ty::from_name(name)
             .or_else(|| self.structs.contains(name).then(|| Ty::struct_named(name)))
             .or_else(|| self.enums.contains(name).then(|| Ty::enum_named(name)))
+            .or_else(|| self.ifaces.contains(name).then(|| Ty::iface_named(name)))
     }
 
     fn is_type_name(&self, name: &str) -> bool {
         Ty::from_name(name).is_some()
             || self.structs.contains(name)
             || self.enums.contains(name)
+            || self.ifaces.contains(name)
             || self.tparams.iter().any(|p| p == name)
     }
 
@@ -529,41 +693,22 @@ impl Parser {
         } else {
             None
         };
-        let tparams = self.type_params()?;
-        self.tparams = tparams.iter().map(|p| p.name.clone()).collect();
+        let (tparams, bounds) = self.bounded_type_params()?;
         let (ret, ret_span) = self.ty()?;
         let name = self.name()?;
-        self.expect(Tok::LParen)?;
-        let mut params = Vec::new();
-        while self.peek() != &Tok::RParen {
-            let consume = if self.peek() == &Tok::Consume {
-                Some(self.bump().span)
-            } else {
-                None
-            };
-            let (ty, ty_span) = self.ty()?;
-            let pname = self.name()?;
-            params.push(Param {
-                consume,
-                name: pname,
-                ty,
-                ty_span,
-            });
-            if !self.eat(&Tok::Comma) {
-                break;
-            }
-        }
-        self.expect(Tok::RParen)?;
+        let params = self.params()?;
         let body = self.block()?;
         self.tparams.clear();
         Ok(FnDecl {
             public,
             tparams,
+            bounds,
             name,
             params,
             ret,
             ret_span,
             body,
+            method: None,
         })
     }
 

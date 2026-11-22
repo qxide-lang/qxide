@@ -102,6 +102,7 @@ pub fn link(
     if program.imports.is_empty() {
         let mut program = program;
         add_prelude(&mut l.map, &mut program);
+        program.lift_methods();
         return (l.map, Ok(program));
     }
     let pkg = project.map(|p| p.entry_package);
@@ -134,13 +135,20 @@ pub fn link(
         .iter_mut()
         .flat_map(|m| std::mem::take(&mut m.program.enums))
         .collect();
+    let ifaces = l
+        .modules
+        .iter_mut()
+        .flat_map(|m| std::mem::take(&mut m.program.ifaces))
+        .collect();
     let mut program = Program {
         imports: Vec::new(),
         structs,
         enums,
+        ifaces,
         fns,
     };
     add_prelude(&mut l.map, &mut program);
+    program.lift_methods();
     (l.map, Ok(program))
 }
 
@@ -494,6 +502,19 @@ impl Linker<'_> {
             for f in &mut fns {
                 self.rewrite_block(scope, &mut f.body);
             }
+            // Methods call the functions of their own module; they keep their names (the type
+            // names them, `Program::lift_methods`).
+            let mut structs = std::mem::take(&mut self.modules[m].program.structs);
+            let mut enums = std::mem::take(&mut self.modules[m].program.enums);
+            let methods = structs
+                .iter_mut()
+                .flat_map(|s| &mut s.methods)
+                .chain(enums.iter_mut().flat_map(|e| &mut e.methods));
+            for f in methods {
+                self.rewrite_block(scope, &mut f.body);
+            }
+            self.modules[m].program.structs = structs;
+            self.modules[m].program.enums = enums;
             let prefix = self.modules[m].prefix.clone();
             for f in &mut fns {
                 f.name.name = format!("{prefix}{}", f.name.name);

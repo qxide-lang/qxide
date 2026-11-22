@@ -496,6 +496,36 @@ fn completion_offers_names_in_scope_keywords_and_builtins() {
     c.shutdown();
 }
 
+// Methods: hover on a call shows the method's signature, `this` is a local of the method, and
+// after `.` the document's methods complete.
+#[test]
+fn methods_hover_and_complete() {
+    let mut c = Client::start();
+    let src = "struct Vec2 {\n    double x;\n\n    double scaled(double k) {\n        return this.x * k;\n    }\n}\n\nvoid main() {\n    Vec2 v = new Vec2(1);\n    double d = v.scaled(2);\n}\n";
+    assert!(c.open(URI, src).is_empty());
+    let hover = |c: &mut Client, needle: &str| {
+        let (l, ch) = pos_of(src, needle, 0, 0);
+        c.at("textDocument/hover", URI, l, ch)["contents"]["value"]
+            .as_str()
+            .map(str::to_string)
+    };
+    assert_eq!(
+        hover(&mut c, "scaled(2)").unwrap(),
+        "```qx\ndouble Vec2.scaled(double k)\n```"
+    );
+    assert_eq!(hover(&mut c, "this.x").unwrap(), "```qx\nVec2 this\n```");
+    assert_eq!(
+        hover(&mut c, "scaled(double").unwrap(),
+        "```qx\ndouble Vec2.scaled(double k)\n```"
+    );
+    let dotted = src.replace("v.scaled(2)", "v.");
+    c.change(URI, 2, &dotted);
+    let (l, ch) = pos_of(&dotted, "v.;", 0, 2);
+    let got = labels(&c.at("textDocument/completion", URI, l, ch));
+    assert!(got.iter().any(|g| g == "scaled"), "{got:?}");
+    c.shutdown();
+}
+
 #[test]
 fn formatting_replaces_the_whole_document_with_fmt_output() {
     let mut c = Client::start();

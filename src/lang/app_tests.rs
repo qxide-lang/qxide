@@ -335,6 +335,26 @@ public <T> T same(T x) {
 public Result<int, String> parsed(int n) {
     return Result.Ok(n);
 }
+
+interface Named {
+    String name();
+}
+
+struct Tag implements Named {
+    String text;
+
+    String name() {
+        return this.text;
+    }
+}
+
+public Named named(String s) {
+    return new Tag(s);
+}
+
+public int tag_len(Named n) {
+    return n.name().length();
+}
 "#;
 
 fn app_call(
@@ -357,6 +377,8 @@ fn app_call(
         "boxed",
         "same",
         "parsed",
+        "named",
+        "tag_len",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -494,6 +516,12 @@ fn command_errors() {
         code(app_call("same", &[("x", JsArg::Int(2))], 1, 0)),
         "Q0714"
     );
+    // Interface values cannot either, in either direction.
+    assert_eq!(
+        code(app_call("named", &[("s", JsArg::Str("a".into()))], 1, 0)),
+        "Q0714"
+    );
+    assert_eq!(code(app_call("tag_len", &[], 1, 0)), "Q0714");
     // The prelude's `Result` is an instance too.
     assert_eq!(
         code(app_call("parsed", &[("n", JsArg::Int(2))], 1, 0)),

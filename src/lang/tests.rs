@@ -11,6 +11,7 @@ const ROTATION: &str = include_str!("../../examples/qx/rotation.qx");
 const TELEPORT_FN: &str = include_str!("../../examples/qx/teleport_fn.qx");
 pub(super) const GENERICS: &str = include_str!("../../examples/qx/generics.qx");
 pub(super) const ERRORS: &str = include_str!("../../examples/qx/errors.qx");
+pub(super) const INTERFACES: &str = include_str!("../../examples/qx/interfaces.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -1110,6 +1111,13 @@ fn deepest_programs() -> Vec<Deepest> {
             format!(
                 "int g(int x) {{\n    return x;\n}}\n\n{}",
                 wrap(format!("return {call};"))
+            )
+        }),
+        ("method_args", 61, |n| {
+            let call = nest(n, "w.g(", "f(k - 1)", ")");
+            format!(
+                "struct W {{\n    int z;\n\n    int g(int x) {{\n        return x;\n    }}\n}}\n\n{}",
+                wrap(format!("W w = new W(0);\n        return {call};"))
             )
         }),
         ("builtin_arg", 123, |n| {
@@ -2284,4 +2292,233 @@ fn deepest_legal_programs_fit_in_half_the_interpreter_stack() {
         .join()
         .unwrap();
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// Methods, interfaces as bounds and as values, and the prelude's methods (examples/qx/interfaces.qx).
+#[test]
+fn interfaces_example() {
+    assert_eq!(
+        run_ok(INTERFACES, 1),
+        "rect 4.0 x 6.0 = 24.0\ncircles: 16.0\ncircle 3.0\nrect 24.0\ngreen 0.0\nall: 27.0\nmax: 990\ngood: 6\nbad: -1 ok=false\n"
+    );
+}
+
+#[test]
+fn methods_of_structs_enums_and_generic_types() {
+    let src = "struct Counter {
+    int n;
+
+    void add(int k) {
+        this.n += k;
+    }
+
+    int get() {
+        return this.n;
+    }
+
+    int twice() {
+        return this.get() * 2;
+    }
+}
+
+struct Box<T> {
+    T v;
+
+    T get() {
+        return this.v;
+    }
+
+    void set(T v) {
+        this.v = v;
+    }
+}
+
+enum Coin {
+    Heads,
+    Tails;
+
+    Coin flip() {
+        match this {
+            Heads => {
+                return Coin.Tails;
+            }
+            Tails => {
+                return Coin.Heads;
+            }
+        }
+    }
+
+    boolean heads() {
+        match this {
+            Heads => {
+                return true;
+            }
+            _ => {
+                return false;
+            }
+        }
+    }
+}
+
+<T> T unbox(Box<T> b) {
+    return b.get();
+}
+
+void main() {
+    Counter c = new Counter(1);
+    c.add(4);
+    Box<String> b = new Box(\"a\");
+    b.set(b.get() + \"b\");
+    Box<Box<int>> bb = new Box(new Box(7));
+    Option<int> none = Option.None;
+    println(\"{} {} {} {}\", c.get(), c.twice(), b.get(), unbox(bb).get());
+    println(\"{} {}\", Coin.Heads.flip().heads(), Coin.Tails.flip().heads());
+    println(\"{} {} {}\", none.is_none(), none.unwrap_or(3), Option.Some(5).unwrap_or(0));
+    println(\"{} {}\", \"x\".try_parse_int().is_err(), \"12\".try_parse_int().unwrap_or(0));
+}
+";
+    assert_eq!(run_ok(src, 1), "5 10 ab 7\nfalse true\ntrue 3 5\ntrue 12\n");
+    // The words are contextual: still ordinary names outside declarations.
+    ok("void main() {\n    int interface = 1;\n    int implements = 2;\n    int extends = 3;\n    int this = interface + implements + extends;\n}\n");
+}
+
+#[test]
+fn interface_errors() {
+    let shape = "interface Shape {\n    double area();\n}\n\n";
+    // A missing method, a signature that differs, and a type that is not an interface.
+    assert_eq!(
+        errors(&format!(
+            "{shape}struct A implements Shape {{\n    int x;\n}}\n\nvoid main() {{}}\n"
+        )),
+        [("Q0232", 5, 21)]
+    );
+    assert_eq!(
+        errors(&format!("{shape}struct A implements Shape {{\n    int area() {{\n        return 1;\n    }}\n}}\n\nvoid main() {{}}\n")),
+        [("Q0232", 6, 9)]
+    );
+    assert_eq!(
+        errors("struct B {\n    int x;\n}\n\nstruct A implements B {\n    int y;\n}\n\nvoid main() {}\n"),
+        [("Q0232", 5, 21)]
+    );
+    // Bounds: an interface, satisfied by the argument type.
+    let bound = format!("{shape}struct Sq implements Shape {{\n    double s;\n\n    double area() {{\n        return this.s * this.s;\n    }}\n}}\n\n<T extends Shape> double sum(T[] xs) {{\n    return xs[0].area();\n}}\n\n");
+    ok(&format!(
+        "{bound}void main() {{\n    Sq[] a = {{new Sq(2)}};\n    double d = sum(a);\n}}\n"
+    ));
+    assert_eq!(
+        codes(&format!(
+            "{bound}void main() {{\n    int[] a = {{1}};\n    double d = sum(a);\n}}\n"
+        )),
+        ["Q0232"]
+    );
+    assert_eq!(
+        codes("<T extends int> void f(T x) {}\n\nvoid main() {}\n"),
+        ["Q0232"]
+    );
+    // Without a bound a type parameter has no methods.
+    assert_eq!(
+        codes(&format!(
+            "{shape}<T> double f(T x) {{\n    return x.area();\n}}\n\nvoid main() {{}}\n"
+        )),
+        ["Q0230"]
+    );
+    // Unknown methods, wrong arity, a field and a method of one name, reassigning `this`.
+    assert_eq!(
+        codes("struct P {\n    int x;\n}\n\nvoid main() {\n    P p = new P(1);\n    p.y();\n}\n"),
+        ["Q0220"]
+    );
+    assert_eq!(
+        codes(&format!(
+            "{shape}void f(Shape s) {{\n    s.area(1);\n    s.size();\n}}\n\nvoid main() {{}}\n"
+        )),
+        ["Q0203", "Q0220"]
+    );
+    assert_eq!(
+        codes("struct P {\n    int x;\n\n    int x() {\n        return 1;\n    }\n}\n\nvoid main() {}\n"),
+        ["Q0205"]
+    );
+    assert_eq!(
+        codes("struct P {\n    int x;\n\n    void reset() {\n        this = new P(0);\n    }\n}\n\nvoid main() {}\n"),
+        ["Q0207"]
+    );
+    // Interface values: no default (`new I[n]`, also through a struct field or generic code),
+    // no printing, no `match`.
+    assert_eq!(
+        codes(&format!(
+            "{shape}void main() {{\n    Shape[] a = new Shape[2];\n}}\n"
+        )),
+        ["Q0225"]
+    );
+    assert_eq!(
+        codes(&format!("{shape}struct H {{\n    Shape s;\n}}\n\nvoid main() {{\n    H[] a = new H[2];\n    H[][] b = new H[2][];\n}}\n")),
+        ["Q0225"]
+    );
+    assert_eq!(
+        codes(&format!("{shape}struct Sq implements Shape {{\n    double s;\n\n    double area() {{\n        return this.s;\n    }}\n}}\n\n<T> T[] fill(T x) {{\n    T[] a = new T[1];\n    a[0] = x;\n    return a;\n}}\n\nvoid main() {{\n    int[] ok = fill(1);\n    Shape s = new Sq(1);\n    Shape[] bad = fill(s);\n}}\n")),
+        ["Q0225"]
+    );
+    assert_eq!(
+        codes(&format!("{shape}void f(Shape s) {{\n    println(\"{{}}\", s);\n    match s {{\n        _ => {{}}\n    }}\n}}\n\nvoid main() {{}}\n")),
+        ["Q0212", "Q0229"]
+    );
+}
+
+// Methods may take and consume qubits like functions; method calls inside an `if` on a measured
+// bit follow the function rules, an interface call those of every method of its name.
+#[test]
+fn methods_follow_the_qubit_rules() {
+    let lab = "struct Lab {\n    int runs;\n\n    void flip(Qubit q) {\n        x(q);\n    }\n\n    Bit read(consume Qubit q) {\n        this.runs += 1;\n        return measure(q);\n    }\n}\n\n";
+    ok(&format!("{lab}void main() {{\n    Lab l = new Lab(0);\n    Qubit q = qubit();\n    l.flip(q);\n    Bit b = l.read(q);\n}}\n"));
+    assert_eq!(
+        codes(&format!("{lab}void main() {{\n    Lab l = new Lab(0);\n    Qubit q = qubit();\n    Bit b = l.read(q);\n    l.flip(q);\n}}\n")),
+        ["Q0301"]
+    );
+    assert_eq!(
+        codes(&format!("{lab}void main() {{\n    Lab l = new Lab(0);\n    Qubit q = qubit();\n    l.flip(q);\n}}\n")),
+        ["Q0302"]
+    );
+    // `flip` only applies a gate: allowed under a measured bit; `read` measures: not.
+    let cond = |call: &str| {
+        format!("{lab}void main() {{\n    Lab l = new Lab(0);\n    Qubit q = qubit();\n    Qubit r = qubit();\n    if measure(r) {{\n        {call}\n    }}\n    discard(q);\n}}\n")
+    };
+    ok(&cond("l.flip(q);"));
+    assert!(codes(&cond("Bit b = l.read(q);")).contains(&"Q0314"));
+    let gates = "interface Gate {\n    void act(Qubit q);\n}\n\nstruct X implements Gate {\n    int n;\n\n    void act(Qubit q) {\n        x(q);\n    }\n}\n\nstruct H implements Gate {\n    int n;\n\n    void act(Qubit q) {\n        h(q);\n    }\n}\n\n";
+    let use_gate = |extra: &str| {
+        format!("{gates}{extra}void main() {{\n    Gate g = new H(0);\n    Qubit q = qubit();\n    Qubit r = qubit();\n    if measure(r) {{\n        g.act(q);\n    }}\n    discard(q);\n}}\n")
+    };
+    ok(&use_gate(""));
+    // Some method named `act` allocates a qubit: the interface call may run it.
+    assert_eq!(
+        codes(&use_gate("struct M {\n    int n;\n\n    void act(Qubit q) {\n        Qubit t = qubit();\n        discard(t);\n    }\n}\n\n")),
+        ["Q0314"]
+    );
+}
+
+// Values linked through interface-typed payloads of an (immutable) enum may form long chains;
+// dropping one does not recurse. A struct (mutable) that can reach itself through an interface
+// is rejected like any recursive struct (`Q0227`): it could refer to itself and never be freed.
+#[test]
+fn recursion_through_interfaces() {
+    let link = "interface Link {\n    int depth();\n}\n\n";
+    let chain = format!("{link}enum Chain implements Link {{\n    End,\n    Node(Link next);\n\n    int depth() {{\n        match this {{\n            End => {{\n                return 0;\n            }}\n            Node(_) => {{\n                return 1;\n            }}\n        }}\n    }}\n}}\n\nstruct Holder {{\n    Link first;\n}}\n\nvoid main() {{\n    Link cur = Chain.End;\n    for i in 0..1000000 {{\n        cur = Chain.Node(cur);\n    }}\n    Holder h = new Holder(cur);\n    println(\"{{}}\", h.first.depth());\n}}\n");
+    assert_eq!(run_ok(&chain, 1), "1\n");
+    let node = format!("{link}struct Node implements Link {{\n    Link next;\n\n    int depth() {{\n        return 1;\n    }}\n}}\n\nvoid main() {{}}\n");
+    assert_eq!(errors(&node), [("Q0227", 6, 5)]);
+    let bag = format!("{link}enum Bag implements Link {{\n    Empty,\n    Items(Link[] items);\n\n    int depth() {{\n        return 0;\n    }}\n}}\n\nvoid main() {{}}\n");
+    assert_eq!(codes(&bag), ["Q0227"]);
+    // Only an instance can: `Wrap<int>` is fine, `Wrap<Link>` could hold itself.
+    let wrap = |arg: &str| {
+        format!("{link}struct Wrap<T> implements Link {{\n    T v;\n\n    int depth() {{\n        return 0;\n    }}\n}}\n\nvoid main() {{\n    Wrap<{arg}> w = new Wrap(Chain.End);\n}}\n\nenum Chain implements Link {{\n    End;\n\n    int depth() {{\n        return 0;\n    }}\n}}\n")
+    };
+    assert_eq!(codes(&wrap("Link")), ["Q0227"]);
+    assert_eq!(codes(&wrap("Chain")), Vec::<&str>::new());
+}
+
+// Interface calls reach the methods of generic implementors' instances and of generic
+// interfaces (the monomorphized program is checked again in debug builds).
+#[test]
+fn interface_calls_on_generic_types() {
+    let src = "interface Shape {\n    double area();\n}\n\ninterface Holder<T> {\n    T get();\n}\n\nstruct Wrap<T> implements Shape, Holder<T> {\n    T v;\n    double k;\n\n    double area() {\n        return this.k;\n    }\n\n    T get() {\n        return this.v;\n    }\n}\n\nvoid main() {\n    Shape a = new Wrap(5, 2.5);\n    Shape b = new Wrap(\"s\", 1);\n    Holder<String> h = new Wrap(\"held\", 0);\n    Option<Shape> maybe = Option.Some(a);\n    println(\"{} {} {} {}\", a.area(), b.area(), h.get(), maybe.unwrap_or(b).area());\n}\n";
+    assert_eq!(run_ok(src, 1), "2.5 1.0 held 2.5\n");
 }

@@ -101,12 +101,64 @@ pub const PACKAGE: &str = "std";
 /// The prelude: generic enums every file may use without an import (`parser::PRELUDE_TYPES`).
 pub const PRELUDE: &str = "enum Result<T, E> {
     Ok(T value),
-    Err(E error),
+    Err(E error);
+
+    boolean is_ok() {
+        match this {
+            Ok(_) => {
+                return true;
+            }
+            Err(_) => {
+                return false;
+            }
+        }
+    }
+
+    boolean is_err() {
+        return !this.is_ok();
+    }
+
+    T unwrap_or(T fallback) {
+        match this {
+            Ok(v) => {
+                return v;
+            }
+            Err(_) => {
+                return fallback;
+            }
+        }
+    }
 }
 
 enum Option<T> {
     None,
-    Some(T value),
+    Some(T value);
+
+    boolean is_some() {
+        match this {
+            None => {
+                return false;
+            }
+            Some(_) => {
+                return true;
+            }
+        }
+    }
+
+    boolean is_none() {
+        return !this.is_some();
+    }
+
+    T unwrap_or(T fallback) {
+        match this {
+            None => {
+                return fallback;
+            }
+            Some(v) => {
+                return v;
+            }
+        }
+    }
 }
 ";
 

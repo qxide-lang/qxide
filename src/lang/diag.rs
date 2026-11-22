@@ -83,6 +83,7 @@ codes! {
     BadPattern => "Q0229",
     TypeArgs => "Q0230",
     BadTry => "Q0231",
+    Interface => "Q0232",
     UseAfterConsume => "Q0301",
     NeverConsumed => "Q0302",
     DuplicateQubit => "Q0303",

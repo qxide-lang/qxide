@@ -165,6 +165,8 @@ impl<'p> Frame<'p> {
 
 struct Interp<'p, 'h> {
     fns: HashMap<&'p str, &'p FnDecl>,
+    // Method functions by (receiver type, method name), for calls on interface values.
+    methods: HashMap<(Ty, &'p str), &'p FnDecl>,
     m: Machine<'h>,
     // The value a failing `?` returns: it unwinds to `call_fn` as an error, which returns it.
     unwind: Option<Value>,
@@ -187,6 +189,7 @@ pub fn elaborate_call(
 ) -> R<(Elaborated, Value)> {
     let mut it = Interp {
         fns: p.fns.iter().map(|f| (f.name.name.as_str(), f)).collect(),
+        methods: method_table(p),
         m: Machine::new(host, limits, super::record::Layouts::of(p)),
         unwind: None,
     };
@@ -194,6 +197,23 @@ pub fn elaborate_call(
     let mut c = Circuit::new();
     let ret = it.call_fn(&mut c, f, args, f.name.span)?;
     Ok((it.m.finish(c), ret))
+}
+
+/// Method functions by (receiver type, method name): a method's first parameter is `this`.
+pub fn method_table(p: &Program) -> HashMap<(Ty, &str), &FnDecl> {
+    p.fns
+        .iter()
+        .filter_map(|f| Some(((f.params.first()?.ty, f.method.as_deref()?), f)))
+        .collect()
+}
+
+/// The run-time type of a struct or enum value, which picks the method an interface call runs.
+pub fn dyn_type(v: &Value) -> Option<Ty> {
+    match v {
+        Value::Struct(s) => Some(Ty::Struct(s.ty)),
+        Value::Enum(e) => Some(Ty::Enum(e.ty)),
+        _ => None,
+    }
 }
 
 impl<'p> Interp<'p, '_> {
@@ -695,6 +715,17 @@ impl<'p> Interp<'p, '_> {
                 vals.push(self.expr(c, f, a)?);
             }
             return self.m.str_method(&name.name, v, vals, span);
+        }
+        // A call on an interface value: the method of the value's own type.
+        if let Some(t) = dyn_type(&v) {
+            let func = *self
+                .methods
+                .get(&(t, name.name.as_str()))
+                .ok_or_else(|| internal(span))?;
+            let mut vals = Vec::with_capacity(args.len() + 1);
+            vals.push(v);
+            vals.extend(self.args(c, f, args)?);
+            return self.call_user(c, func, vals, span);
         }
         machine::method(v, &name.name, span)
     }

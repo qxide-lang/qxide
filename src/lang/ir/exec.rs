@@ -200,6 +200,10 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = coerce(fr.get(*src), Ty::Double);
                 fr.set(*dst, v);
             }
+            Inst::Upcast { dst, src } => {
+                let v = fr.get(*src);
+                fr.set(*dst, v);
+            }
             Inst::IntOp {
                 op,
                 dst,
@@ -467,6 +471,26 @@ impl<'m> Exec<'m, '_, '_> {
                 let callee = &module.funcs[*func as usize];
                 self.m.check_aliasing(&vals, &callee.name, *span)?;
                 let v = self.call(c, *func, vals, *span)?;
+                fr.set(*dst, v);
+            }
+            Inst::CallDyn {
+                method,
+                dst,
+                args,
+                span,
+            } => {
+                let vals: Vec<Value> = args.iter().map(|a| fr.get(*a)).collect();
+                let module: &'m Module = self.module;
+                let func = vals
+                    .first()
+                    .and_then(super::super::interp::dyn_type)
+                    .and_then(|t| module.methods.get(&t))
+                    .and_then(|ms| ms.get(&**method))
+                    .copied()
+                    .ok_or_else(|| internal(*span))?;
+                let callee = &module.funcs[func as usize];
+                self.m.check_aliasing(&vals, &callee.name, *span)?;
+                let v = self.call(c, func, vals, *span)?;
                 fr.set(*dst, v);
             }
             Inst::IfBit {
