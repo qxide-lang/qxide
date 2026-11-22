@@ -311,6 +311,89 @@ pub fn qasm_input_with(input: &Input, limits: &Limits) -> Result<String, Failure
     Ok(e.circuit.to_qasm())
 }
 
+/// A program elaborated for an external quantum device (`qxide run --backend`): its OpenQASM 3
+/// and what it prints for each measurement record the device returns.
+#[allow(dead_code)]
+pub struct Exported {
+    pub qasm: String,
+    /// Width of the classical register `c`: every measurement result, in order.
+    pub measured: usize,
+    output: Vec<OutPiece>,
+    bits: Vec<qxide::Bit>,
+    max_output_bytes: u64,
+}
+
+/// Elaborates once like `qxide qasm` (effects refused) and keeps the output template, so records
+/// measured elsewhere print the same way as simulated shots.
+#[allow(dead_code)]
+pub fn export_input(input: &Input) -> Result<Exported, Failure> {
+    let limits = Limits::CLI;
+    let mut host = stdlib::NoEffects {
+        what: "`qxide run --backend`",
+    };
+    let (map, built) = build_input(input, &mut host, &limits);
+    let (program, e) = built.map_err(|e| render(&map, &e, &limits))?;
+    check_qasm_size(&e, main_span(&program), &limits).map_err(|d| render(&map, &[d], &limits))?;
+    Ok(Exported {
+        qasm: e.circuit.to_qasm(),
+        measured: e.measured.len(),
+        output: e.output,
+        bits: e.measured,
+        max_output_bytes: limits.max_output_bytes,
+    })
+}
+
+#[allow(dead_code)]
+impl Exported {
+    /// The output of `qxide run` for these records (each one value of `c[0..measured]`): the
+    /// program's output for a single record, else the `--shots` table. Errors with the reason
+    /// when the table would pass the output limit.
+    pub fn render(&self, records: &[Vec<bool>]) -> Result<String, String> {
+        let text = |record: &[bool]| {
+            render_output_with(&self.output, &|b| {
+                self.bits
+                    .iter()
+                    .position(|&m| m == b)
+                    .is_some_and(|i| record[i])
+            })
+        };
+        if let [record] = records {
+            return Ok(text(record));
+        }
+        let mut groups: HashMap<Vec<bool>, (u64, String)> = HashMap::new();
+        let mut bytes: u64 = 0;
+        for record in records {
+            if let Some(group) = groups.get_mut(record) {
+                group.0 += 1;
+                continue;
+            }
+            let out = text(record);
+            // Same accounting as the simulated table in `run_built`.
+            let bits = record.len() as u64;
+            let lines = out.lines().count() as u64;
+            bytes = bytes.saturating_add(4 * bits + 52 + bits + out.len() as u64 + 3 * lines);
+            if bytes > self.max_output_bytes {
+                return Err(msg::shots_output_limit(
+                    records.len() as u64,
+                    self.max_output_bytes,
+                ));
+            }
+            groups.insert(record.clone(), (1, out));
+        }
+        let mut s = String::new();
+        for (bits, (count, out)) in sorted_groups(groups) {
+            s.push_str(&table_row(&bits, count));
+            s.push('\n');
+            for line in out.lines() {
+                s.push_str("  ");
+                s.push_str(line);
+                s.push('\n');
+            }
+        }
+        Ok(s)
+    }
+}
+
 // The interpreter adds up an upper bound of every QASM line, so the text is never built when it
 // would pass the output limit (M-10).
 fn check_qasm_size(e: &Elaborated, at: diag::Span, limits: &Limits) -> Result<(), Diagnostic> {
@@ -418,7 +501,10 @@ fn bits_value(bits: &[bool]) -> Option<u64> {
 }
 
 fn render_output(out: &[OutPiece], shot: Option<&Shot>) -> String {
-    let bit = |b: qxide::Bit| shot.is_some_and(|s| s.get(b));
+    render_output_with(out, &|b| shot.is_some_and(|s| s.get(b)))
+}
+
+fn render_output_with(out: &[OutPiece], bit: &dyn Fn(qxide::Bit) -> bool) -> String {
     let mut s = String::new();
     for p in out {
         match p {

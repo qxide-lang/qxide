@@ -7,6 +7,7 @@ mod app;
 mod lang;
 mod lsp;
 mod pkg;
+mod qpu;
 
 use qxide::{Backend, Circuit};
 use std::path::Path;
@@ -24,6 +25,8 @@ fn usage() -> String {
 
 Commands:
   run [FILE] [--shots N] [--seed S]  Run a .qx program and simulate it (default: 1 shot, random seed, printed to stderr)
+  run [FILE] --backend ibm:DEVICE    {}
+                                     {}
   check [FILE]                       Check a .qx program for errors without running it
   qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
@@ -38,12 +41,19 @@ Options:
   -V, --version                      Print version
   -h, --help                         Print help
 ",
+        BACKEND_HELP,
+        BACKEND_FLAGS_HELP,
         LSP_HELP,
         pkg::cli::usage(),
         app::usage(),
         ENGINE_HELP
     )
 }
+
+const BACKEND_HELP: &str =
+    "Run a .qx program on an IBM quantum computer (prompts before submitting; uses QPU time)";
+
+const BACKEND_FLAGS_HELP: &str = "--dry-run (preview), --yes (no prompt), --max-seconds S (QPU cap, default 120), --device-config FILE (dry-run)";
 
 const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
 
@@ -129,6 +139,13 @@ fn parse_count(flag: &str, value: Option<&String>, min: u64) -> Result<u64, Exit
             Err(ExitCode::from(2))
         }
     }
+}
+
+fn parse_value(flag: &str, value: Option<&String>) -> Result<String, ExitCode> {
+    value.cloned().ok_or_else(|| {
+        eprintln!("qxide: option {flag} requires a value");
+        ExitCode::from(2)
+    })
 }
 
 // Runs `f` on a thread with the interpreter's stack size; `None` if it panicked (the message is on stderr).
@@ -368,6 +385,9 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     // Flags may come before or after the file (`run --shots 9 a.qx` or `run a.qx --shots 9`).
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
     let mut engine = None;
+    // `run --backend PROVIDER:DEVICE` (src/qpu): a quantum computer service instead of the simulator.
+    let (mut backend, mut dry_run, mut yes) = (None, false, false);
+    let (mut max_seconds, mut device_config) = (None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let parsed = match (cmd, arg.as_str()) {
@@ -377,6 +397,21 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             ("run", "--seed") => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
             ("run" | "check", "--allow") => parse_allow(rest.next()).map(|()| allow_fs = true),
+            ("run", "--backend") => parse_value(arg, rest.next()).map(|v| backend = Some(v)),
+            ("run", "--dry-run") => {
+                dry_run = true;
+                Ok(())
+            }
+            ("run", "--yes") => {
+                yes = true;
+                Ok(())
+            }
+            ("run", "--max-seconds") => {
+                parse_count(arg, rest.next(), 1).map(|n| max_seconds = Some(n))
+            }
+            ("run", "--device-config") => {
+                parse_value(arg, rest.next()).map(|v| device_config = Some(v))
+            }
             (_, p) if file.is_none() && !p.starts_with('-') => {
                 file = Some(p.to_string());
                 Ok(())
@@ -390,6 +425,30 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             return code;
         }
     }
+    let checked = qpu::check_flags(
+        backend.is_some(),
+        dry_run,
+        yes,
+        max_seconds.is_some(),
+        device_config.is_some(),
+        seed.is_some(),
+        allow_fs,
+    )
+    .and_then(|()| {
+        backend
+            .as_deref()
+            .map_or(Ok(()), |b| qpu::provider(b).map(drop))
+    });
+    if let Err(e) = checked {
+        eprintln!("qxide: {e}");
+        return ExitCode::from(2);
+    }
+    let settings = qpu::Settings {
+        dry_run,
+        yes,
+        max_seconds: max_seconds.unwrap_or(qpu::DEFAULT_MAX_SECONDS),
+        device_config,
+    };
     let engine = match engine.map_or_else(default_engine, Ok) {
         Ok(e) => e,
         Err(code) => return code,
@@ -448,6 +507,16 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                     (line, false)
                 }),
                 "qasm" => lang::qasm_input(&input).map(|out| (out, false)),
+                _ if backend.is_some() => {
+                    let spec = backend.as_deref().unwrap_or_default();
+                    let exported = lang::export_input(&input)?;
+                    qpu::provider(spec)
+                        .and_then(|p| {
+                            qpu::run(&exported, &*p, shots, &settings, &mut qpu::TerminalUi)
+                        })
+                        .map(|out| (out, false))
+                        .map_err(|e| lang::Failure(format!("qxide: {e}\n")))
+                }
                 _ => lang::run_input_report(&input, shots, seed, &mut lang::cli_host(data_root))
                     .map(|r| (r.text, r.simulated)),
             }
