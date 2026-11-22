@@ -233,7 +233,7 @@
 | 1f | 완료 (커밋 `10f5cbe`, 설계 문서 `qx-language.md` 19.7절) |
 | 1h | 완료 (커밋 `e833250`, 설계 문서 `qx-language.md` 19.8절) |
 | 2a | 완료 (커밋 `149994c`, 설계 문서 `qx-language.md` 19.9절) |
-| 2b | 완료 (설계 문서 `qx-language.md` 19.10절) |
+| 2b | 완료 (커밋 `17143a1`, 설계 문서 `qx-language.md` 19.10절) |
 | 2c | 미착수 |
 | Stage 3 | 미착수 |
 | Stage 4 | 미착수 |
