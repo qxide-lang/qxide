@@ -1,7 +1,10 @@
-# Parses every *.qasm in the given directory with qiskit.qasm3.loads; exits non-zero on the first failure.
+# Parses every *.qasm in the given directory with the OpenQASM 3 reference parser (`openqasm3`,
+# the grammar published with the specification) and imports it with `qiskit.qasm3.loads`.
+# Reports every file, then exits non-zero if any check failed.
 import pathlib
 import sys
 
+import openqasm3
 import qiskit.qasm3
 
 paths = sorted(pathlib.Path(sys.argv[1]).glob("*.qasm"))
@@ -10,8 +13,10 @@ if not paths:
 
 failed = False
 for path in paths:
+    src = path.read_text(encoding="utf-8")
     try:
-        qc = qiskit.qasm3.loads(path.read_text(encoding="utf-8"))
+        openqasm3.parse(src)
+        qc = qiskit.qasm3.loads(src)
     except Exception as e:  # report every file, then fail
         failed = True
         print(f"FAIL {path}: {type(e).__name__}: {e}")
