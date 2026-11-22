@@ -706,6 +706,10 @@ pub fn command_not_public(name: &str) -> String {
     format!("command `{name}` must be declared `public` to be called from the page")
 }
 
+pub fn command_bad_return(name: &str, ty: &str) -> String {
+    format!("command `{name}` has unsupported return type `{ty}`; arrays cannot be sent to JavaScript yet")
+}
+
 pub fn command_bad_param(name: &str, param: &str, ty: &str) -> String {
     format!("command `{name}` has parameter `{param}` of unsupported type `{ty}`; command parameters must be `int`, `double`, `boolean`, or `String`")
 }

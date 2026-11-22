@@ -330,6 +330,13 @@ fn find_command<'p>(
             msg::command_not_public(name),
         )));
     }
+    if matches!(f.ret, Ty::Array(_)) {
+        return Err(fail(Diagnostic::new(
+            Code::BadCommand,
+            f.ret_span,
+            msg::command_bad_return(name, f.ret.name()),
+        )));
+    }
     if let Some(p) = f.params.iter().find(|p| !ty_allowed(p.ty)) {
         return Err(fail(Diagnostic::new(
             Code::BadCommand,
