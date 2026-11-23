@@ -22,5 +22,7 @@ Repository = "https://github.com/qxide-lang/qxide"
 
 [tool.maturin]
 bindings = "bin"
+# `import qxide`: a pure-Python module that runs the bundled CLI (roadmap 4c).
+python-source = "python"
 # Same as the GitHub release binaries: include the Cranelift JIT (`--engine jit`).
 features = ["jit"]

@@ -58,6 +58,24 @@ jobs:
       - run: cargo clippy --all-targets --features jit -- -D warnings
       - run: cargo test --features jit
 
+  # `import qxide` (roadmap 4c) runs the CLI from the same wheel, so build and install a real wheel.
+  python-module:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "maturin>=1.16,<2"
+      - run: maturin build --locked --out dist
+      - run: pip install dist/*.whl
+        shell: bash
+      - run: python -m unittest discover -s python/tests -v
+
   # CI runners have no GPU, so the `gpu` feature is only built and linted here; its tests run locally.
   gpu-build:
     runs-on: ubuntu-latest

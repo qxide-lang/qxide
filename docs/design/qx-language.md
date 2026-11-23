@@ -1725,3 +1725,19 @@ void testAdd() {
 | 코드 | 의미 |
 | --- | --- |
 | `Q0422` | 단언 실패(`std.test`의 `assertTrue`·`assertFalse`·`assertEquals`·`fail`, 실행 시간 오류) |
+
+### 19.16 임베딩: Rust API(`unstable-lang`)와 Python 모듈
+
+로드맵 4b와 4c에 따라(2026-11-23 17:04 결정), Rust 라이브러리에서 `.qx` 언어를 직접 임베딩할 수 있는 공개 API와 `pip install qxide` 휠에 포함되는 순수 Python 모듈을 추가한다.
+
+- **Rust 임베딩 API(4b, `unstable-lang`)**: 기본 비활성화된 cargo 기능 `unstable-lang`을 켜면 언어 구현이 라이브러리 크레이트에 포함되어 `qxide::lang` 모듈이 노출된다. 제공 함수는 `check(name, src)`, `run(name, src, shots, seed)`, `run_with(..., limits)`, `check_input(&Input)`, `run_input(&Input, shots, seed, &mut dyn Host)`, `qasm`, `test_input`, `read_file`, `native_host(data_root)`이며, 공개 타입은 `Input`, `Limits`(`Limits::CLI`), `Failure`(렌더링된 진단 텍스트), `Project`, `PackageRoot`, `TestOutcome`, `call(module, function, args: Vec<HostValue>) -> StdResult`를 정의하는 `Host` 트레이트, `HostValue`, `Permissions`, `StdError`, `StdErrorKind`, `NativeStd`다.
+- **사용자 정의 호스트와 안정성**: 임베더는 자체 `Host` 구현으로 `std.*` 호출에 응답할 수 있으며, 순수 모듈(`math`, `path`, `json`, `test`)은 호스트에 도달하지 않는다. 1.0 이전에는 semver 호환을 보장하지 않으므로 마이너 버전 사이에서도 인터페이스가 변경될 수 있다. CI는 `unstable-lang` 기능을 켜고 `clippy`와 `tests/lang_api.rs`를 실행한다.
+- **Python 모듈(4c)**: `pip install qxide` 휠에 이제 순수 Python 패키지 `qxide`도 함께 담긴다(`maturin`의 `python-source = "python"`을 사용하며 `bindings`는 `"bin"`을 유지한다). 네이티브 확장 없이 휠에 번들된 `qxide` 실행 파일을 서브프로세스로 실행하며, 문자열 소스 입력은 임시 `main.qx` 파일에 기록해 전달한다.
+- **Python API**: `run(source, **opts)`, `run_file(path, shots=1, seed=None, args=(), stdin=None, engine=None, allow=(), cwd=None)`, `check(source)`/`check_file(path, allow=())`, `test(target=None, filter=None, cwd=None)`, `version()`, `binary()`를 제공하며 각 호출은 `.ok` 속성을 가진 `Result(returncode, stdout, stderr)`를 반환한다. `pyo3` 확장 모듈은 4b 인터페이스가 안정화될 때까지 보류한다.
+- **검증과 CI**: CI의 `python-module` 작업이 Linux와 Windows에서 `maturin`으로 휠을 빌드하고 `python/tests`를 실행한다. 현재 로컬 검증은 Windows에서만 수행했다.
+
+```python
+import qxide
+r = qxide.run(BELL_SOURCE, seed=3)
+print(r.stdout)
+```

@@ -250,7 +250,7 @@
 | 3a | 완료 (커밋 `7cd7891`, 설계 문서 `qx-build.md`, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
 | 3b~3c | 진행 중 (3b 미착수; 3c 1부 완료: JIT `std.math` 네이티브 실행, 커밋 `4281898`, 설계 문서 `qx-jit.md`, Windows만 검증 완료; 배열·문자열·구조체 네이티브 코드 및 lowering 캐싱 잔여) |
 | 4a | 완료 (커밋 `bd2b0c2`, 설계 문서 `qx-language.md` 19.11절, Windows x86-64 로컬 검증·Linux/macOS CI 미실행) |
-| 4b~4c | 미착수 |
+| 4b~4c | 완료 (4b 커밋 `1f1ffe9`·`unstable-lang` 기능·`qxide::lang`, 4c 커밋 `COMMIT4C`·순수 Python 서브프로세스 모듈, 설계 문서 `qx-language.md` 19.16절, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
 | Stage 5 | 진행 중 — `qxide test`와 `std.test` 완료 (커밋 `37c6c66`, 설계 문서 `qx-language.md` 19.15절, Windows 로컬 검증), `qxide doc`·사용자 벤치마크 명령·DAP 미착수 |
 | Stage 6 | 미착수 |
 
