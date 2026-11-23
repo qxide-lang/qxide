@@ -825,7 +825,16 @@ impl Analysis {
                 }
             }
         }
-        let code = match self.symbol_at(at) {
+        let sym = self.symbol_at(at);
+        // A function's `///` comment (src/lang/doc.rs) follows its signature.
+        let doc = match &sym {
+            Some(Sym::Fn { decl, .. }) => {
+                let (_, text, base) = self.map.file_at(decl.start);
+                super::doc::comment_of(text, decl.start - base)
+            }
+            _ => None,
+        };
+        let code = match sym {
             Some(Sym::Local(l)) => Some(l.declaration()),
             Some(Sym::Fn { signature, .. }) => Some(signature),
             Some(Sym::Builtin(s)) => Some(s.to_string()),
@@ -834,6 +843,9 @@ impl Analysis {
         };
         if let Some(code) = code {
             parts.insert(0, format!("```qx\n{code}\n```"));
+            if let Some(doc) = doc {
+                parts.insert(1, doc);
+            }
         }
         (!parts.is_empty()).then(|| parts.join("\n\n---\n\n"))
     }

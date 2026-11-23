@@ -34,6 +34,7 @@ Commands:
   build [FILE] [-o OUT] [--engine E] [--shots N] [--seed S] [--allow fs|ffi]
                                      {}
   test [FILE|DIR] [--filter TEXT]    {}
+  doc [FILE|DIR]                     {}
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
   repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
@@ -51,6 +52,7 @@ Options:
         BACKEND_FLAGS_HELP,
         BUILD_HELP,
         TEST_HELP,
+        DOC_HELP,
         LSP_HELP,
         pkg::cli::usage(),
         app::usage(),
@@ -67,6 +69,9 @@ const BACKEND_FLAGS_HELP: &str = "--dry-run (preview), --yes (no prompt), --max-
 const BUILD_HELP: &str = "Package a .qx program into a standalone executable";
 
 const TEST_HELP: &str = "Run test functions in .qx files and report results";
+
+const DOC_HELP: &str =
+    "Print Markdown docs for public functions and ///-documented declarations (default: src)";
 
 const TRUSTED_HELP: &str = "Raise the step, operation, simulation and output limits of run and qasm (only for programs you trust)";
 
@@ -594,9 +599,10 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     }
 }
 
-// The `.qx` files of `qxide test`: the file itself, every `.qx` file below a folder (sorted), or
-// the `tests/` folder of the project around the current directory.
-fn test_files(target: Option<&str>) -> Result<Vec<PathBuf>, String> {
+// The `.qx` files of `qxide test` and `qxide doc`: the file itself, every `.qx` file below a
+// folder (sorted), or folder `default` (`tests`, `src`) of the project around the current
+// directory.
+fn qx_files(target: Option<&str>, default: &str) -> Result<Vec<PathBuf>, String> {
     let root = match target {
         Some(t) => PathBuf::from(t),
         None => {
@@ -605,7 +611,7 @@ fn test_files(target: Option<&str>) -> Result<Vec<PathBuf>, String> {
                 .parent()
                 .and_then(Path::parent)
                 .unwrap_or(Path::new(""));
-            project.join("tests")
+            project.join(default)
         }
     };
     if root.is_file() {
@@ -645,10 +651,7 @@ fn test_command(args: &[String]) -> ExitCode {
                 target = Some(p.to_string());
                 Ok(())
             }
-            _ => {
-                eprintln!("qxide: unexpected argument `{arg}` for `test`");
-                Err(ExitCode::from(2))
-            }
+            _ => Err(unexpected_argument(arg, "test")),
         };
         if let Err(code) = parsed {
             return code;
@@ -658,7 +661,7 @@ fn test_command(args: &[String]) -> ExitCode {
         Ok(e) => e,
         Err(code) => return code,
     };
-    let files = match test_files(target.as_deref()) {
+    let files = match qx_files(target.as_deref(), "tests") {
         Ok(f) => f,
         Err(e) => {
             eprint!("{e}");
@@ -679,7 +682,7 @@ fn test_command(args: &[String]) -> ExitCode {
                 let src = match std::fs::read_to_string(path) {
                     Ok(s) => s,
                     Err(e) => {
-                        failures.push_str(&format!("qxide: failed to read `{name}`: {e}\n"));
+                        failures.push_str(&read_failed(&name, &e));
                         failed += 1;
                         continue;
                     }
@@ -735,6 +738,63 @@ fn test_command(args: &[String]) -> ExitCode {
         Ok(Ok(true)) => ExitCode::SUCCESS,
         Ok(Ok(false)) => ExitCode::from(1),
         _ => ExitCode::from(101),
+    }
+}
+
+fn unexpected_argument(arg: &str, command: &str) -> ExitCode {
+    eprintln!("qxide: unexpected argument `{arg}` for `{command}`");
+    ExitCode::from(2)
+}
+
+fn read_failed(name: &str, e: &std::io::Error) -> String {
+    format!("qxide: failed to read `{name}`: {e}\n")
+}
+
+// `qxide doc [FILE|DIR]`: the Markdown reference of each file (src/lang/doc.rs) on stdout, in
+// path order; exit code 1 when a file cannot be read or parsed.
+fn doc_command(args: &[String]) -> ExitCode {
+    let mut target = None;
+    for arg in args {
+        match arg.as_str() {
+            p if target.is_none() && !p.starts_with('-') => target = Some(p.to_string()),
+            _ => return unexpected_argument(arg, "doc"),
+        }
+    }
+    let files = match qx_files(target.as_deref(), "src") {
+        Ok(f) => f,
+        Err(e) => {
+            eprint!("{e}");
+            if !e.ends_with('\n') {
+                eprintln!();
+            }
+            return ExitCode::from(1);
+        }
+    };
+    let mut ok = true;
+    let mut first = true;
+    for path in &files {
+        let name = path.display().to_string();
+        let doc = std::fs::read_to_string(path)
+            .map_err(|e| read_failed(&name, &e))
+            .and_then(|src| lang::doc::markdown(&name, &src).map_err(|f| f.0));
+        match doc {
+            Ok(text) => {
+                if !first {
+                    println!();
+                }
+                first = false;
+                print!("{text}");
+            }
+            Err(e) => {
+                ok = false;
+                eprint!("{e}");
+            }
+        }
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 
@@ -1027,6 +1087,7 @@ fn main() -> ExitCode {
         Some(cmd @ ("run" | "check" | "qasm")) => return lang_command(cmd, &args[1..]),
         Some("build") => return build_command(&args[1..]),
         Some("test") => return test_command(&args[1..]),
+        Some("doc") => return doc_command(&args[1..]),
         Some("fmt") => return fmt_command(&args[1..]),
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),

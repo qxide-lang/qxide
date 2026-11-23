@@ -377,6 +377,15 @@ fn hover_shows_explain_entries_and_declarations() {
         .unwrap()
         .contains("double PI = 3.14159"));
     assert_eq!(hover(&mut c, "\"{} {}\"", 0), None);
+
+    // A `///` comment of a function follows its signature, separated like the other parts.
+    let documented = "/// Flips it.\n/// Twice is a no-op.\nvoid flip(Qubit q) {\n    x(q);\n}\n\nvoid main() {\n    Qubit q = qubit();\n    flip(q);\n    discard(q);\n}\n";
+    c.change(URI, 3, documented);
+    let (l, ch) = pos_of(documented, "flip(q)", 0, 0);
+    assert_eq!(
+        c.at("textDocument/hover", URI, l, ch)["contents"]["value"],
+        "```qx\nvoid flip(Qubit q)\n```\n\n---\n\nFlips it.\nTwice is a no-op."
+    );
     c.shutdown();
 }
 

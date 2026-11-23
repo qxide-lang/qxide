@@ -1283,3 +1283,45 @@ fn deprecated_names_warn_on_stderr_only() {
     assert!(checked.status.success());
     assert!(String::from_utf8_lossy(&checked.stderr).contains("warning[Q0801]"));
 }
+
+#[test]
+fn doc_command_prints_markdown() {
+    let dir = fresh_dir("doc_command");
+    std::fs::create_dir_all(dir.join("src/util")).unwrap();
+    std::fs::write(
+        dir.join("qxide.toml"),
+        "[package]\nname = \"calc\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/main.qx"),
+        "void main() {\n    println(\"hi\");\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/util/ops.qx"),
+        "/// Adds.\npublic int add(int a, int b) {\n    return a + b;\n}\n\nint hidden() {\n    return 0;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("broken.qx"), "public int f( {\n").unwrap();
+    let run_in = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_qxide"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    let sep = std::path::MAIN_SEPARATOR;
+    // The project's `src/` folder by default, files in path order.
+    let out = run_in(&["doc"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!("# `src{sep}main.qx`\n\n# `src{sep}util{sep}ops.qx`\n\n## `public int add(int a, int b)`\n\nAdds.\n")
+    );
+    let out = run_in(&["doc", "broken.qx"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8(out.stderr).unwrap().contains("error[Q01"));
+    assert_eq!(run_in(&["doc", "--bogus"]).status.code(), Some(2));
+}

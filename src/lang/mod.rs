@@ -8,6 +8,9 @@ mod check;
 #[allow(dead_code)]
 pub mod command;
 mod diag;
+// `qxide doc`: the CLI only.
+#[allow(dead_code)]
+pub mod doc;
 mod engine;
 mod explain;
 mod ffi;
