@@ -22,3 +22,5 @@ Repository = "https://github.com/qxide-lang/qxide"
 
 [tool.maturin]
 bindings = "bin"
+# Same as the GitHub release binaries: include the Cranelift JIT (`--engine jit`).
+features = ["jit"]

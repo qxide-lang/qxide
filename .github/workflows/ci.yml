@@ -40,6 +40,21 @@ jobs:
       - run: node scripts/parity.mjs
         working-directory: site
 
+  # Release binaries are built with the Cranelift JIT (`jit` feature), so it is linted and tested on
+  # every release platform family, including AArch64 macOS.
+  jit-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets --features jit -- -D warnings
+      - run: cargo test --features jit
+
   # CI runners have no GPU, so the `gpu` feature is only built and linted here; its tests run locally.
   gpu-build:
     runs-on: ubuntu-latest

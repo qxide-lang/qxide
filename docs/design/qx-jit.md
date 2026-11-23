@@ -123,3 +123,11 @@ Cranelift가 지원하지 않는 머신에서는 `Jit::new`가 JIT 인스턴스�
 - 테스트는 `src/lang/jit/tests.rs`의 `std_math_calls_compile`(컴파일 대상 함수 판별, 오버플로 오류, `ast`·`ir`과의 결과 비교, 5스텝 간격의 스텝 한도)과 `benchmark_programs_agree`가 검증하는 새 벤치마크 `bench/qx/math.qx`로 이루어진다.
 - 측정 결과(Windows x86-64, 릴리스 빌드, `bench_suite`, 5회 실행 최솟값, 정교화(elaboration) 시간)는 `bench/qx/math.qx` 기준 `ast` 355.2 ms, `ir` 307.0 ms, `jit` 116.9 ms다. 이 변경 전에는 해당 벤치마크의 함수들이 `--engine jit`에서도 IR 인터프리터로 실행되었으므로 `ir` 수치가 이전 JIT 수치에 해당한다.
 - 3c의 잔여 작업은 배열·문자열·구조체의 네이티브 코드 지원(네이티브 코드에서의 참조 카운팅 필요)과 동일 프로그램 실행 간 하강된 IR 및 컴파일된 코드 캐싱(현재 매 호출마다 프런트엔드까지 다시 실행하는 REPL, 데스크톱 앱 명령)이다.
+
+## 릴리스 빌드에 JIT 포함 (2026-11-23 결정)
+
+- 2026-11-23 사용자 결정(로드맵 7절 3b 항목): `cargo-dist`가 빌드하는 릴리스 바이너리(`dist-workspace.toml`, `features = ["jit"]`)와 `maturin`이 빌드하는 PyPI 휠(`pyproject.toml` `[tool.maturin]` `features = ["jit"]`)에 `jit` 피처를 포함하므로 릴리스된 `qxide`에서 `--engine jit`이 동작한다. 기본 엔진은 `ast`로 유지되며, `cargo install qxide`와 라이브러리 사용자는 Cranelift가 없는 기본 피처를 유지한다.
+- `qxide build` 번들은 실행 중인 `qxide` 바이너리를 복사하므로 릴리스된 `qxide`로 만든 번들에서도 `--engine jit`을 사용할 수 있다.
+- CI에 `ubuntu-latest`, `windows-latest`, `macos-latest`(AArch64)에서 `--features jit`으로 `cargo clippy`와 `cargo test`를 실행하는 `jit-test` 작업이 추가된다. 이전에는 JIT를 Windows x86-64 로컬에서만 빌드·테스트했다. 로컬에서 `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin` 대상으로 `cargo check --features jit`은 통과하지만 Linux나 macOS에서는 아직 네이티브 코드를 실행하지 않았으며, 첫 CI 실행이 이러한 첫 테스트가 된다.
+- 크기(Windows x86-64 릴리스 빌드, 2026-11-23 측정): `qxide.exe`는 `jit` 미포함 시 4,134,400바이트에서 포함 시 9,669,120바이트로(+5,534,720바이트, 약 2.3배) 커진다.
+- 크기나 첫 Linux/macOS CI 결과에 문제가 있으면 언어를 변경하지 않고 두 `features = ["jit"]` 줄을 다시 제거할 수 있다.
