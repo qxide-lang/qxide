@@ -2,8 +2,11 @@
 // with JSON-compatible arguments and returns a typed result as JSON, instead of the rendered
 // stdout of `qxide run`. Shared by the desktop runtime and its tests; no JSON library needed.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use super::ast::{Program, Ty};
 use super::diag::{Code, Diagnostic, SourceMap};
@@ -310,6 +313,93 @@ fn load(input: &Input) -> Result<(SourceMap, Program), CallError> {
     }
 }
 
+// What a module read returned: its text, or the kind of error.
+type ReadOutcome = Result<String, std::io::ErrorKind>;
+
+/// Linked and checked command module cached from the last successful call (roadmap 3c). Since the
+/// front end is deterministic with respect to the entry file, project, permissions, and each module
+/// read result, a subsequent call matching all of these reuses its program.
+#[derive(Default)]
+pub struct Cache {
+    slot: Mutex<Option<Arc<Loaded>>>,
+    #[cfg(test)]
+    hits: std::sync::atomic::AtomicUsize,
+}
+
+struct Loaded {
+    name: String,
+    src: String,
+    project: String,
+    perms: String,
+    // Every read of the front end in order, failed ones included: they steer module lookup.
+    reads: Vec<(PathBuf, ReadOutcome)>,
+    map: SourceMap,
+    program: Program,
+}
+
+impl Loaded {
+    // Reads the module files again (cheap next to parsing and checking them).
+    fn matches(&self, input: &Input) -> bool {
+        self.name == input.name
+            && self.src == input.src
+            && self.project == format!("{:?}", input.project)
+            && self.perms == format!("{:?}", input.perms)
+            && self
+                .reads
+                .iter()
+                .all(|(path, was)| outcome((input.read)(path)) == *was)
+    }
+}
+
+fn outcome(r: std::io::Result<String>) -> ReadOutcome {
+    r.map_err(|e| e.kind())
+}
+
+impl Cache {
+    #[cfg(test)]
+    pub fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn load(&self, input: &Input) -> Result<Arc<Loaded>, CallError> {
+        let last = self.slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(l) = last.filter(|l| l.matches(input)) {
+            #[cfg(test)]
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(l);
+        }
+        let reads = RefCell::new(Vec::new());
+        let read = |path: &Path| {
+            let r = (input.read)(path);
+            let kept = match &r {
+                Ok(text) => Ok(text.clone()),
+                Err(e) => Err(e.kind()),
+            };
+            reads.borrow_mut().push((path.to_path_buf(), kept));
+            r
+        };
+        let recorded = Input {
+            name: input.name,
+            src: input.src,
+            project: input.project,
+            read: &read,
+            perms: input.perms.clone(),
+        };
+        let (map, program) = load(&recorded)?;
+        let loaded = Arc::new(Loaded {
+            name: input.name.to_string(),
+            src: input.src.to_string(),
+            project: format!("{:?}", input.project),
+            perms: format!("{:?}", input.perms),
+            reads: reads.into_inner(),
+            map,
+            program,
+        });
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(loaded.clone());
+        Ok(loaded)
+    }
+}
+
 // The command module's own functions keep their bare names after linking.
 fn find_command<'p>(
     map: &SourceMap,
@@ -413,7 +503,18 @@ pub struct Call<'a> {
 
 /// Runs one command: links and checks the module, elaborates the function with the arguments
 /// (std effects run here, once), then simulates `shots` shots if the result depends on them.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, CallError> {
+    call_cached(input, c, host, &Cache::default())
+}
+
+/// Like `call`, reusing the module stored in `cache` when its sources are unchanged.
+pub fn call_cached(
+    input: &Input,
+    c: &Call,
+    host: &mut dyn Host,
+    cache: &Cache,
+) -> Result<CallResult, CallError> {
     if !c.commands.iter().any(|n| n == c.name) {
         return Err(CallError::app(
             Code::UnknownCommand,
@@ -426,8 +527,9 @@ pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, 
             msg::too_many_shots(c.shots, MAX_SHOTS),
         ));
     }
-    let (map, program) = load(input)?;
-    let f = find_command(&map, &program, c.name, c.module)?;
+    let loaded = cache.load(input)?;
+    let (map, program) = (&loaded.map, &loaded.program);
+    let f = find_command(map, program, c.name, c.module)?;
     if let Some((extra, _)) = c
         .args
         .iter()
@@ -451,9 +553,9 @@ pub fn call(input: &Input, c: &Call, host: &mut dyn Host) -> Result<CallResult, 
         values.push(convert(&p.name.name, c.name, p.ty, arg)?);
     }
     let at = f.name.span;
-    let fail = |d: Diagnostic| CallError::from_diags(&map, &[d]);
+    let fail = |d: Diagnostic| CallError::from_diags(map, &[d]);
     let (e, ret) =
-        super::engine::elaborate_call(&program, c.name, values, host, &c.limits).map_err(fail)?;
+        super::engine::elaborate_call(program, c.name, values, host, &c.limits).map_err(fail)?;
     let returned: Option<Vec<qxide::Bit>> = match &ret {
         Value::Bit(b) => Some(vec![*b]),
         Value::Bits(v) => Some(v.to_vec()),

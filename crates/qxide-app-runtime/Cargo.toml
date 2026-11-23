@@ -29,6 +29,6 @@ strip = true
 [profile.test]
 opt-level = 2
 
-# src/lang (compiled here too) has code for the CLI-only `jit` feature, which is never on here.
+# src/lang (compiled here too) has code for the CLI-only `jit` and `ffi` features, never on here.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit", "ffi"))'] }

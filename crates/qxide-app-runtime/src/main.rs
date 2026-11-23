@@ -221,6 +221,8 @@ struct Shared {
     workers: Arc<Workers>,
     // In-flight calls by (page token, call id), for cancellation.
     calls: Mutex<HashMap<(String, u64), Arc<AtomicBool>>>,
+    // The checked command module, reused by later calls while its sources stay the same.
+    cache: command::Cache,
 }
 
 /// Where an answer goes: the page token and the call id of the request.
@@ -469,7 +471,7 @@ fn run_call(
         app.dev,
         &app.http_hosts,
     );
-    call_app(app, name, args, shots, seed, &mut host)
+    call_app(app, name, args, shots, seed, &mut host, &shared.cache)
 }
 
 /// Runs command `name` of `app` with `host`: the JSON result, or the JSON error.
@@ -480,6 +482,7 @@ fn call_app(
     shots: u64,
     seed: u64,
     host: &mut dyn lang::stdlib::Host,
+    cache: &command::Cache,
 ) -> Result<Result<String, String>, String> {
     with_input(app, |input| {
         let call = Call {
@@ -491,7 +494,7 @@ fn call_app(
             seed,
             limits: CALL_LIMITS,
         };
-        command::call(input, &call, host)
+        command::call_cached(input, &call, host, cache)
             .map(|r| r.to_json())
             .map_err(|e| e.to_json())
     })
@@ -556,6 +559,7 @@ fn run(app: App) -> Result<(), String> {
         proxy: event_loop.create_proxy(),
         workers: Workers::new(worker_count())?,
         calls: Mutex::new(HashMap::new()),
+        cache: command::Cache::default(),
         app,
     });
     let mut context = WebContext::new(Some(shared.app.webview_data.clone()));
@@ -666,7 +670,7 @@ mod tests {
     }
 
     fn call(app: &App) -> Result<String, String> {
-        call_app(app, "pair", &[], 200, 1, &mut LogOnly::default()).unwrap()
+        call_app(app, "pair", &[], 200, 1, &mut LogOnly::default(), &command::Cache::default()).unwrap()
     }
 
     // M-13: command calls run under the desktop app limits, not the CLI's 1 GiB state vector.
@@ -674,7 +678,7 @@ mod tests {
     fn app_calls_use_app_limits() {
         let src = "public BitReg big() {\n    QReg q = qreg(25);\n    t(q[0]);\n    return measure(q);\n}\n";
         let app = bundled_app(src, "big", "public void unused() {\n}\n", &["log"]);
-        let e = call_app(&app, "big", &[], 1, 0, &mut LogOnly::default())
+        let e = call_app(&app, "big", &[], 1, 0, &mut LogOnly::default(), &command::Cache::default())
             .unwrap()
             .unwrap_err();
         assert!(e.contains("\"code\":\"Q0406\""), "{e}");
@@ -726,7 +730,7 @@ mod tests {
             &["log", "time", "fs"],
         );
         let shots = lang::command::MAX_SHOTS;
-        let r = call_app(&app, "measure_bell", &[], shots, 1, &mut LogOnly::default()).unwrap();
+        let r = call_app(&app, "measure_bell", &[], shots, 1, &mut LogOnly::default(), &command::Cache::default()).unwrap();
         let json = r.unwrap_or_else(|e| panic!("{e}"));
         assert!(json.contains("\"counts\":["), "{json}");
     }
@@ -744,7 +748,7 @@ mod tests {
         let w = Workers::new(1).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         w.submit(Box::new(move || {
-            let r = call_app(&app, "deep", &[], 1, 0, &mut LogOnly::default());
+            let r = call_app(&app, "deep", &[], 1, 0, &mut LogOnly::default(), &command::Cache::default());
             tx.send(r).unwrap();
         }));
         let r = rx.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();

@@ -853,3 +853,104 @@ void main() {{
     let e = ffi_run(&in_bit_if, true).unwrap_err();
     assert!(e.starts_with("error[Q0314]"), "{e}");
 }
+
+// Roadmap 3c: a call reuses the checked module of the previous one only while the entry file,
+// every module read, the project and the permissions are unchanged.
+#[test]
+fn cached_calls_reuse_the_module_until_a_source_changes() {
+    use super::link::{PackageRoot, Project};
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    let util = RefCell::new(String::from("public int base() {\n    return 40;\n}\n"));
+    let read = |p: &Path| {
+        if p == Path::new("app/src/util.qx") {
+            Ok(util.borrow().clone())
+        } else {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+    };
+    let project = Project {
+        packages: vec![PackageRoot {
+            name: "app".into(),
+            src_dir: PathBuf::from("app").join("src"),
+            deps: vec![],
+        }],
+        entry_package: 0,
+        entry_module: None,
+    };
+    let src = "import app.util.base;\n\npublic int answer(int n) {\n    return base() + n;\n}\n";
+    let commands = vec!["answer".to_string()];
+    let args = vec![("n".to_string(), JsArg::Int(2))];
+    let call = |src: &str, granted: &[String], cache: &command::Cache| {
+        let input = Input {
+            name: "app.qx",
+            src,
+            project: Some(&project),
+            read: &read,
+            perms: Permissions::app(granted),
+        };
+        let c = Call {
+            module: "app",
+            commands: &commands,
+            name: "answer",
+            args: &args,
+            shots: 1,
+            seed: 0,
+            limits: Limits::CLI,
+        };
+        command::call_cached(&input, &c, &mut LogOnly::default(), cache)
+            .map(|r| r.to_json())
+            .map_err(|e| e.to_json())
+    };
+    let cold = call(src, &[], &command::Cache::default()).unwrap();
+    assert!(cold.contains("\"value\":42"), "{cold}");
+    let cache = command::Cache::default();
+    assert_eq!(call(src, &[], &cache).unwrap(), cold);
+    assert_eq!(cache.hits(), 0);
+    assert_eq!(call(src, &[], &cache).unwrap(), cold);
+    assert_eq!(cache.hits(), 1);
+
+    // An imported module changed.
+    *util.borrow_mut() = "public int base() {\n    return 50;\n}\n".into();
+    let changed = call(src, &[], &cache).unwrap();
+    assert!(changed.contains("\"value\":52"), "{changed}");
+    assert_eq!(cache.hits(), 1);
+
+    // A module that no longer checks is reported, and does not replace the cached one.
+    *util.borrow_mut() = "public int base() {\n    return true;\n}\n".into();
+    let err = call(src, &[], &cache).unwrap_err();
+    assert!(err.contains("\"code\":\"Q0"), "{err}");
+    *util.borrow_mut() = "public int base() {\n    return 50;\n}\n".into();
+    assert_eq!(call(src, &[], &cache).unwrap(), changed);
+    assert_eq!(cache.hits(), 2);
+
+    // The entry file and the permissions are part of the key.
+    let edited = src.replace("+ n", "+ n + 1");
+    assert!(call(&edited, &[], &cache).unwrap().contains("\"value\":53"));
+    assert!(call(&edited, &["fs".to_string()], &cache)
+        .unwrap()
+        .contains("\"value\":53"));
+    assert_eq!(cache.hits(), 2);
+
+    // A removed module is a miss too: its failed read differs from the recorded text.
+    *util.borrow_mut() = String::new();
+    let read_gone = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+    let input = Input {
+        name: "app.qx",
+        src: &edited,
+        project: Some(&project),
+        read: &read_gone,
+        perms: Permissions::app(&["fs".to_string()]),
+    };
+    let c = Call {
+        module: "app",
+        commands: &commands,
+        name: "answer",
+        args: &args,
+        shots: 1,
+        seed: 0,
+        limits: Limits::CLI,
+    };
+    assert!(command::call_cached(&input, &c, &mut LogOnly::default(), &cache).is_err());
+    assert_eq!(cache.hits(), 2);
+}
