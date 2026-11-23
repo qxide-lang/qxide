@@ -1,12 +1,29 @@
-// A small `wc`: counts the lines, words and characters of standard input and prints them as
-// soon as the input ends. Run it with `qxide run examples/cli/wc.qx < notes.txt`, or pass
-// `-l` or `-w` after `--` to print only the line or word count. With `-f`, it also lists each
-// word with its count, most frequent first.
+// A small `wc`: counts the lines, words and characters of the files named after `--`, or of
+// standard input when there are none, and prints them as soon as the input ends. It imports
+// `std.fs`, so it always runs with `--allow fs`:
+//
+//     qxide run examples/cli/wc.qx --allow fs -- notes.txt todo.txt
+//     qxide run examples/cli/wc.qx --allow fs < notes.txt
+//
+// `-l` or `-w` prints only the line or word count. With `-f`, it also lists each word with its
+// count, most frequent first.
 import std.io;
+import std.fs;
+
+// Adds one line to the totals: lines, words and characters (counting the line break).
+void tally(String text, int[] totals, Map<String, int> counts) {
+    totals[0] += 1;
+    totals[2] += text.length() + 1;
+    for word in text.splitWhitespace() {
+        totals[1] += 1;
+        counts.put(word, counts.getOrDefault(word, 0) + 1);
+    }
+}
 
 int main(String[] args) {
     String only = "";
     boolean freq = false;
+    List<String> files = new List();
     for arg in args {
         match arg {
             "-l" => {
@@ -19,25 +36,30 @@ int main(String[] args) {
                 freq = true;
             }
             _ => {
-                io.writeErrLine("wc: unknown option " + arg);
-                return 2;
+                if arg.startsWith("-") {
+                    io.writeErrLine("wc: unknown option " + arg);
+                    return 2;
+                }
+                files.add(arg);
             }
         }
     }
-    int lines = 0;
-    int words = 0;
-    int chars = 0;
+    int[] totals = new int[3];
     Map<String, int> counts = new Map();
-    boolean more = true;
+    for file in files {
+        if !fs.exists(file) {
+            io.writeErrLine("wc: no such file " + file);
+            return 1;
+        }
+        for line in fs.readString(file).lines() {
+            tally(line, totals, counts);
+        }
+    }
+    boolean more = files.isEmpty();
     while more {
         match io.readLine() {
             Some(text) => {
-                lines += 1;
-                chars += text.length() + 1;
-                for word in text.splitWhitespace() {
-                    words += 1;
-                    counts.put(word, counts.getOrDefault(word, 0) + 1);
-                }
+                tally(text, totals, counts);
             }
             None => {
                 more = false;
@@ -45,11 +67,11 @@ int main(String[] args) {
         }
     }
     if only == "lines" {
-        io.writeLine("" + lines);
+        io.writeLine("" + totals[0]);
     } else if only == "words" {
-        io.writeLine("" + words);
+        io.writeLine("" + totals[1]);
     } else {
-        io.writeLine(lines + " " + words + " " + chars);
+        io.writeLine(totals[0] + " " + totals[1] + " " + totals[2]);
     }
     if freq {
         // Highest count first; words with the same count keep their first-seen order.

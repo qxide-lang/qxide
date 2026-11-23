@@ -396,9 +396,14 @@ impl Checker<'_> {
                 }
             }
             Inst::HostText { src, .. } => self.want(*src, IrTy::Str)?,
-            Inst::StdCall { args, .. } => {
+            Inst::StdCall { name, args, .. } => {
+                let json = name.starts_with("std.json.");
                 for (a, _) in args.iter() {
-                    if !matches!(self.ty(*a)?, IrTy::I64 | IrTy::F64 | IrTy::Bool | IrTy::Str) {
+                    let t = self.ty(*a)?;
+                    let structured = matches!(t, IrTy::Native(_) | IrTy::Array(_));
+                    if !(matches!(t, IrTy::I64 | IrTy::F64 | IrTy::Bool | IrTy::Str)
+                        || json && structured)
+                    {
                         return Err(format!("%{a} cannot be passed to the host"));
                     }
                 }

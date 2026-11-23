@@ -175,6 +175,10 @@ impl Mono<'_> {
                     if let (true, Some(&elem)) = (base != "Random", args.last()) {
                         stack.push(super::native::option_of(elem));
                     }
+                    // `Json.get` returns `Option<Json>`.
+                    if base == "Json" {
+                        stack.push(super::native::option_of(t));
+                    }
                     stack.extend(args);
                 }
                 continue;

@@ -13,6 +13,7 @@ pub(super) const GENERICS: &str = include_str!("../../examples/qx/generics.qx");
 pub(super) const ERRORS: &str = include_str!("../../examples/qx/errors.qx");
 pub(super) const INTERFACES: &str = include_str!("../../examples/qx/interfaces.qx");
 pub(super) const COLLECTIONS: &str = include_str!("../../examples/qx/collections.qx");
+pub(super) const JSON: &str = include_str!("../../examples/qx/json.qx");
 
 fn located(src: &str, errors: &[Diagnostic]) -> Vec<(&'static str, usize, usize)> {
     let map = SourceMap::new("t.qx", src);
@@ -2633,6 +2634,14 @@ fn collections_example() {
     assert_eq!(
         run_ok(COLLECTIONS, 1),
         "the x3\n9 distinct words\njumps, brown, quick\nmost frequent face: 112 rolls\nflags 41 has 3 bits set, bit 5 is true\nlast long word: jumps\n"
+    );
+}
+
+#[test]
+fn json_example() {
+    assert_eq!(
+        run_ok(JSON, 1),
+        "{\"round\":2.5,\"totals\":{\"Ada\":16,\"Bo\":7}}\n{\n  \"Ada\": 16,\n  \"Bo\": 7\n}\ninvalid JSON at line 1, column 6: unexpected end of input\nresults/2026/scores.final.json results/2026 scores.final json\nresults/2027/scores.json\n"
     );
 }
 

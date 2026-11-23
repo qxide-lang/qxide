@@ -2008,6 +2008,38 @@ void main() {
 }
 ```
 
+## Q0421: JSON value has another kind
+
+A method of the built-in `Json` type was called on a JSON value of a kind it does not apply to. This is a run-time error raised while the program runs rather than by `qxide check`, because a parsed document's shape is known only at run time. The JSON kinds are `null`, `boolean`, `number`, `string`, `array`, and `object` (`kind()` returns one of these words): `asBoolean()` requires a boolean, `asString()` a string, `asDouble()` any number, `asInt()` a number written without a fraction or exponent that fits in a 64-bit `int` (so `json.ofDouble(1.0).asInt()` is also Q0421), `size()` an array or an object, `at(i)` and `items()` an array, and `get(name)`, `has(name)`, and `keys()` an object. Note that braces inside `.qx` string literals are written `{{` and `}}`.
+
+Erroneous code example:
+
+```qx
+import std.json;
+
+void main() {
+    Json v = json.parse("{{\"id\": \"42\"}}").orElse(json.ofNull());
+    int id = v.get("id").orElse(json.ofNull()).asInt();  // error[Q0421]
+    println("{}", id);
+}
+```
+
+To fix it, check the kind first with `kind()` or `isNull()`, or use `get(name)`, which returns an `Option<Json>` when a member may be missing.
+
+```qx
+import std.json;
+
+void main() {
+    Json v = json.parse("{{\"id\": \"42\"}}").orElse(json.ofNull());
+    Json id = v.get("id").orElse(json.ofNull());
+    if id.kind() == "string" {
+        println("{}", id.asString().parseInt());
+    } else if id.kind() == "number" {
+        println("{}", id.asInt());
+    }
+}
+```
+
 ## Q0501: unknown package in an import
 
 The first segment of an `import` path names a package that is neither the current package nor a dependency declared in `[dependencies]` in `qxide.toml`. Package names with hyphens, such as `bell-utils`, are imported using underscores (`bell_utils`). Requiring every external package to be declared in `qxide.toml` keeps builds reproducible and ensures dependencies are explicitly resolved before compilation.
@@ -2450,7 +2482,7 @@ void main() {
 
 ## Q0704: file operation failed
 
-A `std.fs` call failed at run time because the file does not exist, is larger than 16 MiB, is not valid UTF-8 text, or triggered an operating system I/O error. The diagnostic includes the underlying OS error message to identify the cause. Because `.qx` does not have runtime error handling yet, the program stops immediately rather than continuing with missing or invalid file data.
+A `std.fs` call failed at run time because the file does not exist, is larger than 16 MiB, is not valid UTF-8 text, or triggered an operating system I/O error; `fs.list` also fails with Q0704 when the folder holds more than 1,048,576 entries or an entry name is not valid UTF-8. The diagnostic includes the underlying OS error message to identify the cause. Although `.qx` supports `Result` values, `std.fs` calls still stop the program immediately on failure rather than continuing with missing or invalid file data.
 
 Erroneous code example:
 
@@ -2470,7 +2502,7 @@ if (fs.exists("missing.txt")) {
 
 ## Q0705: path not allowed
 
-A path passed to `std.fs` is not a valid relative path inside the sandboxed data folder (`data/` for `qxide run --allow fs`, or the per-user app data folder in an app). Absolute paths, drive letters, UNC paths, `..`, empty segments, Windows device names such as `CON` or `NUL`, and paths that leave the folder through a symlink are all rejected. Restricting paths to the data folder prevents programs from reading or modifying arbitrary files on the host system.
+A path passed to `std.fs` is not permitted by the filesystem sandbox. Normally, paths must be valid relative paths inside the sandboxed data folder (`data/` for `qxide run --allow fs`, or the per-user app data folder in an app): absolute paths, drive letters, UNC paths, `..`, empty segments, Windows device names such as `CON` or `NUL`, and paths that leave the folder through a symlink are all rejected. With `--allow fs`, `qxide run` (and an executable from `qxide build --allow fs`) also lets a program read the files and folders whose paths the user passed as program arguments after `--`, exactly as written, relative to the current directory; paths below such a folder must stay inside it. Those paths are read-only, so `writeString`, `appendString`, and `remove` on them fail with Q0705, and every other path still has to stay inside the data folder. Restricting paths to the data folder and explicitly passed read-only arguments prevents programs from reading or modifying arbitrary files on the host system.
 
 Erroneous code example:
 

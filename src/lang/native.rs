@@ -1,6 +1,6 @@
 // Built-in reference types every file may use without an import: `List<T>` (a growable array),
-// `Map<K, V>` (a hash map that keeps insertion order) and `Random` (a seeded pseudo-random
-// number generator). Like arrays and structs they are shared references, they hold build-time
+// `Map<K, V>` (a hash map that keeps insertion order), `Random` (a seeded pseudo-random number
+// generator) and `Json` (an immutable JSON value, src/lang/json.rs). Like arrays and structs they are shared references, they hold build-time
 // classical values only, and every engine runs their methods through `Machine`, so results and
 // step charges agree everywhere. A program or file that declares its own type of one of these
 // names uses that type instead.
@@ -13,11 +13,12 @@ use std::rc::Rc;
 use super::ast::Ty;
 use super::diag::{Code, Diagnostic, Span};
 use super::interp::Value;
+use super::json::{Json, JsonNode};
 use super::machine::{self, checked_index, internal, Machine, R, STR_BYTE_STEPS};
 use super::msg;
 
 /// The built-in type names, in the order completion shows them.
-pub const TYPES: &[&str] = &["List", "Map", "Random"];
+pub const TYPES: &[&str] = &["List", "Map", "Random", "Json"];
 
 /// Built-in types that take type arguments.
 pub const GENERIC: &[&str] = &["List", "Map"];
@@ -82,6 +83,18 @@ pub const METHODS: &[(&str, &str)] = &[
     ("Random", "nextInt"),
     ("Random", "nextDouble"),
     ("Random", "nextBoolean"),
+    ("Json", "kind"),
+    ("Json", "isNull"),
+    ("Json", "asBoolean"),
+    ("Json", "asInt"),
+    ("Json", "asDouble"),
+    ("Json", "asString"),
+    ("Json", "size"),
+    ("Json", "at"),
+    ("Json", "get"),
+    ("Json", "has"),
+    ("Json", "keys"),
+    ("Json", "items"),
 ];
 
 /// The base name and type arguments of a built-in type (`List<int>` is `("List", [int])`).
@@ -148,11 +161,27 @@ pub fn method_sig(t: Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
             "nextBoolean" => (vec![], Ty::Boolean, true),
             _ => return None,
         },
+        "Json" => match name {
+            "kind" => (vec![], Ty::String, false),
+            "isNull" => (vec![], Ty::Boolean, false),
+            "asBoolean" => (vec![], Ty::Boolean, false),
+            "asInt" => (vec![], Ty::Int, false),
+            "asDouble" => (vec![], Ty::Double, false),
+            "asString" => (vec![], Ty::String, false),
+            "size" => (vec![], Ty::Int, false),
+            "at" => (vec![Ty::Int], t, false),
+            "get" => (vec![Ty::String], option_of(t), false),
+            "has" => (vec![Ty::String], Ty::Boolean, false),
+            "keys" => (vec![], Ty::array_of(Ty::String), false),
+            "items" => (vec![], Ty::array_of(t), false),
+            _ => return None,
+        },
         _ => return None,
     })
 }
 
-/// Parameter types of `new T(...)`: `new Random(seed)`, `new List<int>()`, `new Map<K, V>()`.
+/// Parameter types of `new T(...)`: `new Random(seed)`, `new List<int>()`, `new Map<K, V>()`,
+/// `new Json()` (JSON `null`).
 pub fn new_params(base: &str) -> Vec<Ty> {
     match base {
         "Random" => vec![Ty::Int],
@@ -161,7 +190,7 @@ pub fn new_params(base: &str) -> Vec<Ty> {
 }
 
 /// Whether the built-in type has a default value (array elements, struct fields): an empty
-/// `List` or `Map`; a `Random` needs a seed.
+/// `List` or `Map`, JSON `null`; a `Random` needs a seed.
 pub fn has_default(base: &str) -> bool {
     base != "Random"
 }
@@ -229,6 +258,8 @@ pub enum Obj {
     Map(RefCell<MapData>),
     // splitmix64 state.
     Random(Cell<u64>),
+    // An immutable JSON value (src/lang/json.rs).
+    Json(JsonNode),
 }
 
 /// A value of a built-in type: its element (or `Map` value) type, used to widen `int` to
@@ -251,6 +282,7 @@ impl fmt::Debug for NativeVal {
                 .entries(m.borrow().live().map(|(k, v)| (k, v)))
                 .finish(),
             Obj::Random(s) => write!(f, "Random({})", s.get()),
+            Obj::Json(j) => write!(f, "{j:?}"),
         }
     }
 }
@@ -265,8 +297,39 @@ impl NativeVal {
                 .flatten()
                 .map(|(_, v)| v)
                 .collect(),
-            Obj::Random(_) => Vec::new(),
+            Obj::Random(_) | Obj::Json(_) => Vec::new(),
         }
+    }
+}
+
+/// A `Json` value; `opt` is `Option<Json>`, which `get` returns.
+pub fn json_val(j: JsonNode, opt: Ty) -> Rc<NativeVal> {
+    Rc::new(NativeVal {
+        obj: Obj::Json(j),
+        elem: Ty::Error,
+        key: Ty::Error,
+        opt,
+    })
+}
+
+/// The elements of a `List`, for `json.ofList`.
+pub fn list_items(n: &NativeVal) -> Option<Vec<Value>> {
+    match &n.obj {
+        Obj::List(items) => Some(items.borrow().clone()),
+        _ => None,
+    }
+}
+
+/// The entries of a `Map` in insertion order, for `json.ofMap`.
+pub fn map_entries(n: &NativeVal) -> Option<Vec<(Value, Value)>> {
+    match &n.obj {
+        Obj::Map(m) => Some(
+            m.borrow()
+                .live()
+                .map(|(k, v)| (k.value(), v.clone()))
+                .collect(),
+        ),
+        _ => None,
     }
 }
 
@@ -316,6 +379,15 @@ impl Machine<'_> {
                 Ty::Error,
                 Ty::Error,
                 Ty::Error,
+            ),
+            ("Json", [], []) => native(
+                Obj::Json(JsonNode {
+                    v: Json::Null,
+                    depth: 0,
+                }),
+                Ty::Error,
+                Ty::Error,
+                option_of(ty),
             ),
             _ => return Err(internal(span)),
         })
@@ -495,6 +567,7 @@ impl Machine<'_> {
                 "nextBoolean" => Ok(Value::Bool(next_u64(state) >> 63 == 1)),
                 _ => Err(internal(span)),
             },
+            Obj::Json(j) => self.json_method(j, name, args.collect(), span),
         }
     }
 

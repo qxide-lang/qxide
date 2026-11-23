@@ -730,27 +730,113 @@ fn process_io_args_stdin_env_and_exit_code() {
             "args 2 x y\nread hello\nset\ndeferred\n"
         );
     }
-    // The word-count example reads stdin and fails with exit code 2 on an unknown option.
+    // The word-count example reads stdin and fails with exit code 2 on an unknown option. It
+    // imports `std.fs` (stage 2c), so it always needs `--allow fs`.
     let wc = format!("{}/examples/cli/wc.qx", env!("CARGO_MANIFEST_DIR"));
-    let out = qxide_io(&["run", &wc], &[], "one two\n\nthree\n");
+    let wc_run = |extra: &[&str], input: &str| {
+        let mut args = vec!["run", wc.as_str(), "--allow", "fs"];
+        args.extend(extra);
+        qxide_io(&args, &[], input)
+    };
+    let out = wc_run(&[], "one two\n\nthree\n");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "3 3 15\n");
-    let out = qxide_io(&["run", &wc, "--", "-w"], &[], "one two\n");
+    let out = wc_run(&["--", "-w"], "one two\n");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "2\n");
     // `-f`: word counts, highest first, ties in first-seen order.
-    let out = qxide_io(&["run", &wc, "--", "-f"], &[], "b a b\n c  a b\n");
+    let out = wc_run(&["--", "-f"], "b a b\n c  a b\n");
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
         "2 6 14\n3 b\n2 a\n1 c\n"
     );
-    let out = qxide_io(&["run", &wc, "--", "-q"], &[], "");
+    let out = wc_run(&["--", "-q"], "");
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8(out.stderr).unwrap().contains("-q"));
+    let out = qxide_io(&["run", &wc], &[], "one\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8(out.stderr).unwrap().contains("Q0703"));
     // Out-of-range exit codes are a run-time error (exit code 1).
     let bad = tmp_qx("exit_256.qx", "int main() {\n    return 256;\n}\n");
     let out = qxide_io(&["run", &bad], &[], "");
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8(out.stderr).unwrap().contains("Q0706"));
+}
+
+// Stage 2c: with `--allow fs`, a program reads the files named after `--` (relative to the
+// current directory) but cannot write them; other paths stay inside the data folder.
+#[test]
+fn run_reads_files_named_on_the_command_line() {
+    let dir = fresh_dir("named_files");
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::write(dir.join("one.txt"), "one two\n\nthree\n").unwrap();
+    std::fs::write(dir.join("docs/b.txt"), "b a b\n c  a b\n").unwrap();
+    std::fs::write(dir.join("docs/a.txt"), "x\n").unwrap();
+    std::fs::write(dir.join("other.txt"), "secret\n").unwrap();
+    let wc = format!("{}/examples/cli/wc.qx", env!("CARGO_MANIFEST_DIR"));
+    let run_in = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_qxide"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    for engine in ["ast", "ir"] {
+        let out = run_in(&[
+            "run", &wc, "--engine", engine, "--allow", "fs", "--", "one.txt",
+        ]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "3 3 15\n");
+        let out = run_in(&[
+            "run",
+            &wc,
+            "--engine",
+            engine,
+            "--allow",
+            "fs",
+            "--",
+            "-f",
+            "one.txt",
+            "docs/b.txt",
+        ]);
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "5 9 29\n3 b\n2 a\n1 one\n1 two\n1 three\n1 c\n"
+        );
+        let out = run_in(&["run", &wc, "--allow", "fs", "--", "missing.txt"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("missing.txt"));
+    }
+    // A folder named on the command line can be listed and read below; nothing is writable,
+    // and paths nobody named are refused.
+    let prog = tmp_qx(
+        "named_files.qx",
+        "import std.io;\nimport std.fs;\nimport std.path;\n\nint main(String[] args) {\n    for name in fs.list(args[0]) {\n        String p = path.join(args[0], name);\n        io.writeLine(name + \" \" + fs.isDirectory(p) + \" \" + fs.readString(p).trim());\n    }\n    if args[1] == \"read\" {\n        io.writeLine(fs.readString(\"other.txt\"));\n    } else {\n        fs.writeString(path.join(args[0], \"new.txt\"), \"x\");\n    }\n    return 0;\n}\n",
+    );
+    let out = run_in(&["run", &prog, "--allow", "fs", "--", "docs", "read"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "a.txt false x\nb.txt false b a b\n c  a b\n"
+    );
+    // `other.txt` was not named: it means `data/other.txt`, which does not exist.
+    assert!(String::from_utf8(out.stderr).unwrap().contains("Q0704"));
+    let out = run_in(&["run", &prog, "--allow", "fs", "--", "docs", "write"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(String::from_utf8(out.stderr).unwrap().contains("Q0705"));
+    assert!(!dir.join("docs/new.txt").exists());
+    // A bundle built with `--allow fs` reads the files its own arguments name.
+    let exe = dir.join(exe_name("wc"));
+    let out = qxide(&["build", &wc, "--allow", "fs", "-o", exe.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    let out = run_exe(&exe, &dir, &["-l", "one.txt", "docs/a.txt"], "");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "4
+",
+        "{out:?}"
+    );
 }
 
 // The typed IR interpreter (`--engine ir`, docs/design/qx-ir.md) prints exactly what the

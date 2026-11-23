@@ -12,8 +12,8 @@ use super::machine::{internal, Machine, R};
 use super::msg;
 use super::stdlib::HostValue;
 
-/// Standard modules implemented here instead of by the host.
-pub const MODULES: &[&str] = &["math"];
+/// Standard modules implemented here (and in src/lang/json.rs) instead of by the host.
+pub const MODULES: &[&str] = &["math", "path", "json"];
 
 pub fn is_pure_module(module: &str) -> bool {
     MODULES.contains(&module)
@@ -194,6 +194,110 @@ fn shown(s: &str) -> String {
     match s.char_indices().nth(MAX) {
         Some((i, _)) => format!("{}...", &s[..i]),
         None => s.to_string(),
+    }
+}
+
+// `std.path` works on text alone, the same on every platform: `/` and `\` both separate
+// components, `C:` before a separator is a drive, and `join` and `normalize` write `/`.
+fn is_sep(c: char) -> bool {
+    c == '/' || c == '\\'
+}
+
+// The root of `p` (separators, or `C:` and one separator; empty for a relative path) and the rest.
+fn split_root(p: &str) -> (&str, &str) {
+    let b = p.as_bytes();
+    let end = if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && is_sep(b[2] as char)
+    {
+        3
+    } else {
+        p.len() - p.trim_start_matches(is_sep).len()
+    };
+    p.split_at(end)
+}
+
+// The root written with `/`.
+fn root_text(root: &str) -> String {
+    match root.as_bytes() {
+        [] => String::new(),
+        [d, b':', ..] => format!("{}:/", *d as char),
+        _ => "/".into(),
+    }
+}
+
+// The last component: what is left after trailing separators are dropped.
+fn file_name(p: &str) -> &str {
+    let (_, rest) = split_root(p);
+    let rest = rest.trim_end_matches(is_sep);
+    rest.rsplit(is_sep).next().unwrap_or("")
+}
+
+// `name` split at its last dot; a leading dot belongs to the stem (`.bashrc` has no extension).
+fn stem_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(0) | None => (name, ""),
+        Some(i) => (&name[..i], &name[i + 1..]),
+    }
+}
+
+/// One `std.path` function on paths given as text.
+pub fn path(function: &str, args: &[HostValue], span: Span) -> R<HostValue> {
+    let text = |i: usize| match args.get(i) {
+        Some(HostValue::Str(s)) => Ok(s.as_str()),
+        _ => Err(internal(span)),
+    };
+    let s = |v: String| Ok(HostValue::Str(v));
+    match function {
+        // `child` alone when it is absolute, like Java's `Path.resolve`.
+        "join" => {
+            let (base, child) = (text(0)?, text(1)?);
+            if base.is_empty() || !split_root(child).0.is_empty() {
+                return s(child.to_string());
+            }
+            if child.is_empty() {
+                return s(base.to_string());
+            }
+            let trimmed = base.trim_end_matches(is_sep);
+            if trimmed.is_empty() || trimmed.len() < split_root(base).0.len() {
+                // `base` is a root such as `/` or `C:/`.
+                return s(format!("{base}{child}"));
+            }
+            s(format!("{trimmed}/{child}"))
+        }
+        "fileName" => s(file_name(text(0)?).to_string()),
+        // Everything before the last component, without trailing separators; the root stays.
+        "parent" => {
+            let p = text(0)?;
+            let (root, rest) = split_root(p);
+            let rest = rest.trim_end_matches(is_sep);
+            let parent = match rest.rfind(is_sep) {
+                Some(i) => format!("{root}{}", rest[..i].trim_end_matches(is_sep)),
+                None if rest.is_empty() => String::new(),
+                None => root.to_string(),
+            };
+            s(parent)
+        }
+        "extension" => s(stem_ext(file_name(text(0)?)).1.to_string()),
+        "stem" => s(stem_ext(file_name(text(0)?)).0.to_string()),
+        "isAbsolute" => Ok(HostValue::Bool(!split_root(text(0)?).0.is_empty())),
+        // `/` separators, no empty or `.` components, and `x/..` removed; `..` that would climb
+        // above a root is dropped, above a relative start it is kept. An empty result is `.`.
+        "normalize" => {
+            let (root, rest) = split_root(text(0)?);
+            let mut parts: Vec<&str> = Vec::new();
+            for c in rest.split(is_sep) {
+                match c {
+                    "" | "." => {}
+                    ".." if parts.last().is_some_and(|l| *l != "..") => {
+                        parts.pop();
+                    }
+                    ".." if !root.is_empty() => {}
+                    c => parts.push(c),
+                }
+            }
+            let out = format!("{}{}", root_text(root), parts.join("/"));
+            s(if out.is_empty() { ".".into() } else { out })
+        }
+        _ => Err(internal(span)),
     }
 }
 

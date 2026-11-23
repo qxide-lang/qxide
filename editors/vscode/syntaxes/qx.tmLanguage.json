@@ -130,7 +130,7 @@
         { "name": "storage.type.primitive.qx", "match": "\\b(int|double|boolean|void)\\b" },
         { "name": "storage.type.quantum.qx", "match": "\\b(Bit|BitReg|Qubit|QReg)\\b" },
         { "name": "support.type.prelude.qx", "match": "\\b(Result|Option)\\b" },
-        { "name": "support.type.builtin.qx", "match": "\\b(List|Map|Random)\\b" }
+        { "name": "support.type.builtin.qx", "match": "\\b(List|Map|Random|Json)\\b" }
       ]
     },
     "constants": {

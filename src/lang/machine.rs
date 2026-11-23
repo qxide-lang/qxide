@@ -283,6 +283,11 @@ impl<'h> Machine<'h> {
         Ok(())
     }
 
+    /// Steps left before the step limit.
+    pub fn steps_left(&self) -> u64 {
+        self.limits.max_steps.saturating_sub(self.steps)
+    }
+
     // Text work in proportion to its length (`STR_BYTE_STEPS` per byte), charged before it is done.
     pub fn charge_text(&mut self, bytes: usize, at: Span) -> R<()> {
         self.charge((bytes as u64).saturating_mul(STR_BYTE_STEPS), at)
@@ -631,20 +636,38 @@ impl<'h> Machine<'h> {
         Ok(Value::Unit)
     }
 
-    /// One evaluated argument of a std call, as the host receives it.
-    pub fn std_arg(&mut self, v: Value, at: Span) -> R<HostValue> {
+    /// One evaluated argument of a std call: its text is charged per byte.
+    pub fn std_arg(&mut self, v: Value, at: Span) -> R<Value> {
         if let Value::Str(s) = &v {
             self.charge_text(s.len(), at)?;
         }
-        host_value(v, at)
+        Ok(v)
     }
 
     // `std.fs.readString(p)`: the arguments are evaluated; the host runs the effect.
-    pub fn std_call(&mut self, n: &str, vals: Vec<HostValue>, span: Span) -> R<Value> {
+    pub fn std_call(&mut self, n: &str, vals: Vec<Value>, span: Span) -> R<Value> {
         let rest = n.strip_prefix("std.").ok_or_else(|| internal(span))?;
         let (module, function) = rest.split_once('.').ok_or_else(|| internal(span))?;
+        // `std.json` takes and returns `Json` values, which never reach a host.
+        if module == "json" {
+            return self.json_fn(function, vals, span);
+        }
+        let vals = vals
+            .into_iter()
+            .map(|v| host_value(v, span))
+            .collect::<R<Vec<HostValue>>>()?;
         // Pure modules run here, never through the host.
-        let result = if super::pure::is_pure_module(module) {
+        let result = if module == "path" {
+            let out = super::pure::path(function, &vals, span)?;
+            if let HostValue::Str(s) = &out {
+                self.charge_text(s.len(), span)?;
+            }
+            return Ok(match out {
+                HostValue::Str(s) => Value::Str(s.into()),
+                HostValue::Bool(b) => Value::Bool(b),
+                _ => return Err(internal(span)),
+            });
+        } else if super::pure::is_pure_module(module) {
             Ok(super::pure::math(function, &vals, span)?)
         } else {
             // Text written to the terminal is charged per byte, like text the program builds.
@@ -678,6 +701,12 @@ impl<'h> Machine<'h> {
             Ok(HostValue::Str(s)) => {
                 self.charge_text(s.len(), span)?;
                 Ok(Value::Str(s.into()))
+            }
+            // `std.fs.list`: a new `String[]`, charged like `split`.
+            Ok(HostValue::Texts(parts)) => {
+                let bytes = parts.iter().map(String::len).sum();
+                self.charge_texts(parts.len(), bytes, span)?;
+                Ok(self.texts(parts.iter()))
             }
             Err(e) => Err(std_error(e, span)),
         }

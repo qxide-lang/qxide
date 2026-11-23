@@ -306,6 +306,54 @@ pub fn shift_range() -> String {
     "shift amount out of bounds: must be in the range 0 to 63".into()
 }
 
+pub fn json_kind(found: &str, want: &str) -> String {
+    format!("expected JSON `{want}`, found `{found}`")
+}
+
+pub fn json_syntax(line: usize, col: usize, what: &str) -> String {
+    format!("invalid JSON at line {line}, column {col}: {what}")
+}
+
+pub fn json_end() -> String {
+    "unexpected end of input".into()
+}
+
+pub fn json_unexpected(c: char) -> String {
+    format!("unexpected character {c:?}")
+}
+
+pub fn json_bad_number() -> String {
+    "invalid number".into()
+}
+
+pub fn json_bad_escape() -> String {
+    "invalid escape sequence".into()
+}
+
+pub fn json_control_char() -> String {
+    "unescaped control character in string".into()
+}
+
+pub fn json_trailing() -> String {
+    "trailing characters after value".into()
+}
+
+pub fn json_too_deep(max: usize) -> String {
+    format!("exceeded maximum JSON nesting depth of {max}")
+}
+
+pub fn json_not_finite(x: f64) -> String {
+    format!("non-finite value {x}; JSON numbers must be finite")
+}
+
+pub fn std_list_too_large(path: &str, max: usize) -> String {
+    format!("directory `{path}` has more than {max} entries")
+}
+
+pub fn std_named_read_only(path: &str) -> String {
+    format!("command-line path `{path}` is read-only; write files inside the data folder instead")
+}
+
 pub fn parse_number(text: &str, ty: &str) -> String {
     format!("cannot parse `{text}` as `{ty}`")
 }

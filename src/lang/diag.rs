@@ -119,6 +119,7 @@ codes! {
     TooManyDiagnostics => "Q0418",
     ParseNumber => "Q0419",
     ShiftRange => "Q0420",
+    JsonKind => "Q0421",
     UnknownPackage => "Q0501",
     ModuleNotFound => "Q0502",
     UnknownImport => "Q0503",

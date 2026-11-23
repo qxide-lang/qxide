@@ -1,0 +1,44 @@
+// JSON and paths: parse a document, read its fields, build a new value and print it, then take
+// a file path apart. `std.json` and `std.path` are pure, so this runs in the playground too.
+import std.json;
+import std.path;
+
+// The total of the numbers in the `scores` array of one player.
+int total(Json player) {
+    int sum = 0;
+    for s in player.get("scores").orElse(json.ofArray(new Json[0])).items() {
+        sum += s.asInt();
+    }
+    return sum;
+}
+
+void main() {
+    String text = "{{\"players\": [{{\"name\": \"Ada\", \"scores\": [3, 5, 8]}}, {{\"name\": \"Bo\", \"scores\": [7]}}], \"round\": 2.5}}";
+    match json.parse(text) {
+        Ok(doc) => {
+            Map<String, Json> totals = new Map();
+            for p in doc.get("players").orElse(json.ofNull()).items() {
+                totals.put(p.get("name").orElse(json.ofString("?")).asString(), json.ofInt(total(p)));
+            }
+            Map<String, Json> report = new Map();
+            report.put("round", doc.get("round").orElse(json.ofNull()));
+            report.put("totals", json.ofMap(totals));
+            println("{}", json.stringify(json.ofMap(report)));
+            println("{}", json.pretty(json.ofMap(totals)));
+        }
+        Err(e) => {
+            println("bad input: {}", e);
+        }
+    }
+    match json.parse("[1, 2") {
+        Ok(v) => {
+            println("unexpected: {}", json.stringify(v));
+        }
+        Err(e) => {
+            println("{}", e);
+        }
+    }
+    String file = path.join("results/2026", "scores.final.json");
+    println("{} {} {} {}", file, path.parent(file), path.stem(file), path.extension(file));
+    println("{}", path.normalize("results/./2026/../2027//scores.json"));
+}

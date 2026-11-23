@@ -51,6 +51,34 @@ public void writeString(String path, String text) {}
 public void appendString(String path, String text) {}
 public boolean exists(String path) { return false; }
 public void remove(String path) {}
+public boolean isDirectory(String path) { return false; }
+public String[] list(String path) { return new String[0]; }
+",
+    ),
+    (
+        "path",
+        "public String join(String base, String child) { return \"\"; }
+public String fileName(String path) { return \"\"; }
+public String parent(String path) { return \"\"; }
+public String extension(String path) { return \"\"; }
+public String stem(String path) { return \"\"; }
+public boolean isAbsolute(String path) { return false; }
+public String normalize(String path) { return \"\"; }
+",
+    ),
+    (
+        "json",
+        "public Result<Json, String> parse(String text) { return Result.Err(\"\"); }
+public String stringify(Json value) { return \"\"; }
+public String pretty(Json value) { return \"\"; }
+public Json ofNull() { return new Json(); }
+public Json ofBoolean(boolean value) { return new Json(); }
+public Json ofInt(int value) { return new Json(); }
+public Json ofDouble(double value) { return new Json(); }
+public Json ofString(String value) { return new Json(); }
+public Json ofArray(Json[] items) { return new Json(); }
+public Json ofList(List<Json> items) { return new Json(); }
+public Json ofMap(Map<String, Json> fields) { return new Json(); }
 ",
     ),
     (
@@ -340,6 +368,8 @@ pub enum HostValue {
     Double(f64),
     Bool(bool),
     Str(String),
+    /// A `String[]` result (`std.fs.list`).
+    Texts(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +482,8 @@ pub const MAX_HTTP_BYTES: usize = 16 << 20;
 pub const MAX_URL_LEN: usize = 2048;
 /// Longest single `std.time.sleep`.
 pub const MAX_SLEEP_MS: i64 = 60_000;
+/// Most entries `std.fs.list` returns.
+pub const MAX_LIST_ENTRIES: usize = 1 << 20;
 
 fn str_arg(args: &[HostValue], i: usize) -> &str {
     match args.get(i) {
@@ -570,9 +602,44 @@ impl NativeStd {
         Ok(HostValue::Unit)
     }
 
+    // A path a program names: a file or folder given on the command line (`qxide run f.qx
+    // --allow fs -- notes.txt`) or a path below such a folder, read-only and relative to the
+    // current directory; otherwise a path inside the data folder.
+    fn fs_path(&self, rel: &str, write: bool) -> Result<PathBuf, StdError> {
+        for a in self.args.iter().filter(|a| !a.is_empty()) {
+            let below = rel
+                .strip_prefix(a.as_str())
+                .filter(|r| a.ends_with(['/', '\\']) || r.starts_with(['/', '\\']))
+                .map(|r| r.trim_start_matches(['/', '\\']))
+                .filter(|r| !r.is_empty());
+            if rel != a && below.is_none() {
+                continue;
+            }
+            if write {
+                return Err(StdError::new(
+                    StdErrorKind::Path,
+                    msg::std_named_read_only(rel),
+                ));
+            }
+            let named = PathBuf::from(a);
+            return match below {
+                None => Ok(named),
+                // The rest must stay inside the named folder, like data-folder paths.
+                Some(r) => {
+                    let root = named
+                        .canonicalize()
+                        .map_err(|_| StdError::new(StdErrorKind::Path, msg::std_bad_path(rel)))?;
+                    confine(&root, r)
+                }
+            };
+        }
+        confine(&self.data_root, rel)
+    }
+
     fn fs(&self, function: &str, args: &[HostValue]) -> StdResult {
         let rel = str_arg(args, 0);
-        let path = confine(&self.data_root, rel)?;
+        let write = matches!(function, "writeString" | "appendString" | "remove");
+        let path = self.fs_path(rel, write)?;
         let io =
             |e: std::io::Error| StdError::new(StdErrorKind::Io, msg::std_io(rel, &e.to_string()));
         match function {
@@ -610,6 +677,27 @@ impl NativeStd {
                 Ok(HostValue::Unit)
             }
             "exists" => Ok(HostValue::Bool(path.is_file())),
+            "isDirectory" => Ok(HostValue::Bool(path.is_dir())),
+            // Entry names in byte order, so every platform lists a folder the same way; at most
+            // `MAX_LIST_ENTRIES`.
+            "list" => {
+                let mut names = Vec::new();
+                for entry in std::fs::read_dir(&path).map_err(io)? {
+                    let entry = entry.map_err(io)?;
+                    let Ok(name) = entry.file_name().into_string() else {
+                        return Err(StdError::new(StdErrorKind::Io, msg::std_not_utf8(rel)));
+                    };
+                    names.push(name);
+                    if names.len() > MAX_LIST_ENTRIES {
+                        return Err(StdError::new(
+                            StdErrorKind::Io,
+                            msg::std_list_too_large(rel, MAX_LIST_ENTRIES),
+                        ));
+                    }
+                }
+                names.sort();
+                Ok(HostValue::Texts(names))
+            }
             "remove" => match std::fs::remove_file(&path) {
                 Ok(()) => Ok(HostValue::Unit),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HostValue::Unit),
@@ -1013,6 +1101,83 @@ mod tests {
             }
             Err(e) => panic!("cannot create a symlink on CI: {e}"),
         }
+    }
+
+    // Stage 2c: files and folders named on the command line are readable (and listable)
+    // relative to the current directory; they cannot be written, and paths below a named folder
+    // stay inside it. Anything else is still confined to the data folder.
+    #[test]
+    fn fs_reads_paths_named_on_the_command_line() {
+        let base = scratch("named");
+        let (root, dir) = (base.join("data"), base.join("in"));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("b.txt"), "bee").unwrap();
+        std::fs::write(dir.join("a.txt"), "ay").unwrap();
+        std::fs::write(base.join("secret.txt"), "no").unwrap();
+        let named = dir.join("a.txt").to_string_lossy().into_owned();
+        let folder = dir.to_string_lossy().into_owned();
+        let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
+        s.args = vec![named.clone(), folder.clone(), String::new()];
+        let p = |v: &str| HostValue::Str(v.into());
+        assert_eq!(s.call("fs", "readString", &[p(&named)]).unwrap(), p("ay"));
+        assert_eq!(
+            s.call("fs", "exists", &[p(&named)]).unwrap(),
+            HostValue::Bool(true)
+        );
+        let below = format!("{folder}/b.txt");
+        assert_eq!(s.call("fs", "readString", &[p(&below)]).unwrap(), p("bee"));
+        let below = format!("{folder}\\b.txt");
+        assert_eq!(s.call("fs", "readString", &[p(&below)]).unwrap(), p("bee"));
+        assert_eq!(
+            s.call("fs", "list", &[p(&folder)]).unwrap(),
+            HostValue::Texts(vec!["a.txt".into(), "b.txt".into(), "sub".into()])
+        );
+        assert_eq!(
+            s.call("fs", "isDirectory", &[p(&format!("{folder}/sub"))])
+                .unwrap(),
+            HostValue::Bool(true)
+        );
+        // Read-only: writing, appending and removing a named path fail.
+        for f in ["writeString", "appendString", "remove"] {
+            let e = s.call("fs", f, &[p(&named), p("x")]).unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Path, "{f}");
+            let e = s
+                .call("fs", f, &[p(&format!("{folder}/new.txt")), p("x")])
+                .unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Path, "{f}");
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "ay");
+        // Below a named folder, `..` cannot climb out.
+        for bad in ["/../secret.txt", "/sub/../../secret.txt"] {
+            let e = s
+                .call("fs", "readString", &[p(&format!("{folder}{bad}"))])
+                .unwrap_err();
+            assert_eq!(e.kind, StdErrorKind::Path, "{bad}");
+        }
+        // A prefix of a name is not the name: `in2/x` is not below `in`.
+        let e = s
+            .call("fs", "readString", &[p(&format!("{folder}2/x.txt"))])
+            .unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Path);
+        // Paths nobody named still resolve inside the data folder.
+        let other = base.join("secret.txt").to_string_lossy().into_owned();
+        let e = s.call("fs", "readString", &[p(&other)]).unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Path);
+        s.call("fs", "writeString", &[p("out/r.txt"), p("ok")])
+            .unwrap();
+        assert_eq!(
+            s.call("fs", "list", &[p(".")]).unwrap(),
+            HostValue::Texts(vec!["out".into()])
+        );
+        assert_eq!(
+            s.call("fs", "isDirectory", &[p("out/r.txt")]).unwrap(),
+            HostValue::Bool(false)
+        );
+        // Without arguments (every host but `qxide run`), nothing outside the data folder.
+        s.args.clear();
+        let e = s.call("fs", "readString", &[p(&named)]).unwrap_err();
+        assert_eq!(e.kind, StdErrorKind::Path);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn scratch(tag: &str) -> PathBuf {

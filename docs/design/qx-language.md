@@ -1079,7 +1079,10 @@ MVP 단계의 표준 모듈은 다음과 같다.
 - `std.time`: `currentTimeMillis`, `nowIso`, `sleep`, `monotonicMillis`
 - `std.io`: `write`, `writeLine`, `writeErr`, `writeErrLine`, `readLine`, `readAll` (CLI 전용, 19.9절·19.10절)
 - `std.env`: `get` (CLI 전용, 19.9절)
-- `std.fs`: `readString`, `writeString`, `appendString`, `exists`, `remove`
+- `std.fs`: `readString`, `writeString`, `appendString`, `exists`, `remove`, `isDirectory`, `list` (19.14절)
+- `std.math`: `sqrt` 등 수학 함수 (순수 함수, 모든 호스트, 19.2절)
+- `std.path`: `join`, `fileName`, `parent`, `extension`, `stem`, `isAbsolute`, `normalize` (순수 함수, 모든 호스트, 19.14절)
+- `std.json`: `parse`, `stringify`, `pretty`, `ofNull`, `ofBoolean`, `ofInt`, `ofDouble`, `ofString`, `ofArray`, `ofList`, `ofMap` (순수 함수, 모든 호스트, 19.14절)
 - `std.app`: `setTitle`, `setSize`, `close`, `emit` (데스크톱 앱 전용)
 - `std.qxide`: `check`, `run`, `qasm`, `format` (`qxide` 권한이 있는 앱 전용, 즉 Qxide Studio)
 
@@ -1093,7 +1096,7 @@ MVP 단계의 표준 모듈은 다음과 같다.
 
 | 호스트 | 허용 범위 |
 | --- | --- |
-| `qxide run` / `qxide check` | `std.log`(stderr 출력), `std.time`, `std.io`, `std.env`는 항상 허용된다. `std.fs`는 `--allow fs` 지정 시에만 허용되며 `qxide.toml` 옆의 `data/` 또는 `./data`를 루트로 한다. `std.app`과 `std.qxide`는 사용할 수 없다(`Q0702`). |
+| `qxide run` / `qxide check` | `std.log`(stderr 출력), `std.time`, `std.io`, `std.env`는 항상 허용된다. `std.fs`는 `--allow fs` 지정 시에만 허용되며 `qxide.toml` 옆의 `data/` 또는 `./data`를 루트로 하고, `--` 뒤에 프로그램 인자로 지정한 파일과 폴더도 읽을 수 있다(읽기 전용, 19.14절). 순수 모듈 `std.math`, `std.path`, `std.json`은 모든 호스트에서 권한 없이 허용된다. `std.app`과 `std.qxide`는 사용할 수 없다(`Q0702`). |
 | `qxide qasm` | `std.log`는 폐기되며 `std.time`은 동작한다. 내보내기에 부수 효과가 없도록 `std.fs`와 `std.app` 호출은 `Q0702`로 거부된다. |
 | `qxide repl` 및 플레이그라운드 | 둘 다 `std.log`만 허용된다(`std.io`, `std.env`는 `Q0702`). 플레이그라운드는 stderr에 `info: ...` 형식으로 출력하지만, REPL은 매 입력마다 전체 세션을 다시 실행하므로 호출은 허용하되 출력하지 않는다. |
 | 데스크톱 앱 | `std.log`는 항상 허용되며, 그 외 모듈은 `[app] permissions`에 나열된 경우에만 허용된다. `std.io`와 `std.env`는 허가할 수 없다(`Q0702`). 의존성은 `std.log`만 사용할 수 있다. |
@@ -1653,3 +1656,45 @@ void main() {
 ```text
 qxide run big.qx --trusted --shots 1000
 ```
+
+### 19.14 파일과 데이터 형식: `std.path`, `std.fs` 확장, `std.json`
+
+로드맵 Stage 2의 세 번째 단계(2c)로, 경로 처리 모듈, 명령줄에서 지정한 파일 읽기와 디렉터리 목록, JSON 파싱·직렬화를 추가한다.
+
+- **`std.path`**: `std.math`와 마찬가지로 권한이 필요 없는 순수 모듈이며 플레이그라운드, REPL, 데스크톱 앱, 의존성 패키지를 포함한 모든 호스트에서 사용할 수 있다. `path.join(base, child)`, `path.fileName(p)`, `path.parent(p)`, `path.extension(p)`, `path.stem(p)`, `path.isAbsolute(p)`, `path.normalize(p)`를 제공한다. 모든 함수는 파일 시스템에 접근하지 않고 텍스트만 다루므로 모든 플랫폼과 플레이그라운드에서 결과가 같다. `/`와 `\`를 모두 구성 요소 구분자로 취급하고, `C:` 뒤에 구분자가 오면 드라이브 루트로 보며, `join`과 `normalize`는 구분자로 `/`를 출력한다. `join`은 `child`가 절대 경로이면 Java `Path.resolve`처럼 `child`를 그대로 반환한다. `parent`는 상위 경로가 없으면(`"a"`, `"/"`) 빈 문자열을 반환하고 루트는 자기 자신을 유지한다(`parent("/a")`는 `/`). `extension`은 점을 포함하지 않으며 확장자가 없으면 빈 문자열을 반환하고, `.bashrc`처럼 점으로 시작하는 이름은 확장자가 없는 것으로 본다(`stem`은 `.bashrc`). `normalize`는 빈 구성 요소와 `.`을 버리고 `x/..` 쌍을 제거하며, 상대 경로 맨 앞의 `..`은 유지하고 루트 위로 올라가는 `..`은 버리며 결과가 비면 `.`을 반환한다.
+- **`std.fs` 확장**: `fs.isDirectory(p)`와 `fs.list(p)`를 추가한다. `fs.list(p)`는 폴더 안의 항목 이름을 바이트 순서로 정렬한 `String[]`로 반환하므로 모든 플랫폼에서 목록 순서가 같다. 항목이 1,048,576개를 넘거나 이름이 유효한 UTF-8이 아니면 `Q0704` 오류다. `fs.list(".")`는 데이터 폴더의 목록을 반환하며, `fs.exists`는 기존과 마찬가지로 파일인지 여부만 뜻한다.
+- **명령줄에서 지정한 파일**: `--allow fs`를 주면 프로그램 인자(`qxide run`에서 `--` 뒤에 넘긴 인자, 또는 `qxide build --allow fs`로 만든 실행 파일의 모든 인자)와 정확히 일치하는 경로는 데이터 폴더 안의 경로가 아니라 현재 디렉터리 기준 상대 경로 또는 절대 경로로 적힌 그 파일이나 폴더 자체를 가리킨다. 이러한 인자 뒤에 `/` 또는 `\`가 이어지는 경로는 그 폴더 아래의 항목을 뜻하며 폴더 밖으로 벗어날 수 없다(밖으로 나가는 `..`과 심볼릭 링크는 `Q0705`). 덕분에 프로그램은 `fs.list`와 `path.join`으로 폴더를 순회할 수 있다. 이 경로들은 읽기 전용이어서 `readString`, `exists`, `isDirectory`, `list`만 동작하며, 이 경로에 `writeString`, `appendString`, `remove`를 호출하면 `Q0705` 오류다. 그 밖의 모든 경로는 여전히 데이터 폴더를 가리키므로 프로그램은 사용자가 지정한 파일에만 닿을 수 있다. 같은 상대 경로의 파일이 데이터 폴더에도 있을 때는 명령줄 인자가 우선한다. 인자를 전달하지 않는 호스트(`qxide check`, 플레이그라운드, REPL, 데스크톱 앱)의 동작은 변하지 않는다. 권한 검사는 기존처럼 모듈을 import할 때 수행하므로 `--allow fs` 없이 `import std.fs;`를 쓰면 `Q0703` 오류다.
+- **예제(`examples/cli/wc.qx`) 갱신**: `examples/cli/wc.qx`는 이제 `--` 뒤에 지정한 파일(`qxide run examples/cli/wc.qx --allow fs -- notes.txt`)을 읽고 세며, 파일을 지정하지 않으면 표준 입력을 읽는다. `std.fs`를 import하므로 표준 입력을 읽을 때도 `--allow fs`가 필요하다. 없는 파일을 지정하면 표준 오류(`stderr`)에 `wc: no such file ...`을 출력하고 종료 코드 `1`로 종료한다.
+- **내장 타입 `Json`과 `std.json`**: `Json`은 `List`, `Map`, `Random`과 마찬가지로 별도 `import` 없이 모든 파일에서 사용할 수 있는 내장 타입이며, 프로그램이 같은 이름의 타입을 선언하면 사용자 타입이 우선한다. `std.json`은 모든 호스트에서 권한 없이 사용할 수 있는 순수 모듈이다. `Json` 값은 불변이며, 배열과 객체는 이미 존재하는 값으로만 구성되므로 값이 자기 자신을 포함할 수 없다. `==` 비교와 `println` 출력은 지원하지 않으므로 출력할 때는 `json.stringify`를 사용한다.
+- **JSON 파싱(`json.parse`)**: `json.parse(text)`는 `Result<Json, String>`을 반환한다. RFC 8259를 엄격하게 따르므로 주석, 끝 쉼표, 작은따옴표, `NaN`/`Infinity`, 선행 0, 바이트 순서 표시(BOM)를 허용하지 않는다. 문자열 안의 제어 문자는 반드시 이스케이프해야 하며, 서로게이트 쌍을 포함한 `\u` 이스케이프를 디코딩하고 짝이 없는 단독 서로게이트는 오류로 처리한다. `Err` 문자열 형식은 `invalid JSON at line L, column C: <reason>`이며 열 번호는 문자 수로 센다. 숫자는 원래 형태를 유지해 소수점이나 지수가 없고 64비트에 들어가는 정수는 `int`, 그 외의 숫자는 `double`로 저장한다(`1e400`처럼 유한수로 표현할 수 없을 만큼 큰 수는 오류이며 언더플로는 `0.0`이 된다). 객체 멤버는 삽입 순서를 유지하며, 이름이 중복되면 처음 나타난 위치를 유지한 채 마지막 값을 취한다. 배열과 객체는 최대 256단계까지 중첩할 수 있다.
+- **JSON 직렬화(`json.stringify`, `json.pretty`)**: `json.stringify(v)`는 공백 없는 간결한 텍스트를 출력하고, `json.pretty(v)`는 공백 2칸으로 들여쓰고 이름 뒤에 `: `를 붙인다. `double` 값은 항상 가장 짧은 정확한 표현으로 소수점이나 지수를 포함해(`1.0`, `1e300`) 기록하므로 `json.parse(json.stringify(v))`는 `int`와 `double` 구분을 유지한 채 같은 값을 되돌려 준다. 비-ASCII 문자는 UTF-8 그대로 기록하며 `"`, `\`, 제어 문자는 이스케이프한다.
+- **`Json` 값 생성**: `json.ofNull()`, `json.ofBoolean(b)`, `json.ofInt(n)`, `json.ofDouble(x)`(`NaN`과 무한대는 `Q0706`, `int` 인자는 `double`로 확장), `json.ofString(s)`, `json.ofArray(Json[] items)`, `json.ofList(List<Json> items)`, `json.ofMap(Map<String, Json> fields)`를 제공한다. 마지막 세 함수는 호출 시점의 원소를 복사하므로 이후 리스트나 맵을 수정해도 생성된 `Json` 값은 바뀌지 않으며, 256단계보다 깊게 생성하면 `Q0706` 오류다. `new Json()`과 `Json` 배열 원소·구조체 필드의 기본값은 JSON `null`이다.
+- **`Json` 읽기 메서드**: `kind()`는 `null`, `boolean`, `number`, `string`, `array`, `object` 중 하나를 반환한다. 그 밖에 `isNull()`, `asBoolean()`, `asInt()`(정수로 기록된 숫자만 허용), `asDouble()`(모든 숫자 허용), `asString()`, `size()`(배열 또는 객체), `at(i)`(배열, 범위 초과는 `Q0403`), `Option<Json>`을 반환하는 `get(name)`과 `has(name)`(객체), 멤버 이름을 순서대로 `String[]`로 반환하는 `keys()`, 원소를 `Json[]`로 반환하는 `items()`를 제공한다. 메서드가 요구하는 종류와 다른 `Json` 값에 호출하면 새 실행 시간 오류 `Q0421`이 발생한다.
+- **스텝 예산과 엔진**: `parse`는 입력 바이트당 8스텝에 더해 생성되는 모든 값과 멤버의 메모리에 대한 스텝을 부과한다. `stringify`와 `pretty`는 문자열을 만들기 전에 출력 길이를 먼저 측정하고 출력 바이트당 8스텝을 선과금하므로, 멤버를 공유해 직렬화 텍스트가 실제 메모리보다 훨씬 큰 값도 메모리를 할당하기 전에 스텝 예산(`Q0413`)에서 중단된다. 생성 함수들은 원소마다 스텝을 부과한다. 두 인터프리터는 모든 한도에서 동일한 스텝을 부과하며, JIT는 `Json`, `std.path`, `std.fs`를 사용하는 함수를 IR 인터프리터에 맡긴다.
+- **예제(`examples/qx/json.qx`)**: `examples/qx/json.qx` 예제를 추가했으며 플레이그라운드와 Studio에서도 실행된다. `.qx` 문자열 리터럴에서 중괄호는 `{{`와 `}}`로 표기하므로 소스 코드 안에 JSON 텍스트를 적을 때는 중괄호를 두 번 쓴다.
+
+```qx
+import std.json;
+
+void main() {
+    match json.parse("{{\"name\": \"qx\", \"tags\": [\"a\", \"b\"]}}") {
+        Ok(doc) => {
+            println("{} has {} tags", doc.get("name").orElse(json.ofNull()).asString(), doc.get("tags").orElse(json.ofNull()).size());
+            Map<String, Json> out = new Map();
+            out.put("ok", json.ofBoolean(true));
+            out.put("ratio", json.ofDouble(0.5));
+            println("{}", json.stringify(json.ofMap(out)));
+        }
+        Err(e) => {
+            println("{}", e);
+        }
+    }
+}
+```
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0421` | JSON 값의 종류가 메서드와 맞지 않음(실행 시간 오류) |
+| `Q0704` | 파일 작업 실패(`fs.list`의 항목이 1,048,576개를 넘거나 이름이 UTF-8이 아닌 경우 포함) |
+| `Q0705` | 허용되지 않은 경로(명령줄에서 지정한 경로에 쓰기·추가·삭제 포함) |
+| `Q0706` | 인수 범위 초과(`json.ofDouble`의 `NaN`·무한대, 256단계보다 깊은 `Json` 생성 포함) |

@@ -481,8 +481,8 @@ impl<'m> Exec<'m, '_, '_> {
                 span,
             } => {
                 let mut vals = Vec::with_capacity(args.len());
-                for (a, at) in args.iter() {
-                    vals.push(machine::host_value(fr.get(*a), *at)?);
+                for (a, _) in args.iter() {
+                    vals.push(fr.get(*a));
                 }
                 let v = self.m.std_call(name, vals, *span)?;
                 fr.set(*dst, v);

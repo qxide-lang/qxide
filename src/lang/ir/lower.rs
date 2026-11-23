@@ -1445,14 +1445,16 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 let mut vals = Vec::with_capacity(args.len());
                 for a in args {
                     let v = self.expr(a);
-                    // `Machine::std_arg` converts (and charges) each argument right after it is
-                    // evaluated; only build-time values reach the host.
+                    // `Machine::std_arg` charges each argument right after it is evaluated; only
+                    // build-time values reach the host, and `Json` values (and arrays of them)
+                    // only `std.json`.
                     match self.ty(v) {
                         IrTy::Str => self.emit(Inst::HostText {
                             src: v,
                             span: a.span,
                         }),
                         IrTy::I64 | IrTy::F64 | IrTy::Bool => {}
+                        IrTy::Native(_) | IrTy::Array(_) if n.starts_with("std.json.") => {}
                         _ => {
                             self.trap(internal(a.span));
                             return Some(self.unit());
