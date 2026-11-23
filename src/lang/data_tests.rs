@@ -181,6 +181,32 @@ fn json_nesting_is_limited() {
     assert_eq!(runtime_code(&build(json::MAX_DEPTH + 1)), "Q0706");
 }
 
+// The deepest value, parsed, printed and dropped near the call-depth limit, fits the
+// interpreter's stack on every engine (the parser, printer and drop recurse per level).
+#[test]
+fn deepest_json_near_the_call_depth_limit() {
+    let text = format!(
+        "{}{}",
+        "[".repeat(json::MAX_DEPTH),
+        "]".repeat(json::MAX_DEPTH)
+    );
+    let src = format!(
+        "import std.json;\n\nint deep(int n, String t) {{\n    if n == 0 {{\n        Json v = json.parse(t).orElse(json.ofNull());\n        return json.pretty(v).length() + json.stringify(v).length();\n    }}\n    return deep(n - 1, t);\n}}\n\nvoid main() {{\n    println(\"{{}}\", deep({}, {}));\n}}\n",
+        super::machine::MAX_CALL_DEPTH - 3,
+        lit(&text)
+    );
+    let n = json::MAX_DEPTH;
+    // Compact: 2 per level; pretty: also a newline and indentation around each inner level.
+    let pretty = 2 * n + (0..n - 1).map(|k| 2 + 2 * k + 2 * (k + 1)).sum::<usize>();
+    let out = std::thread::Builder::new()
+        .stack_size(super::STACK_SIZE)
+        .spawn(move || run_ok(&src))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(out, format!("{}\n", 2 * n + pretty));
+}
+
 // The first run-time error of a program that passes the checker, as (code, line, column).
 fn runtime_at(src: &str) -> (&'static str, usize, usize) {
     if let Err(e) = front(src) {
@@ -343,6 +369,23 @@ fn test_assertions() {
         Permissions::playground().access("test"),
         Some(Access::Allowed)
     );
+    // Inside an `if` on a measured bit an assertion would fail whatever the bit is: refused like
+    // effects (`Q0314`); pure `std.json`, `std.path` and `std.math` calls stay allowed there.
+    let in_bit_if = |call: &str| {
+        format!("import std.test;\nimport std.json;\nimport std.path;\n\nvoid main() {{\n    Qubit q = qubit();\n    h(q);\n    Bit m = measure(q);\n    if m {{\n        {call}\n    }}\n}}\n")
+    };
+    let codes = |src: &str| match front(src) {
+        Ok(_) => Vec::new(),
+        Err(e) => e.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+    };
+    assert_eq!(codes(&in_bit_if("test.fail(\"x\");")), ["Q0314"]);
+    assert_eq!(
+        codes(&in_bit_if("test.assertTrue(true, \"x\");")),
+        ["Q0314"]
+    );
+    for ok in ["json.stringify(json.ofInt(1));", "path.join(\"a\", \"b\");"] {
+        assert_eq!(codes(&in_bit_if(ok)), Vec::<&str>::new(), "{ok}");
+    }
 }
 
 // `std.json` and `std.path` are pure: every host offers them, including to dependencies.

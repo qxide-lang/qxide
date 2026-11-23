@@ -1104,15 +1104,16 @@ impl Checker {
                 .iter()
                 .find(|p| p.ty.is_quantum() && p.consume.is_some());
             // Pure std functions (`std.math`) are plain build-time arithmetic.
-            let direct = if f.name.name.starts_with("std.") && !pure::is_pure_fn(&f.name.name) {
-                Some((f.name.span, Unconditional::Op(f.name.name.clone())))
-            } else if let Some(p) = consume {
-                Some((p.name.span, Unconditional::Consume(p.name.name.clone())))
-            } else if f.ret.is_quantum() {
-                Some((f.ret_span, Unconditional::ReturnsQuantum(f.ret)))
-            } else {
-                scan.op.map(|(at, op)| (at, Unconditional::Op(op)))
-            };
+            let direct =
+                if f.name.name.starts_with("std.") && !pure::allowed_in_bit_if(&f.name.name) {
+                    Some((f.name.span, Unconditional::Op(f.name.name.clone())))
+                } else if let Some(p) = consume {
+                    Some((p.name.span, Unconditional::Consume(p.name.name.clone())))
+                } else if f.ret.is_quantum() {
+                    Some((f.ret_span, Unconditional::ReturnsQuantum(f.ret)))
+                } else {
+                    scan.op.map(|(at, op)| (at, Unconditional::Op(op)))
+                };
             if let Some(d) = direct {
                 self.unconditional.entry(f.name.name.clone()).or_insert(d);
             }

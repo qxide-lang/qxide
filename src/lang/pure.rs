@@ -27,6 +27,12 @@ pub fn is_pure_fn(qualified: &str) -> bool {
         .is_some_and(|(m, _)| is_pure_module(m))
 }
 
+/// Pure functions that may run inside an `if` on a measured bit: all but `std.test`, whose
+/// failure would not depend on the measured value (build-time code runs once, whatever the bit).
+pub fn allowed_in_bit_if(qualified: &str) -> bool {
+    is_pure_fn(qualified) && !qualified.starts_with("std.test.")
+}
+
 /// Methods of `String` values: name, parameter types, result type.
 pub const STRING_METHODS: &[(&str, &[Ty], Ty)] = &[
     ("length", &[], Ty::Int),
