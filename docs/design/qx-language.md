@@ -1083,6 +1083,7 @@ MVP 단계의 표준 모듈은 다음과 같다.
 - `std.math`: `sqrt` 등 수학 함수 (순수 함수, 모든 호스트, 19.2절)
 - `std.path`: `join`, `fileName`, `parent`, `extension`, `stem`, `isAbsolute`, `normalize` (순수 함수, 모든 호스트, 19.14절)
 - `std.json`: `parse`, `stringify`, `pretty`, `ofNull`, `ofBoolean`, `ofInt`, `ofDouble`, `ofString`, `ofArray`, `ofList`, `ofMap` (순수 함수, 모든 호스트, 19.14절)
+- `std.test`: `assertTrue`, `assertFalse`, `assertEquals`, `fail` (순수 함수, 모든 호스트, 19.15절)
 - `std.app`: `setTitle`, `setSize`, `close`, `emit` (데스크톱 앱 전용)
 - `std.qxide`: `check`, `run`, `qasm`, `format` (`qxide` 권한이 있는 앱 전용, 즉 Qxide Studio)
 
@@ -1698,3 +1699,28 @@ void main() {
 | `Q0704` | 파일 작업 실패(`fs.list`의 항목이 1,048,576개를 넘거나 이름이 UTF-8이 아닌 경우 포함) |
 | `Q0705` | 허용되지 않은 경로(명령줄에서 지정한 경로에 쓰기·추가·삭제 포함) |
 | `Q0706` | 인수 범위 초과(`json.ofDouble`의 `NaN`·무한대, 256단계보다 깊은 `Json` 생성 포함) |
+
+### 19.15 테스트 실행기: `qxide test`와 `std.test`
+
+로드맵 Stage 5의 첫 도구로, `.qx` 프로젝트의 테스트 함수를 실행하는 `qxide test` 명령과 단언 모듈 `std.test`를 추가한다.
+
+- **테스트 함수**: 해당 파일 자체에 `void testName()`으로 선언된 최상위 함수(매개변수 없음, 제네릭 아님, 메서드 아님)가 테스트 함수로 인식된다. 이름은 `test` 단독이거나 `test` 뒤에 대문자, 숫자, 또는 `_`가 이어지는 형태(`testAdd`, `test_add`, `test2`)여야 하므로, `testament`나 `testWith(int n)`은 일반 함수로 취급된다. 다른 모듈에서 가져온 함수는 테스트로 실행되지 않으며, 어노테이션 문법은 추가하지 않는다.
+- **실행**: `qxide test [FILE|DIR] [--filter TEXT] [--engine E] [--allow fs|ffi]` 형식으로 실행한다. 파일을 지정하면 그 파일의 테스트 함수를 실행하고, 폴더를 지정하면 그 아래의 모든 `.qx` 파일을 경로 정렬 순서대로 실행하며, 인자를 생략하면 현재 디렉터리가 속한 프로젝트(`qxide.toml`과 `src/main.qx`가 있는 폴더)의 `tests/` 폴더를 대상으로 한다. 테스트 파일은 `main` 없이도 `qxide check`와 동일하게 검사되며, `src/main.qx`와 마찬가지로 프로젝트의 모듈과 의존성을 import할 수 있다(예: `import calc.ops.add;`). `--filter`를 지정하면 이름에 해당 텍스트가 포함된 테스트만 실행한다.
+- **격리와 출력**: 각 테스트 함수는 데스크톱 앱 커맨드와 마찬가지로 독립적으로 전개되며, 소스 순서대로 CLI 한도 아래에서 실행된다. 시뮬레이션은 수행하지 않으므로(샷 없음) 테스트 안의 `println` 출력은 표시되지 않는다. 각 테스트는 `test <file>::<name> ... ok` 또는 `... FAILED`를 출력하고, 실패한 항목은 뒤이어 진단과 함께 출력한 뒤 `test result: ok. N passed; M failed`(실패가 있으면 `FAILED`)로 요약한다. 종료 코드는 모두 통과하면 `0`, 실패한 테스트가 있거나 파일이 검사를 통과하지 못하면(해당 파일은 실패 1건으로 집계) `1`, 사용법 오류이면 `2`다.
+- **`std.test`**: 권한 없이 모든 호스트(`qxide run`, 플레이그라운드, 앱 포함)에서 사용할 수 있는 순수 모듈이다. `test.assertTrue(boolean condition, String message)`, `test.assertFalse(boolean condition, String message)`, `test.assertEquals(String expected, String actual)`(텍스트를 비교하며 다른 값은 `"" + value`로 변환하고, 오류는 두 값을 따옴표로 감싼 텍스트로 최대 200자까지 보여 준다), `test.fail(String message)`를 제공한다. 단언이 실패하면 새 실행 시간 오류 `Q0422`가 발생하며, 그 밖의 실행 시간 오류(오버플로, 범위 밖 인덱스, 스텝 한도)도 같은 방식으로 테스트를 실패시킨다.
+- **아직 없는 것**: `qxide doc`, 사용자 벤치마크 명령, 디버거(DAP)는 이후 Stage 5 과제로 남는다. 테스트는 병렬로 실행되지 않으며 스텝 예산 외에 테스트별 시간 제한은 두지 않는다.
+
+```qx
+// tests/ops.qx — qxide test
+import std.test;
+import calc.ops.add;
+
+void testAdd() {
+    test.assertEquals("5", "" + add(2, 3));
+    test.assertTrue(add(-1, 1) == 0, "inverse");
+}
+```
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0422` | 단언 실패(`std.test`의 `assertTrue`·`assertFalse`·`assertEquals`·`fail`, 실행 시간 오류) |

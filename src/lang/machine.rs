@@ -667,6 +667,9 @@ impl<'h> Machine<'h> {
                 HostValue::Bool(b) => Value::Bool(b),
                 _ => return Err(internal(span)),
             });
+        } else if module == "test" {
+            super::pure::assertion(function, &vals, span)?;
+            return Ok(Value::Unit);
         } else if super::pure::is_pure_module(module) {
             Ok(super::pure::math(function, &vals, span)?)
         } else {

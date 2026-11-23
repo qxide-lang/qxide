@@ -325,6 +325,26 @@ fn path_functions_work_on_text_alone() {
     assert_eq!(run_ok(&src), want);
 }
 
+// `std.test` assertions are pure and fail with `Q0422`; `assertEquals` shows both texts.
+#[test]
+fn test_assertions() {
+    let ok = "import std.test;\n\nvoid main() {\n    test.assertTrue(1 < 2, \"a\");\n    test.assertFalse(1 > 2, \"b\");\n    test.assertEquals(\"3\", \"\" + (1 + 2));\n    println(\"ok\");\n}\n";
+    assert_eq!(run_ok(ok), "ok\n");
+    for (line, col) in [
+        ("    test.assertTrue(1 > 2, \"a\");", 5),
+        ("    test.assertFalse(true, \"b\");", 5),
+        ("    test.assertEquals(\"x\", \"y\");", 5),
+        ("    test.fail(\"no\");", 5),
+    ] {
+        let src = format!("import std.test;\n\nvoid main() {{\n{line}\n}}\n");
+        assert_eq!(runtime_at(&src), ("Q0422", 4, col), "{line}");
+    }
+    assert_eq!(
+        Permissions::playground().access("test"),
+        Some(Access::Allowed)
+    );
+}
+
 // `std.json` and `std.path` are pure: every host offers them, including to dependencies.
 #[test]
 fn json_and_path_are_allowed_everywhere() {

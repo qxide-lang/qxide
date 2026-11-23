@@ -33,6 +33,7 @@ Commands:
   qasm [FILE]                        Print the OpenQASM 3 circuit built by a .qx program
   build [FILE] [-o OUT] [--engine E] [--shots N] [--seed S] [--allow fs|ffi]
                                      {}
+  test [FILE|DIR] [--filter TEXT]    {}
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
   repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
@@ -49,6 +50,7 @@ Options:
         BACKEND_HELP,
         BACKEND_FLAGS_HELP,
         BUILD_HELP,
+        TEST_HELP,
         LSP_HELP,
         pkg::cli::usage(),
         app::usage(),
@@ -63,6 +65,8 @@ const BACKEND_HELP: &str =
 const BACKEND_FLAGS_HELP: &str = "--dry-run (preview), --yes (no prompt), --max-seconds S (QPU cap, default 120), --device-config FILE (dry-run)";
 
 const BUILD_HELP: &str = "Package a .qx program into a standalone executable";
+
+const TEST_HELP: &str = "Run test functions in .qx files and report results";
 
 const TRUSTED_HELP: &str = "Raise the step, operation, simulation and output limits of run and qasm (only for programs you trust)";
 
@@ -590,6 +594,150 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     }
 }
 
+// The `.qx` files of `qxide test`: the file itself, every `.qx` file below a folder (sorted), or
+// the `tests/` folder of the project around the current directory.
+fn test_files(target: Option<&str>) -> Result<Vec<PathBuf>, String> {
+    let root = match target {
+        Some(t) => PathBuf::from(t),
+        None => {
+            let entry = pkg::project::default_entry().map_err(|e| e.render())?;
+            let project = entry
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or(Path::new(""));
+            project.join("tests")
+        }
+    };
+    if root.is_file() {
+        return Ok(vec![root]);
+    }
+    let mut files = Vec::new();
+    let mut dirs = vec![root.clone()];
+    while let Some(d) = dirs.pop() {
+        let entries = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "qx") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+// `qxide test [FILE|DIR] [--filter TEXT] [--engine E] [--allow fs]`: runs every test function
+// (`void testName()`) and reports each one; exit code 1 when any test or file fails.
+fn test_command(args: &[String]) -> ExitCode {
+    let (mut target, mut filter, mut engine) = (None, String::new(), None);
+    let (mut allow_fs, mut allow_ffi) = (false, false);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let parsed = match arg.as_str() {
+            "--filter" => parse_value(arg, rest.next()).map(|v| filter = v),
+            "--engine" => {
+                parse_engine(arg, rest.next().map(String::as_str)).map(|e| engine = Some(e))
+            }
+            "--allow" => parse_allow(rest.next(), &mut allow_fs, &mut allow_ffi),
+            p if target.is_none() && !p.starts_with('-') => {
+                target = Some(p.to_string());
+                Ok(())
+            }
+            _ => {
+                eprintln!("qxide: unexpected argument `{arg}` for `test`");
+                Err(ExitCode::from(2))
+            }
+        };
+        if let Err(code) = parsed {
+            return code;
+        }
+    }
+    let engine = match engine.map_or_else(default_engine, Ok) {
+        Ok(e) => e,
+        Err(code) => return code,
+    };
+    let files = match test_files(target.as_deref()) {
+        Ok(f) => f,
+        Err(e) => {
+            eprint!("{e}");
+            if !e.ends_with('\n') {
+                eprintln!();
+            }
+            return ExitCode::from(1);
+        }
+    };
+    let worker = std::thread::Builder::new()
+        .stack_size(LANG_STACK)
+        .spawn(move || {
+            lang::set_engine(engine);
+            let (mut passed, mut failed) = (0usize, 0usize);
+            let mut failures = String::new();
+            for path in &files {
+                let name = path.display().to_string();
+                let src = match std::fs::read_to_string(path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        failures.push_str(&format!("qxide: failed to read `{name}`: {e}\n"));
+                        failed += 1;
+                        continue;
+                    }
+                };
+                let project = match pkg::project::for_entry(path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failures.push_str(&e.render());
+                        failed += 1;
+                        continue;
+                    }
+                };
+                let input = lang::Input {
+                    name: &name,
+                    src: &src,
+                    project: project.as_ref(),
+                    read: &lang::read_file,
+                    perms: lang::stdlib::Permissions::cli(allow_fs).with_ffi(allow_ffi),
+                };
+                let mut host = lang::cli_host(project_data_dir(path));
+                host.ffi.enabled = allow_ffi;
+                match lang::test_input(&input, &filter, &mut host, &lang::Limits::CLI) {
+                    Ok(outcomes) => {
+                        for t in outcomes {
+                            let status = if t.result.is_ok() { "ok" } else { "FAILED" };
+                            println!("test {name}::{} ... {status}", t.name);
+                            match t.result {
+                                Ok(()) => passed += 1,
+                                Err(d) => {
+                                    failed += 1;
+                                    failures
+                                        .push_str(&format!("---- {name}::{} ----\n{d}", t.name));
+                                }
+                            }
+                        }
+                    }
+                    Err(lang::Failure(d)) => {
+                        println!("test {name} ... FAILED");
+                        failed += 1;
+                        failures.push_str(&format!("---- {name} ----\n{d}"));
+                    }
+                }
+                eprint!("{}", lang::take_warnings());
+            }
+            if !failures.is_empty() {
+                println!("\nfailures:\n{failures}");
+            }
+            let result = if failed == 0 { "ok" } else { "FAILED" };
+            println!("\ntest result: {result}. {passed} passed; {failed} failed");
+            failed == 0
+        });
+    match worker.map(|h| h.join()) {
+        Ok(Ok(true)) => ExitCode::SUCCESS,
+        Ok(Ok(false)) => ExitCode::from(1),
+        _ => ExitCode::from(101),
+    }
+}
+
 // `qxide build`: checks the program, then writes this executable with the program appended
 // (src/bundle.rs). The bundle keeps every module file the linker read, so the output needs
 // neither the sources nor the package cache at run time.
@@ -878,6 +1026,7 @@ fn main() -> ExitCode {
         Some("--help" | "-h") | None => print!("{}", usage()),
         Some(cmd @ ("run" | "check" | "qasm")) => return lang_command(cmd, &args[1..]),
         Some("build") => return build_command(&args[1..]),
+        Some("test") => return test_command(&args[1..]),
         Some("fmt") => return fmt_command(&args[1..]),
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),

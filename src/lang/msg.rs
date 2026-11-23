@@ -346,6 +346,14 @@ pub fn json_not_finite(x: f64) -> String {
     format!("non-finite value {x}; JSON numbers must be finite")
 }
 
+pub fn assert_failed(message: &str) -> String {
+    format!("assertion failed: {message}")
+}
+
+pub fn assert_not_equal(expected: &str, actual: &str) -> String {
+    format!("assertion failed: expected {expected}, got {actual}")
+}
+
 pub fn std_list_too_large(path: &str, max: usize) -> String {
     format!("directory `{path}` has more than {max} entries")
 }

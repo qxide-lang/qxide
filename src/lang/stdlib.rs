@@ -67,6 +67,14 @@ public String normalize(String path) { return \"\"; }
 ",
     ),
     (
+        "test",
+        "public void assertTrue(boolean condition, String message) {}
+public void assertFalse(boolean condition, String message) {}
+public void assertEquals(String expected, String actual) {}
+public void fail(String message) {}
+",
+    ),
+    (
         "json",
         "public Result<Json, String> parse(String text) { return Result.Err(\"\"); }
 public String stringify(Json value) { return \"\"; }

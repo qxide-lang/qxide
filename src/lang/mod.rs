@@ -227,6 +227,58 @@ fn build(src: &str) -> Result<(ast::Program, Elaborated), Vec<Diagnostic>> {
     .1
 }
 
+/// One test function run by `qxide test`: its name and, when it failed, the rendered error.
+pub struct TestOutcome {
+    pub name: String,
+    pub result: Result<(), String>,
+}
+
+// A test function: `void testName()` (or `test` alone, `test_x`, `test2`) declared in the file
+// itself, not generic and not a method.
+fn is_test(f: &ast::FnDecl) -> bool {
+    let Some(rest) = f.name.name.strip_prefix("test") else {
+        return false;
+    };
+    f.method.is_none()
+        && f.params.is_empty()
+        && f.tparams.is_empty()
+        && f.ret == ast::Ty::Void
+        && !f.name.name.contains('.')
+        && rest
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// `qxide test` of one file: each test function whose name contains `filter`, in source order,
+/// elaborated on its own like a command (nothing is simulated). `Err` when the file does not
+/// pass the checker.
+#[allow(dead_code)]
+pub fn test_input(
+    input: &Input,
+    filter: &str,
+    host: &mut dyn Host,
+    limits: &Limits,
+) -> Result<Vec<TestOutcome>, Failure> {
+    let (map, program) = front_input(input, false);
+    let program = program.map_err(|e| render(&map, &e, limits))?;
+    let names: Vec<String> = program
+        .fns
+        .iter()
+        .filter(|f| is_test(f) && f.name.name.contains(filter))
+        .map(|f| f.name.name.clone())
+        .collect();
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let result = engine::elaborate_call(&program, &name, Vec::new(), host, limits)
+                .map(drop)
+                .map_err(|d| render(&map, &[d], limits).0);
+            TestOutcome { name, result }
+        })
+        .collect())
+}
+
 /// Whether this build can call native functions (`extern`, `--allow ffi`).
 pub const FFI_SUPPORTED: bool = ffi::SUPPORTED;
 

@@ -2040,6 +2040,38 @@ void main() {
 }
 ```
 
+## Q0422: assertion failed
+
+A `std.test` assertion did not hold: `test.assertTrue(condition, message)` received a false condition, `test.assertFalse(condition, message)` received a true condition, `test.assertEquals(expected, actual)` received different texts (the error shows both as quoted text, cut after 200 characters), or `test.fail(message)` was called. `std.test` is a pure module available on every host; `qxide test` reports the error under the failing test function and counts it as failed, while `qxide run` stops the program like any run-time error. Because `assertEquals` compares `String`s, other values are converted with `"" + value`.
+
+Erroneous code example:
+
+```qx
+import std.test;
+
+int square(int x) {
+    return x + x;
+}
+
+void main() {
+    test.assertEquals("9", "" + square(3));  // error[Q0422]
+}
+```
+
+To fix it, change `square` to return `x * x` instead of `x + x` so that `"" + square(3)` matches `"9"` and the assertion holds.
+
+```qx
+import std.test;
+
+int square(int x) {
+    return x * x;
+}
+
+void main() {
+    test.assertEquals("9", "" + square(3));
+}
+```
+
 ## Q0501: unknown package in an import
 
 The first segment of an `import` path names a package that is neither the current package nor a dependency declared in `[dependencies]` in `qxide.toml`. Package names with hyphens, such as `bell-utils`, are imported using underscores (`bell_utils`). Requiring every external package to be declared in `qxide.toml` keeps builds reproducible and ensures dependencies are explicitly resolved before compilation.

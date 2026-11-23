@@ -13,7 +13,7 @@ use super::msg;
 use super::stdlib::HostValue;
 
 /// Standard modules implemented here (and in src/lang/json.rs) instead of by the host.
-pub const MODULES: &[&str] = &["math", "path", "json"];
+pub const MODULES: &[&str] = &["math", "path", "json", "test"];
 
 pub fn is_pure_module(module: &str) -> bool {
     MODULES.contains(&module)
@@ -236,6 +236,37 @@ fn stem_ext(name: &str) -> (&str, &str) {
     match name.rfind('.') {
         Some(0) | None => (name, ""),
         Some(i) => (&name[..i], &name[i + 1..]),
+    }
+}
+
+// `s` as a quoted literal (escapes make white space visible), cut after 200 characters.
+fn quoted(s: &str) -> String {
+    match s.char_indices().nth(200) {
+        Some((i, _)) => format!("{:?}...", &s[..i]),
+        None => format!("{s:?}"),
+    }
+}
+
+/// One `std.test` assertion: nothing when it holds, else the run-time error `Q0422`.
+pub fn assertion(function: &str, args: &[HostValue], span: Span) -> R<HostValue> {
+    let text = |i: usize| match args.get(i) {
+        Some(HostValue::Str(s)) => Ok(s.as_str()),
+        _ => Err(internal(span)),
+    };
+    let flag = |i: usize| match args.get(i) {
+        Some(HostValue::Bool(b)) => Ok(*b),
+        _ => Err(internal(span)),
+    };
+    let failed = |m: String| Err(Diagnostic::new(Code::AssertFailed, span, m));
+    match function {
+        "assertTrue" if !flag(0)? => failed(msg::assert_failed(text(1)?)),
+        "assertFalse" if flag(0)? => failed(msg::assert_failed(text(1)?)),
+        "assertEquals" if text(0)? != text(1)? => {
+            failed(msg::assert_not_equal(&quoted(text(0)?), &quoted(text(1)?)))
+        }
+        "fail" => failed(msg::assert_failed(text(0)?)),
+        "assertTrue" | "assertFalse" | "assertEquals" => Ok(HostValue::Unit),
+        _ => Err(internal(span)),
     }
 }
 

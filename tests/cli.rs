@@ -839,6 +839,94 @@ fn run_reads_files_named_on_the_command_line() {
     );
 }
 
+// Stage 5: `qxide test` runs every `void testName()` of the given file, of the `.qx` files below
+// a folder, or of the project's `tests/` folder, and exits with 1 when any of them fails.
+#[test]
+fn test_command_runs_test_functions() {
+    let dir = fresh_dir("test_command");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("tests/more")).unwrap();
+    std::fs::write(
+        dir.join("qxide.toml"),
+        "[package]\nname = \"calc\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/main.qx"),
+        "void main() {\n    println(\"hi\");\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/ops.qx"),
+        "public int add(int a, int b) {\n    return a + b;\n}\n",
+    )
+    .unwrap();
+    let good = "import std.test;\nimport calc.ops.add;\n\nvoid testAdd() {\n    test.assertEquals(\"5\", \"\" + add(2, 3));\n    test.assertTrue(add(1, 1) == 2, \"one plus one\");\n}\n\nvoid testQubits() {\n    Qubit q = qubit();\n    h(q);\n    discard(q);\n}\n\n// Not tests: a helper with a parameter, and a name that only starts with `test`.\nvoid testWith(int n) {\n    test.fail(\"never run\");\n}\n\nvoid testament() {\n    test.fail(\"never run\");\n}\n";
+    std::fs::write(dir.join("tests/add.qx"), good).unwrap();
+    let bad = "import std.test;\n\nvoid testWrong() {\n    test.assertEquals(\"4\", \"\" + (2 + 3));\n}\n\nvoid test_overflow() {\n    int big = 9223372036854775807;\n    test.assertTrue(big + 1 > 0, \"wraps\");\n}\n\nvoid testFail() {\n    test.assertFalse(true, \"flag\");\n}\n";
+    std::fs::write(dir.join("tests/more/bad.qx"), bad).unwrap();
+    let run_in = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_qxide"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    // The project's `tests/` folder by default.
+    for engine in ["ast", "ir"] {
+        let out = run_in(&["test", "--engine", engine]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        for line in [
+            format!("test tests{sep}add.qx::testAdd ... ok"),
+            format!("test tests{sep}add.qx::testQubits ... ok"),
+            format!("test tests{sep}more{sep}bad.qx::testWrong ... FAILED"),
+            format!("test tests{sep}more{sep}bad.qx::test_overflow ... FAILED"),
+            format!("test tests{sep}more{sep}bad.qx::testFail ... FAILED"),
+        ] {
+            assert!(text.contains(&line), "{line}\n{text}");
+        }
+        assert!(
+            !text.contains("testWith") && !text.contains("testament"),
+            "{text}"
+        );
+        assert!(text.contains("Q0422") && text.contains("Q0401"), "{text}");
+        assert!(text.contains("expected \"4\", got \"5\""), "{text}");
+        assert!(
+            text.ends_with("test result: FAILED. 2 passed; 3 failed\n"),
+            "{text}"
+        );
+    }
+    // One file, and `--filter`.
+    let out = run_in(&["test", "tests/add.qx"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(String::from_utf8(out.stdout)
+        .unwrap()
+        .ends_with("test result: ok. 2 passed; 0 failed\n"));
+    let out = run_in(&["test", "tests", "--filter", "Fail"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.ends_with("test result: FAILED. 0 passed; 1 failed\n"),
+        "{text}"
+    );
+    // A file that does not pass the checker fails as a whole.
+    std::fs::write(
+        dir.join("tests/broken.qx"),
+        "void testX() {\n    Qubit q = qubit();\n}\n",
+    )
+    .unwrap();
+    let out = run_in(&["test", "tests/broken.qx"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("broken.qx ... FAILED") && text.contains("Q0302"),
+        "{text}"
+    );
+    // Usage errors exit with 2.
+    assert_eq!(run_in(&["test", "--nope"]).status.code(), Some(2));
+}
+
 // The typed IR interpreter (`--engine ir`, docs/design/qx-ir.md) prints exactly what the
 // tree-walking interpreter prints, chosen by the flag, the environment variable, or both (`dual`).
 #[test]
