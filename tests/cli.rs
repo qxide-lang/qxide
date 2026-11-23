@@ -1325,3 +1325,89 @@ fn doc_command_prints_markdown() {
     assert!(String::from_utf8(out.stderr).unwrap().contains("error[Q01"));
     assert_eq!(run_in(&["doc", "--bogus"]).status.code(), Some(2));
 }
+
+#[test]
+fn bench_command_times_bench_functions() {
+    let dir = fresh_dir("bench_command");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("benches")).unwrap();
+    std::fs::write(
+        dir.join("qxide.toml"),
+        "[package]\nname = \"calc\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/main.qx"),
+        "void main() {\n    println(\"hi\");\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/ops.qx"),
+        "public int sum(int n) {\n    int s = 0;\n    for i in 0..n {\n        s += i;\n    }\n    return s;\n}\n",
+    )
+    .unwrap();
+    let benches = "import calc.ops.sum;\n\nvoid benchSum() {\n    int s = sum(100);\n}\n\nvoid benchBroken() {\n    int[] a = new int[2];\n    a[5] = 1;\n}\n\nvoid benchWith(int n) {}\n\nvoid helper() {}\n";
+    std::fs::write(dir.join("benches/sum.qx"), benches).unwrap();
+    let run_in = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_qxide"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    let sep = std::path::MAIN_SEPARATOR;
+    let mut steps = Vec::new();
+    // The project's `benches/` folder by default; the step count is the same on every engine.
+    for engine in ["ast", "ir"] {
+        let out = run_in(&["bench", "--engine", engine, "--iterations", "3"]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&format!("bench benches{sep}sum.qx::benchSum ... ")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(line.contains(" ms/iter (min "), "{line}");
+        assert!(line.contains(" ms, 3 runs, "), "{line}");
+        steps.push(
+            line.rsplit(", ")
+                .next()
+                .unwrap()
+                .trim_end_matches(" steps)")
+                .to_string(),
+        );
+        assert!(
+            text.contains(&format!("bench benches{sep}sum.qx::benchBroken ... FAILED")),
+            "{text}"
+        );
+        assert!(text.contains("error[Q0403]"), "{text}");
+        assert!(
+            !text.contains("benchWith") && !text.contains("helper"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("bench result: FAILED. 1 passed; 1 failed\n"),
+            "{text}"
+        );
+    }
+    assert_eq!(steps[0], steps[1]);
+    assert!(steps[0].parse::<u64>().unwrap() > 100, "{steps:?}");
+    let out = run_in(&[
+        "bench",
+        "benches/sum.qx",
+        "--filter",
+        "Sum",
+        "--iterations",
+        "1",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains(", 1 runs, "), "{text}");
+    assert!(
+        text.ends_with("bench result: ok. 1 passed; 0 failed\n"),
+        "{text}"
+    );
+    assert_eq!(
+        run_in(&["bench", "--iterations", "0"]).status.code(),
+        Some(2)
+    );
+}

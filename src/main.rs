@@ -35,6 +35,8 @@ Commands:
                                      {}
   test [FILE|DIR] [--filter TEXT]    {}
   doc [FILE|DIR]                     {}
+  bench [FILE|DIR] [--filter TEXT] [--iterations N]
+                                     {}
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
   repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
@@ -53,6 +55,7 @@ Options:
         BUILD_HELP,
         TEST_HELP,
         DOC_HELP,
+        BENCH_HELP,
         LSP_HELP,
         pkg::cli::usage(),
         app::usage(),
@@ -72,6 +75,9 @@ const TEST_HELP: &str = "Run test functions in .qx files and report results";
 
 const DOC_HELP: &str =
     "Print Markdown docs for public functions and ///-documented declarations (default: src)";
+
+const BENCH_HELP: &str =
+    "Time void benchName() benchmarks in .qx files and report time per iteration and steps";
 
 const TRUSTED_HELP: &str = "Raise the step, operation, simulation and output limits of run and qasm (only for programs you trust)";
 
@@ -750,6 +756,131 @@ fn read_failed(name: &str, e: &std::io::Error) -> String {
     format!("qxide: failed to read `{name}`: {e}\n")
 }
 
+// `qxide bench [FILE|DIR] [--filter TEXT] [--iterations N] [--engine E] [--allow fs]`: times
+// every benchmark function (`void benchName()`, default folder `benches/`); exit code 1 when any
+// benchmark or file fails.
+fn bench_command(args: &[String]) -> ExitCode {
+    let (mut target, mut filter, mut engine, mut iterations) = (None, String::new(), None, 10);
+    let (mut allow_fs, mut allow_ffi) = (false, false);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let parsed = match arg.as_str() {
+            "--filter" => parse_value(arg, rest.next()).map(|v| filter = v),
+            "--iterations" => parse_count(arg, rest.next(), 1).map(|n| iterations = n),
+            "--engine" => {
+                parse_engine(arg, rest.next().map(String::as_str)).map(|e| engine = Some(e))
+            }
+            "--allow" => parse_allow(rest.next(), &mut allow_fs, &mut allow_ffi),
+            p if target.is_none() && !p.starts_with('-') => {
+                target = Some(p.to_string());
+                Ok(())
+            }
+            _ => Err(unexpected_argument(arg, "bench")),
+        };
+        if let Err(code) = parsed {
+            return code;
+        }
+    }
+    let engine = match engine.map_or_else(default_engine, Ok) {
+        Ok(e) => e,
+        Err(code) => return code,
+    };
+    let files = match qx_files(target.as_deref(), "benches") {
+        Ok(f) => f,
+        Err(e) => {
+            eprint!("{e}");
+            if !e.ends_with('\n') {
+                eprintln!();
+            }
+            return ExitCode::from(1);
+        }
+    };
+    let iterations = usize::try_from(iterations).unwrap_or(usize::MAX);
+    let worker = std::thread::Builder::new()
+        .stack_size(LANG_STACK)
+        .spawn(move || {
+            lang::set_engine(engine);
+            let (mut passed, mut failed) = (0usize, 0usize);
+            let mut failures = String::new();
+            for path in &files {
+                let name = path.display().to_string();
+                let src = match std::fs::read_to_string(path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        failures.push_str(&read_failed(&name, &e));
+                        failed += 1;
+                        continue;
+                    }
+                };
+                let project = match pkg::project::for_entry(path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failures.push_str(&e.render());
+                        failed += 1;
+                        continue;
+                    }
+                };
+                let input = lang::Input {
+                    name: &name,
+                    src: &src,
+                    project: project.as_ref(),
+                    read: &lang::read_file,
+                    perms: lang::stdlib::Permissions::cli(allow_fs).with_ffi(allow_ffi),
+                };
+                let mut host = lang::cli_host(project_data_dir(path));
+                host.ffi.enabled = allow_ffi;
+                let limits = lang::Limits::CLI;
+                match lang::bench_input(&input, &filter, &mut host, &limits, iterations) {
+                    Ok(outcomes) => {
+                        for b in outcomes {
+                            match b.result {
+                                Ok(run) => {
+                                    passed += 1;
+                                    println!("bench {name}::{} ... {}", b.name, bench_line(&run));
+                                }
+                                Err(d) => {
+                                    failed += 1;
+                                    println!("bench {name}::{} ... FAILED", b.name);
+                                    failures
+                                        .push_str(&format!("---- {name}::{} ----\n{d}", b.name));
+                                }
+                            }
+                        }
+                    }
+                    Err(lang::Failure(d)) => {
+                        println!("bench {name} ... FAILED");
+                        failed += 1;
+                        failures.push_str(&format!("---- {name} ----\n{d}"));
+                    }
+                }
+                eprint!("{}", lang::take_warnings());
+            }
+            if !failures.is_empty() {
+                println!("\nfailures:\n{failures}");
+            }
+            let result = if failed == 0 { "ok" } else { "FAILED" };
+            println!("\nbench result: {result}. {passed} passed; {failed} failed");
+            failed == 0
+        });
+    match worker.map(|h| h.join()) {
+        Ok(Ok(true)) => ExitCode::SUCCESS,
+        Ok(Ok(false)) => ExitCode::from(1),
+        _ => ExitCode::from(101),
+    }
+}
+
+// `12.345 ms/iter (min 12.001 ms, max 13.200 ms, 10 runs, 123456 steps)`: the median first.
+fn bench_line(run: &lang::BenchRun) -> String {
+    let mut ms: Vec<f64> = run.times.iter().map(|t| t.as_secs_f64() * 1e3).collect();
+    ms.sort_by(f64::total_cmp);
+    let (median, min, max) = (ms[ms.len() / 2], ms[0], ms[ms.len() - 1]);
+    format!(
+        "{median:.3} ms/iter (min {min:.3} ms, max {max:.3} ms, {} runs, {} steps)",
+        ms.len(),
+        run.steps
+    )
+}
+
 // `qxide doc [FILE|DIR]`: the Markdown reference of each file (src/lang/doc.rs) on stdout, in
 // path order; exit code 1 when a file cannot be read or parsed.
 fn doc_command(args: &[String]) -> ExitCode {
@@ -1088,6 +1219,7 @@ fn main() -> ExitCode {
         Some("build") => return build_command(&args[1..]),
         Some("test") => return test_command(&args[1..]),
         Some("doc") => return doc_command(&args[1..]),
+        Some("bench") => return bench_command(&args[1..]),
         Some("fmt") => return fmt_command(&args[1..]),
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),

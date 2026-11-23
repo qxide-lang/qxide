@@ -239,7 +239,12 @@ pub struct TestOutcome {
 // A test function: `void testName()` (or `test` alone, `test_x`, `test2`) declared in the file
 // itself, not generic and not a method.
 fn is_test(f: &ast::FnDecl) -> bool {
-    let Some(rest) = f.name.name.strip_prefix("test") else {
+    is_runnable(f, "test")
+}
+
+// `void <prefix>Name()` in the file itself: a test (`test`) or a benchmark (`bench`) function.
+fn is_runnable(f: &ast::FnDecl, prefix: &str) -> bool {
+    let Some(rest) = f.name.name.strip_prefix(prefix) else {
         return false;
     };
     f.method.is_none()
@@ -278,6 +283,62 @@ pub fn test_input(
                 .map(drop)
                 .map_err(|d| render(&map, &[d], limits).0);
             TestOutcome { name, result }
+        })
+        .collect())
+}
+
+/// Outcome of a single benchmark function run by `qxide bench`: its name and recorded timings, or
+/// the rendered error.
+pub struct BenchOutcome {
+    pub name: String,
+    pub result: Result<BenchRun, String>,
+}
+
+/// Wall-clock duration of each timed elaboration and the step count charged by a single
+/// elaboration.
+pub struct BenchRun {
+    pub times: Vec<std::time::Duration>,
+    pub steps: u64,
+}
+
+/// Runs `qxide bench` on a single file: each benchmark function (`void benchName()`) whose name
+/// contains `filter` is elaborated in source order once to check it and count steps, then
+/// `iterations` more times under the clock (`std` effects run every time; nothing is simulated).
+/// Returns `Err` if the file fails the checker.
+#[allow(dead_code)]
+pub fn bench_input(
+    input: &Input,
+    filter: &str,
+    host: &mut dyn Host,
+    limits: &Limits,
+    iterations: usize,
+) -> Result<Vec<BenchOutcome>, Failure> {
+    let (map, program) = front_input(input, false);
+    let program = program.map_err(|e| render(&map, &e, limits))?;
+    let names: Vec<String> = program
+        .fns
+        .iter()
+        .filter(|f| is_runnable(f, "bench") && f.name.name.contains(filter))
+        .map(|f| f.name.name.clone())
+        .collect();
+    let once = |name: &str, host: &mut dyn Host| {
+        engine::elaborate_call(&program, name, Vec::new(), host, limits)
+            .map(|(e, _)| e.usage.steps)
+            .map_err(|d| render(&map, &[d], limits).0)
+    };
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let result = once(&name, host).and_then(|steps| {
+                let mut times = Vec::with_capacity(iterations);
+                for _ in 0..iterations {
+                    let start = std::time::Instant::now();
+                    once(&name, host)?;
+                    times.push(start.elapsed());
+                }
+                Ok(BenchRun { times, steps })
+            });
+            BenchOutcome { name, result }
         })
         .collect())
 }

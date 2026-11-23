@@ -1709,7 +1709,7 @@ void main() {
 - **격리와 출력**: 각 테스트 함수는 데스크톱 앱 커맨드와 마찬가지로 독립적으로 전개되며, 소스 순서대로 CLI 한도 아래에서 실행된다. 시뮬레이션은 수행하지 않으므로(샷 없음) 테스트 안의 `println` 출력은 표시되지 않는다. 각 테스트는 `test <file>::<name> ... ok` 또는 `... FAILED`를 출력하고, 실패한 항목은 뒤이어 진단과 함께 출력한 뒤 `test result: ok. N passed; M failed`(실패가 있으면 `FAILED`)로 요약한다. 종료 코드는 모두 통과하면 `0`, 실패한 테스트가 있거나 파일이 검사를 통과하지 못하면(해당 파일은 실패 1건으로 집계) `1`, 사용법 오류이면 `2`다.
 - **`std.test`**: 권한 없이 모든 호스트(`qxide run`, 플레이그라운드, 앱 포함)에서 사용할 수 있는 순수 모듈이다. `test.assertTrue(boolean condition, String message)`, `test.assertFalse(boolean condition, String message)`, `test.assertEquals(String expected, String actual)`(텍스트를 비교하며 다른 값은 `"" + value`로 변환하고, 오류는 두 값을 따옴표로 감싼 텍스트로 최대 200자까지 보여 준다), `test.fail(String message)`를 제공한다. 단언이 실패하면 새 실행 시간 오류 `Q0422`가 발생하며, 그 밖의 실행 시간 오류(오버플로, 범위 밖 인덱스, 스텝 한도)도 같은 방식으로 테스트를 실패시킨다.
 - **측정 비트 조건 if**: 측정된 `Bit`를 조건으로 하는 `if` 안에서는 `std.test` 함수를 호출할 수 없으며, 이를 위반하면 체커 오류 `Q0314`가 발생한다. 빌드 타임 코드는 측정값과 무관하게 한 번만 실행되므로 그 안의 단언은 비트 값과 관계없이 실패하거나 통과하기 때문이다. 다른 순수 모듈인 `std.math`, `std.path`, `std.json`은 해당 위치에서도 그대로 허용된다.
-- **아직 없는 것**: `qxide doc`, 사용자 벤치마크 명령, 디버거(DAP)는 이후 Stage 5 과제로 남는다. 테스트는 병렬로 실행되지 않으며 스텝 예산 외에 테스트별 시간 제한은 두지 않는다.
+- **아직 없는 것**: `qxide doc`(19.17절)과 `qxide bench`(19.18절)가 추가되어 이제 Stage 5 과제로는 디버거(DAP)만 남는다. 테스트는 여전히 병렬로 실행되지 않으며 스텝 예산 외에 테스트별 시간 제한은 두지 않는다.
 
 ```qx
 // tests/ops.qx — qxide test
@@ -1768,4 +1768,29 @@ public int add(int a, int b) {
 ## `public int add(int a, int b)`
 
 Adds two numbers.
+```
+
+### 19.18 벤치마크 실행기: `qxide bench`
+
+로드맵 Stage 5의 사용자 벤치마크 명령으로, `.qx` 프로젝트의 벤치마크 함수를 반복 실행해 소요 시간과 결정적 스텝 수를 측정하는 `qxide bench`를 추가한다.
+
+- **벤치마크 함수**: 해당 파일 자체에 선언된 `void benchName()`(매개변수 없음, 제네릭 아님, 메서드 아님)을 벤치마크 함수로 인식한다. 이름 규칙은 테스트 함수와 같아 `bench` 단독이거나 `bench` 뒤에 대문자, 숫자, 또는 `_`가 이어져야 한다.
+- **명령과 탐색**: `qxide bench [FILE|DIR] [--filter TEXT] [--iterations N] [--engine E] [--allow fs|ffi]` 형식으로 실행한다. 파일·폴더 지정 규칙은 `qxide test`와 같고 인자를 생략하면 프로젝트의 `benches/` 폴더를 대상으로 하며, 벤치마크 파일은 프로젝트의 모듈과 의존성을 import할 수 있다.
+- **실행 방식**: 각 벤치마크를 시간 측정 없이 한 번 먼저 전개해 검사하고 스텝 수를 기록한 뒤, 벽시계 타이머로 `N`회(기본 `N = 10`, 최소 `1`) 더 전개한다. `qxide test`와 마찬가지로 CLI 한도 아래에서 실행되고 시뮬레이션(샷)은 수행하지 않으며, `std` 효과는 매 반복마다 실행된다.
+- **출력과 종료 코드**: 각 벤치마크마다 `bench <file>::<name> ... <median> ms/iter (min <min> ms, max <max> ms, <N> runs, <steps> steps)`를 출력한다. 스텝 수는 결정적이며 모든 엔진에서 같아 기기·엔진 간 비교가 가능한 반면 시간은 실행 환경에 따라 달라진다. 실패한 항목은 결과 목록 뒤에 진단과 함께 출력하고 마지막에 `bench result: ok. P passed; F failed`를 표시한다. 종료 코드는 모두 통과 시 `0`, 벤치마크나 파일 실패 시 `1`, 사용법 오류 시 `2`다.
+- **아직 없는 것**: 최소·중앙·최댓값 외의 통계, 워밍업 제어, 기준선 비교나 JSON 출력, 시뮬레이션 시간 측정은 아직 지원하지 않는다. 내부 벤치마크 스위트(`bench/qx`, `src/lang/bench.rs`)는 그대로 유지한다.
+- **검증**: Windows에서만 검증했으며, `tests/cli.rs`의 `bench_command_times_bench_functions`로 확인한다.
+
+```qx
+// benches/sum.qx
+void benchSum() {
+    int s = 0;
+    for i in 0..10000 {
+        s += i;
+    }
+}
+```
+
+```text
+bench benches\sum.qx::benchSum ... 1.296 ms/iter (min 1.261 ms, max 1.770 ms, 10 runs, 90004 steps)
 ```
