@@ -108,7 +108,7 @@ void main( ) {
 
     BitReg m=measure( r );
     boolean ok = !(1 < 2) || d >= -1.0 && true;
-    println( \"{} {} {}\" , m.to_binary() , ok, // trailing in a call
+    println( \"{} {} {}\" , m.toBinary() , ok, // trailing in a call
         m[0] );
     noop();
 }
@@ -137,7 +137,7 @@ void main() {
 
     BitReg m = measure(r);
     boolean ok = !(1 < 2) || d >= -1.0 && true;
-    println(\"{} {} {}\", m.to_binary(), ok, // trailing in a call
+    println(\"{} {} {}\", m.toBinary(), ok, // trailing in a call
         m[0]);
     noop();
 }
@@ -353,6 +353,27 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
         };
         let run =
             |name: &str, src: &str, shots: u64, seed: u64| run_with(name, src, shots, seed, limits);
+        // A warning's example runs, and warns; its fix runs without warnings.
+        if code.starts_with("Q08") {
+            let out = run("example.qx", &blocks[0], 1, 0);
+            let warned = take_warnings();
+            assert!(out.is_ok(), "{code}: the example fails");
+            assert!(
+                warned.contains(&format!("warning[{code}]")),
+                "{code}: {warned}"
+            );
+            assert!(
+                run("fixed.qx", &blocks[1], 1, 0).is_ok(),
+                "{code}: the fix fails"
+            );
+            assert_eq!(take_warnings(), "", "{code}: the fix warns");
+            assert_eq!(
+                fmt_ok(&blocks[1]),
+                blocks[1],
+                "{code}: fixed example is not formatted"
+            );
+            continue;
+        }
         match run("example.qx", &blocks[0], 1, 0) {
             Ok(_) => panic!("{code}: the example runs without errors"),
             Err(Failure(d)) => {

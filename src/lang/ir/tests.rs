@@ -261,8 +261,8 @@ const RUNTIME_ERRORS: &[&str] = &[
     // Q0303 aliased register elements with run-time indices
     "void two(Qubit a, Qubit b) { cx(a, b); } void main() { QReg r = qreg(2); int i = 1; two(r[i], r[1]); discard(r); }",
     "void main() { QReg r = qreg(2); int i = 1; cx(r[i], r[1]); discard(r); }",
-    // Q0410 `as_int` too wide, Q0411 non-finite angle
-    "void main() { QReg r = qreg(65); BitReg m = measure(r); println(\"{}\", m.as_int()); }",
+    // Q0410 `asInt` too wide, Q0411 non-finite angle
+    "void main() { QReg r = qreg(65); BitReg m = measure(r); println(\"{}\", m.asInt()); }",
     "void main() { Qubit q = qubit(); double z = 0.0; rx(q, 1.0 / z); discard(q); }",
     // `double` division by zero is IEEE 754, casts saturate
     "void main() { double z = 0.0; println(\"{} {} {}\", 1.0 / z, (int) (1.0 / z), (int) (0.0 / z)); }",
@@ -309,7 +309,7 @@ void main() {
     } else {
         z(q);
     }
-    println(\"{} {} {} {}\", tag(total), m, m.to_binary(), len(tag(1)));
+    println(\"{} {} {} {}\", tag(total), m, m.toBinary(), len(tag(1)));
     discard(q);
 }
 ";
@@ -340,7 +340,7 @@ fn other_budgets_agree() {
     BitReg m = measure(r);
     Qubit q = qubit();
     if m[0] { if m[1] { if m[2] { x(q); } } }
-    println(\"{} {}\", m, m.as_int());
+    println(\"{} {}\", m, m.asInt());
     discard(q);
 }
 ";
@@ -438,13 +438,13 @@ void main() {
 #[test]
 fn string_methods_and_math_agree_at_every_step_limit() {
     let src = "import std.math;
-String shout(String s) { return s.trim().to_upper() + \"!\"; }
+String shout(String s) { return s.trim().toUpperCase() + \"!\"; }
 void main() {
     String t = shout(\"  hey \");
-    int k = t.index_of(\"Y\");
+    int k = t.indexOf(\"Y\");
     String r = t.replace(\"E\", \"ee\").repeat(2);
     println(\"{} {} {} {}\", t, k, r, r.substring(1, 4));
-    println(\"{} {} {}\", math.sqrt(2.0), math.pow_int(3, 4), \"17\".parse_int() + 1);
+    println(\"{} {} {}\", math.sqrt(2.0), math.powInt(3, 4), \"17\".parseInt() + 1);
 }
 ";
     let total = engine::with(Engine::Ast, || {

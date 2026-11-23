@@ -118,7 +118,8 @@ pub fn execute(cmd: Command, name: &str, src: &str, shots: u64, seed: u64) -> Ou
             lang::run_input_with(&input, shots, seed, LIMITS, &mut host)
         }
     };
-    let logs: String = host.lines.iter().map(|l| format!("{l}\n")).collect();
+    let mut logs = lang::take_warnings();
+    logs.extend(host.lines.iter().map(|l| format!("{l}\n")));
     match result {
         Ok(stdout) => Outcome {
             exit: 0,

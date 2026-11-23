@@ -23,6 +23,7 @@ mod link;
 mod machine;
 mod mono;
 mod msg;
+mod names;
 mod native;
 mod parser;
 mod pure;
@@ -53,6 +54,9 @@ mod limits_tests;
 
 #[cfg(test)]
 mod app_limits_tests;
+
+#[cfg(test)]
+mod names_tests;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -127,11 +131,15 @@ fn front_input(
 ) -> (SourceMap, Result<ast::Program, Vec<Diagnostic>>) {
     let src = strip_bom(input.src);
     let (map, linked) = link::link(input.name, src, input.project, input.read, &input.perms);
-    let checked = linked.and_then(|program| {
+    set_warnings(&map, &[]);
+    let checked = linked.and_then(|mut program| {
         let (errors, inferred) = check::check_infer(&program, require_main);
+        set_warnings(&map, &inferred.warnings);
         if !errors.is_empty() {
             return Err(errors);
         }
+        // Deprecated aliases become their canonical names before any engine sees the program.
+        names::rename(&mut program, &inferred.renames);
         let program = mono::monomorphize(program, &inferred).map_err(|d| vec![d])?;
         // An instance such as `Wrap<Shape>` may reach itself through an interface.
         let cycles = check::type_cycles(&program);
@@ -147,6 +155,28 @@ fn front_input(
         Ok(program)
     });
     (map, checked)
+}
+
+thread_local! {
+    // Warnings (`Q0801`) of the latest front-end run on this thread, rendered.
+    static WARNINGS: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+fn set_warnings(map: &SourceMap, warnings: &[Diagnostic]) {
+    let text = if warnings.is_empty() {
+        String::new()
+    } else {
+        diag::render_all(warnings, &Limits::CLI, |d| map.render(d, &Limits::CLI))
+            + "
+"
+    };
+    WARNINGS.with(|w| *w.borrow_mut() = text);
+}
+
+/// The rendered warnings of the latest `check`, `qasm` or `run` on this thread (empty if there
+/// were none), for stderr. Warnings never change the output or the exit code.
+pub fn take_warnings() -> String {
+    WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
 }
 
 fn build_input(
@@ -294,7 +324,7 @@ pub fn std_unavailable(what: &str, host: &str) -> String {
     msg::std_unavailable(what, host)
 }
 
-/// `set_size` outside 200..=8192 pixels (Q0706), for the app runtime.
+/// `setSize` outside 200..=8192 pixels (Q0706), for the app runtime.
 #[allow(dead_code)]
 pub fn std_size_range(width: i64, height: i64) -> String {
     msg::std_size_range(width, height)
@@ -544,7 +574,7 @@ fn render_output_with(out: &[OutPiece], bit: &dyn Fn(qxide::Bit) -> bool) -> Str
                 s.push_str(&match fmt {
                     BitsFmt::Array => fmt_array(&bits),
                     BitsFmt::Binary => fmt_binary(&bits),
-                    // The interpreter rejects `as_int()` on registers wider than 64 bits.
+                    // The interpreter rejects `asInt()` on registers wider than 64 bits.
                     BitsFmt::Int => bits_value(&bits).unwrap_or_default().to_string(),
                 });
             }

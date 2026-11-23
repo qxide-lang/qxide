@@ -242,7 +242,7 @@ fn state_vector_qubits_are_capped_in_the_playground_only() {
 
 #[test]
 fn clifford_circuits_use_the_stabilizer_beyond_the_cap() {
-    let src = "void main() {\n    int n = 200;\n    QReg r = qreg(n);\n    h(r[0]);\n    for i in 1..n {\n        cx(r[0], r[i]);\n    }\n    BitReg m = measure(r);\n    println(\"{}\", m.to_binary());\n}\n";
+    let src = "void main() {\n    int n = 200;\n    QReg r = qreg(n);\n    h(r[0]);\n    for i in 1..n {\n        cx(r[0], r[i]);\n    }\n    BitReg m = measure(r);\n    println(\"{}\", m.toBinary());\n}\n";
     let path = scratch("ghz_200.qx", src);
     assert_eq!(assert_same(Command::Run, &path, 50, 3).exit, 0);
 }

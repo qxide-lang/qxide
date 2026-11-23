@@ -461,7 +461,7 @@ fn methods_across_modules() {
 // The prelude's types work across modules: a dependency returns a `Result` the entry matches.
 #[test]
 fn prelude_types_across_modules() {
-    let lib = "public Result<int, String> parse(String s) {\n    int v = s.try_parse_int()?;\n    return Result.Ok(v * 2);\n}\n";
+    let lib = "public Result<int, String> parse(String s) {\n    int v = s.tryParseInt()?;\n    return Result.Ok(v * 2);\n}\n";
     let files = [("bell_utils/src/lib.qx", lib)];
     let entry = "import bell_utils.parse;\n\nvoid main() {\n    match parse(\"21\") {\n        Ok(v) => {\n            println(\"{}\", v);\n        }\n        Err(e) => {\n            println(\"{}\", e);\n        }\n    }\n}\n";
     assert_eq!(run_files(entry, &files, 1), Ok("42\n".to_string()));

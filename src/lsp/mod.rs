@@ -229,7 +229,8 @@ impl Server {
             .collect();
         json!({
             "range": range(d.range),
-            "severity": 1,
+            // LSP severities: 1 error, 2 warning.
+            "severity": if d.warning { 2 } else { 1 },
             "code": d.code,
             "source": "qxide",
             "message": d.message,

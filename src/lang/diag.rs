@@ -144,6 +144,14 @@ codes! {
     BadAppConfig => "Q0715",
     ResultTooLarge => "Q0716",
     Ffi => "Q0717",
+    Deprecated => "Q0801",
+}
+
+impl Code {
+    /// Warnings (`Q08xx`) never stop a program; every other code is an error.
+    pub fn is_warning(self) -> bool {
+        matches!(self, Code::Deprecated)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -349,7 +357,17 @@ impl SourceMap {
     pub fn render(&self, d: &Diagnostic, limits: &super::Limits) -> String {
         let max_chars = limits.max_line_chars;
         let mut out = String::new();
-        let _ = writeln!(out, "error[{}]: {}", d.code.as_str(), printable(&d.message));
+        let level = if d.code.is_warning() {
+            "warning"
+        } else {
+            "error"
+        };
+        let _ = writeln!(
+            out,
+            "{level}[{}]: {}",
+            d.code.as_str(),
+            printable(&d.message)
+        );
         if !d.no_snippet {
             self.snippet(&mut out, d.span, max_chars);
         }

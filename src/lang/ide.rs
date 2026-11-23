@@ -37,6 +37,8 @@ pub struct Related {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diag {
     pub code: &'static str,
+    /// A warning (`Q0801`) rather than an error.
+    pub warning: bool,
     pub range: Range,
     /// The message, then `note:` lines without a location and the `help:` line, as `check` prints them.
     pub message: String,
@@ -90,9 +92,50 @@ pub const TYPES: &[&str] = &[
 
 /// `BitReg` methods.
 pub const METHODS: &[(&str, &str)] = &[
-    ("as_int", "BitReg.as_int()"),
-    ("to_binary", "BitReg.to_binary()"),
+    ("asInt", "BitReg.asInt()"),
+    ("toBinary", "BitReg.toBinary()"),
 ];
+
+/// Methods of the prelude's `Result` and `Option` (src/lang/stdlib.rs `PRELUDE`).
+const PRELUDE_METHODS: &[(&str, &str)] = &[
+    ("isOk", "boolean Result.isOk()"),
+    ("isErr", "boolean Result.isErr()"),
+    (
+        "orElse",
+        "T Result.orElse(T fallback)\nT Option.orElse(T fallback)",
+    ),
+    ("isPresent", "boolean Option.isPresent()"),
+    ("isEmpty", "boolean Option.isEmpty()"),
+];
+
+// Every built-in method as (name, detail): `BitReg`, `String`, `List`/`Map`/`Random` and the
+// prelude's `Result`/`Option`, in that order. Receivers are not typed here, so all are offered.
+fn builtin_methods() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = METHODS
+        .iter()
+        .map(|(m, d)| (m.to_string(), d.to_string()))
+        .collect();
+    let names = super::pure::STRING_METHODS
+        .iter()
+        .map(|(n, _, _)| *n)
+        .chain(super::pure::STRING_ARRAY_METHODS.iter().copied());
+    for n in names {
+        if let Some((_, params, ret)) = super::pure::string_method(n) {
+            let ps: Vec<&str> = params.iter().map(|t| t.name()).collect();
+            out.push((
+                n.to_string(),
+                format!("{} String.{n}({})", ret.name(), ps.join(", ")),
+            ));
+        }
+    }
+    for (base, m) in super::native::METHODS {
+        out.push((m.to_string(), format!("{base}.{m}(...)")));
+    }
+    for (m, d) in PRELUDE_METHODS {
+        out.push((m.to_string(), d.to_string()));
+    }
+    out
+}
 
 /// Signatures of the built-in functions (one line per overload); a test covers every built-in.
 pub const BUILTIN_SIGNATURES: &[(&str, &str)] = &[
@@ -490,7 +533,9 @@ pub fn analyze(input: &Input) -> Analysis {
     let (map, linked) = link::link(input.name, src, input.project, input.read, &input.perms);
     let (linked, diags) = match linked {
         Ok(program) => {
-            let errors = check::check_with(&program, !input.is_library());
+            let (mut errors, inferred) = check::check_infer(&program, !input.is_library());
+            // `Q0801` warnings follow the errors.
+            errors.extend(inferred.warnings);
             (Some(program), errors)
         }
         Err(errors) => (None, errors),
@@ -593,6 +638,7 @@ impl Analysis {
                 }
                 Diag {
                     code: d.code.as_str(),
+                    warning: d.code.is_warning(),
                     range,
                     message,
                     related,
@@ -812,14 +858,16 @@ impl Analysis {
             return Vec::new();
         }
         if src[..word_start].ends_with('.') {
-            let mut items: Vec<Item> = METHODS
-                .iter()
-                .map(|(m, detail)| Item {
-                    label: m.to_string(),
-                    kind: ItemKind::Method,
-                    detail: Some(detail.to_string()),
-                })
-                .collect();
+            let mut items: Vec<Item> = Vec::new();
+            for (m, detail) in builtin_methods() {
+                if !items.iter().any(|i| i.label == m) {
+                    items.push(Item {
+                        label: m,
+                        kind: ItemKind::Method,
+                        detail: Some(detail),
+                    });
+                }
+            }
             // The methods of the document's structs and enums (while typing, the document
             // without the current line).
             let blanked = match &self.entry {
@@ -924,7 +972,11 @@ impl Analysis {
                 }
                 None => {
                     let Some(linked) = &self.linked else { continue };
-                    for f in linked.fns.iter().filter(|f| f.public.is_some()) {
+                    // Deprecated aliases of standard functions are not offered.
+                    let offered = |f: &&FnDecl| {
+                        f.public.is_some() && super::names::canonical_std(&f.name.name).is_none()
+                    };
+                    for f in linked.fns.iter().filter(offered) {
                         if let Some(bare) = f.name.name.strip_prefix(&prefix) {
                             if !bare.contains('.') {
                                 push(bare, ItemKind::Function, Some(signature(f, &f.name.name)));

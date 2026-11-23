@@ -66,7 +66,7 @@ void main() {
         cx(r[0], r[i]);
     }
     BitReg m = measure(r);
-    println("{}  {} = {}", m, m.to_binary(), m.as_int());
+    println("{}  {} = {}", m, m.toBinary(), m.asInt());
 }
 ```
 
@@ -134,7 +134,7 @@ cmp        = sum [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum ] ;
 sum        = term { ( "+" | "-" ) term } ;
 term       = unary { ( "*" | "/" | "%" ) unary } ;
 unary      = ( "-" | "!" ) unary | "(" type ")" unary | postfix ;   (* cast: int <-> double *)
-postfix    = primary { "[" expr "]" | "." IDENT "(" ")" } ;   (* r.to_binary(), r.as_int() *)
+postfix    = primary { "[" expr "]" | "." IDENT "(" ")" } ;   (* r.toBinary(), r.asInt() *)
 primary    = INT | DOUBLE | "true" | "false" | STRING | IDENT [ "(" [ expr { "," expr } ] ")" ] | "(" expr ")" ;
 (* IDENT is never a type name; the IDENT "PI" is the built-in double constant *)
 ```
@@ -153,8 +153,8 @@ primary    = INT | DOUBLE | "true" | "false" | STRING | IDENT [ "(" [ expr { ","
 | `measure(q)` / `measure(r)` | `(Qubit) -> Bit` / `(QReg) -> BitReg`, 인자 소비(이동) | `Circuit::measure` |
 | `discard(q)` / `discard(r)` | `(Qubit)` / `(QReg)`, 인자 소비(이동) | 연산 미방출, 슬롯 포기(부분 대각합) |
 | `len(r)` | `(QReg) -> int` / `(BitReg) -> int` | 빌드(전개) 시 평가, 연산 미방출 |
-| `r.to_binary()` / `r.as_int()` | `BitReg` 메서드, 출력 전용(변수 저장 불가) | 샷마다 렌더링, 연산 방출 없음 |
-| `println(fmt, ...)` | `{}` 자리표시자가 포함된 문자열 리터럴과 `int`/`double`/`boolean`/`Bit`/`BitReg`/`to_binary()`/`as_int()` 인자 | 출력 템플릿에 기록, 샷마다 1회 렌더링 |
+| `r.toBinary()` / `r.asInt()` | `BitReg` 메서드, 출력 전용(변수 저장 불가) | 샷마다 렌더링, 연산 방출 없음 |
+| `println(fmt, ...)` | `{}` 자리표시자가 포함된 문자열 리터럴과 `int`/`double`/`boolean`/`Bit`/`BitReg`/`toBinary()`/`asInt()` 인자 | 출력 템플릿에 기록, 샷마다 1회 렌더링 |
 | `PI` | `double` 상수(재선언·대입 불가) | `std::f64::consts::PI` 값(빌드 시점 평가, 회로 연산 방출 없음) |
 
 ## 4. 타입 시스템
@@ -258,7 +258,7 @@ void main() {
 - `qxide qasm <file.qx>`: `Circuit::to_qasm()` 결과를 출력하고 `println`은 무시한다.
 - `qxide check <file.qx>`: 렉서, 파서, 검사기만 실행한다. 범위 초과 인덱스 같은 실행 시점 오류는 `run` 또는 `qasm`에서만 발견된다.
 
-`BitReg` 출력 규칙은 12.4절에 정의한다(기본값은 `r[0]`이 먼저 오는 배열 `[0, 1, 1]`, `to_binary()`는 최상위 비트 우선, `as_int()`는 `r[0]`을 최하위 비트로 해석하며 순서 변경 옵션은 두지 않는다). `measure`가 즉시 `boolean`을 반환하는 단계별 실시간 시뮬레이터 대안은 측정에 의존하는 고전 제어 흐름이 단일 샷에 고정되어 OpenQASM 3 내보내기가 불가능해지고, 크레이트에 단계별 시뮬레이터 API도 없어 기각했다. 향후 선택적 모드로 다시 도입할 수 있다.
+`BitReg` 출력 규칙은 12.4절에 정의한다(기본값은 `r[0]`이 먼저 오는 배열 `[0, 1, 1]`, `toBinary()`는 최상위 비트 우선, `asInt()`는 `r[0]`을 최하위 비트로 해석하며 순서 변경 옵션은 두지 않는다). `measure`가 즉시 `boolean`을 반환하는 단계별 실시간 시뮬레이터 대안은 측정에 의존하는 고전 제어 흐름이 단일 샷에 고정되어 OpenQASM 3 내보내기가 불가능해지고, 크레이트에 단계별 시뮬레이터 API도 없어 기각했다. 향후 선택적 모드로 다시 도입할 수 있다.
 
 ## 6. 구현 전략 비교
 
@@ -374,7 +374,7 @@ void main() {
 5. **`measure` 오버로딩** — 미결: `Qubit`과 `QReg` 모두에 오버로딩하는 현재 방식과 별도의 `measure_reg`를 분리하는 방식을 비교 검토한다.
 6. **`with_ancilla` 블록 문법** — 미결: 초안의 `with_ancilla anc { ... } apply { ... }` 형태와 Q# 스타일의 `within { } apply { }` 또는 다른 구문을 비교 검토한다.
 7. **CLI 명령 이름** — 결정(2026-11-20): `qxide run`/`check`/`qasm`을 유지하며, ROADMAP의 `qxide build` 항목은 `qxide qasm`으로 이름을 변경했다.
-8. **`BitReg` 출력 순서** — 결정(2026-11-20): 순서 변경 옵션(`--bit-order` 등)은 두지 않는다. 기본 출력은 `r[0]`이 먼저 오는 배열 `[0, 1, 1]`이며, `to_binary()`는 `0b` 접두사와 함께 최상위 비트부터 출력하고(`0b110`), `as_int()`는 `r[0]`을 최하위 비트로 해석하므로 항상 `to_binary()` 값과 일치한다(`= 6`). 다중 샷 표에서는 두 형식을 모두 표시한다. 자세한 내용은 12.4절에 기록한다.
+8. **`BitReg` 출력 순서** — 결정(2026-11-20): 순서 변경 옵션(`--bit-order` 등)은 두지 않는다. 기본 출력은 `r[0]`이 먼저 오는 배열 `[0, 1, 1]`이며, `toBinary()`는 `0b` 접두사와 함께 최상위 비트부터 출력하고(`0b110`), `asInt()`는 `r[0]`을 최하위 비트로 해석하므로 항상 `toBinary()` 값과 일치한다(`= 6`). 다중 샷 표에서는 두 형식을 모두 표시한다. 자세한 내용은 12.4절에 기록한다.
 9. **진단 메시지 언어** — 결정(2026-11-20): 영어를 사용한다. 모든 컴파일러 진단(오류, note, help)과 CLI 메시지를 영어로 출력한다(7절 및 11절 수정 사항 9 참고).
 10. **프런트엔드 공개 여부** — 미결: Python 바인딩 등을 위해 `qxide::lang` 모듈을 공개할지, 현재처럼 CLI 내부 비공개로 유지할지 검토한다.
 11. **출력 비의존 시 시뮬레이션 생략** — 미결: 출력되는 `Bit`가 없을 때 시뮬레이션을 생략하는 현재 동작과 `SimError`를 드러내기 위해 항상 시뮬레이션을 실행하는 동작을 비교 검토한다.
@@ -549,7 +549,7 @@ void main() {
     h(r[1]);
     x(r[2]);
     BitReg m = measure(r);
-    println("{}  {}  {}", m, m.to_binary(), m.as_int());
+    println("{}  {}  {}", m, m.toBinary(), m.asInt());
 }
 ```
 
@@ -564,8 +564,8 @@ $ qxide run bits.qx --shots 1000
 ```
 
 - `BitReg`에 `{}`를 사용하면 `r[0]`이 먼저 오는 레지스터 순서의 배열로 출력한다(`[0, 1, 1]`).
-- `r.to_binary()`는 `0b` 접두사 뒤에 최상위 인덱스부터 `r[0]`까지 레지스터 너비에 맞춰 0으로 채워 출력한다(`0b110`, 빈 레지스터는 `0b0`).
-- `r.as_int()`는 `r[0]`을 최하위 비트로 해석하므로 이진 표현과 항상 같은 값을 가진다(`0b110` = 6). 최대 64비트까지 지원하며 초과 시 `Q0410` 오류가 발생한다.
+- `r.toBinary()`는 `0b` 접두사 뒤에 최상위 인덱스부터 `r[0]`까지 레지스터 너비에 맞춰 0으로 채워 출력한다(`0b110`, 빈 레지스터는 `0b0`).
+- `r.asInt()`는 `r[0]`을 최하위 비트로 해석하므로 이진 표현과 항상 같은 값을 가진다(`0b110` = 6). 최대 64비트까지 지원하며 초과 시 `Q0410` 오류가 발생한다.
 - 두 메서드는 출력 전용 샷 시점 뷰(view)로, 변수에 저장하려 하면 `Q0218` 오류가, 그 외의 메서드를 호출하면 `Q0220` 오류가 발생한다.
 - 단일 `Bit`는 `0` 또는 `1`로 출력되며, `--bit-order` 같은 비트 순서 변경 옵션은 의도적으로 두지 않는다.
 
@@ -604,14 +604,14 @@ $ qxide run bits.qx --shots 1000
 | 코드 | 의미 |
 | --- | --- |
 | `Q0110` | 제거된 Rust 스타일 문법(`let`, `fn`, `mut`) 사용(마이그레이션 도움말 포함) |
-| `Q0220` | 알 수 없는 메서드(`BitReg`의 `to_binary()`, `as_int()`만 지원) |
-| `Q0410` | 64비트를 초과하는 레지스터에 `as_int()` 호출 |
+| `Q0220` | 알 수 없는 메서드(`BitReg`의 `toBinary()`, `asInt()`만 지원) |
+| `Q0410` | 64비트를 초과하는 레지스터에 `asInt()` 호출 |
 
 - `Q0104`: `double` 리터럴의 범위 초과도 포함한다.
 - `Q0206`: `main` 누락 또는 잘못된 `main` 시그니처를 의미한다(허용 형태는 19.9절).
 - `Q0207`: `final` 변수에 대한 재할당을 의미한다(도움말: `final` 제거).
 - `Q0204`: 변수나 매개변수 타입으로 `void`를 사용한 경우도 포함한다.
-- `Q0218`: `to_binary()` 또는 `as_int()` 결과를 변수에 저장하려는 경우도 포함한다.
+- `Q0218`: `toBinary()` 또는 `asInt()` 결과를 변수에 저장하려는 경우도 포함한다.
 
 ### 12.8 0.5.0 이후 미결 사항의 결정
 
@@ -619,7 +619,7 @@ $ qxide run bits.qx --shots 1000
 2. `var` 타입 추론(2026-11-20 결정): 고전 지역 변수에 한해 채택·구현했다(13.2절).
 3. 명시적 캐스트(2026-11-20 결정): 0 방향 절사 방식의 Java식 `(int) x`·`(double) n` 캐스트를 도입했다(13.3절).
 4. `PI` 상수(2026-11-20 결정): 내장 `double` 상수 `PI`를 제공한다(13.4절).
-5. `println` 이진 포맷 지정자(2026-11-20 결정): 추후로 보류하며 `to_binary()`와 `as_int()`를 유지한다.
+5. `println` 이진 포맷 지정자(2026-11-20 결정): 추후로 보류하며 `toBinary()`와 `asInt()`를 유지한다.
 6. 'Rust-like' 문구 정리(2026-11-20 결정): 커밋 `dfe5b78`에서 `Cargo.toml`·`pyproject.toml` 설명에서 제거했다.
 7. IR 도입(2026-11-20 결정): 1~4번 항목의 구현과 테스트가 끝난 뒤 착수하며, 설계 초안은 [qx-ir.md](qx-ir.md)에 기록했다.
 
@@ -702,7 +702,7 @@ var q = qubit();         // error[Q0222]: write `Qubit q = qubit();`
 ```
 
 - **사용 위치와 초기화식 필수**: Java 10의 지역 변수 타입 추론과 동일하게 초기화식이 있는 지역 변수 선언에서만 사용할 수 있다. 초기화식 없는 `var x;`는 문법 오류 `Q0105`이며, 매개변수나 반환 타입에 `var`를 쓰면 오류 `Q0111`이 발생한다.
-- **허용 타입 제한**: 초기화식의 타입이 `int`, `double`, `boolean`일 때만 허용된다(12.3절 후보 규칙 1 채택). `Qubit`, `QReg`, `Bit`, `BitReg`, `to_binary()`/`as_int()` 뷰, `void`에 `var`를 사용하면 오류 `Q0222`가 발생하는데, 선형 소유권이나 샷 시점 값처럼 실행 규칙이 다른 타입은 선언 지점에 명시적으로 드러내야 하기 때문이다.
+- **허용 타입 제한**: 초기화식의 타입이 `int`, `double`, `boolean`일 때만 허용된다(12.3절 후보 규칙 1 채택). `Qubit`, `QReg`, `Bit`, `BitReg`, `toBinary()`/`asInt()` 뷰, `void`에 `var`를 사용하면 오류 `Q0222`가 발생하는데, 선형 소유권이나 샷 시점 값처럼 실행 규칙이 다른 타입은 선언 지점에 명시적으로 드러내야 하기 때문이다.
 - **고정된 추론 타입과 `final var`**: 한 번 추론된 타입은 고정되므로 `var n = 1; n = 2.5;`처럼 다른 타입을 대입하면 `Q0204` 오류가 발생한다. 불변 선언인 `final var`도 허용된다.
 - **정식 키워드**: `var`는 새로운 키워드로 승격되어 더 이상 변수·매개변수·함수 이름으로 사용할 수 없다.
 
@@ -768,7 +768,7 @@ ry total 90 degrees (90.0), m=0
 ### 13.6 남은 제약과 다음 단계
 
 - `Qubit`이나 `QReg`를 반환하는 사용자 함수는 당시 미지원(`Q0219`)이었으나 이후 14.1절에서 해소되었다.
-- `println`의 이진 포맷 지정자는 추후 과제로 보류하며 `to_binary()`와 `as_int()`를 유지한다.
+- `println`의 이진 포맷 지정자는 추후 과제로 보류하며 `toBinary()`와 `asInt()`를 유지한다.
 - `Bit` 조건의 `if` 블록 안에서의 사용자 함수 호출은 당시 미지원(`Q0308`)이었으나 이후 14.2절에서 해소되었다.
 - 내장 상수는 `PI`만 제공하며, 캐스트는 `int`와 `double` 간 변환만 지원한다.
 - 다음 단계로 [qx-ir.md](qx-ir.md) 설계 초안에 따라 타입 있는 IR 작업에 착수한다.
@@ -1071,16 +1071,16 @@ qxide 라이브러리 자체는 분기 안의 `measure`만 거부해 패닉을 �
 
 ### 17.2 표준 모듈과 import
 
-`import std.fs;` 형식으로 모듈 별칭을 가져오면 `fs.write_text("a.txt", s);`처럼 한정 호출한다. 기존의 `import std.fs.write_text;`와 `import std.fs.*;` 형식도 동일하게 동작한다. `std` import는 프로젝트 외부에서도 사용할 수 있다. 모듈 별칭은 현재 `std`에 대해서만 허용되며, `std`는 예약 패키지명이다.
+`import std.fs;` 형식으로 모듈 별칭을 가져오면 `fs.writeString("a.txt", s);`처럼 한정 호출한다. 기존의 `import std.fs.writeString;`와 `import std.fs.*;` 형식도 동일하게 동작한다. `std` import는 프로젝트 외부에서도 사용할 수 있다. 모듈 별칭은 현재 `std`에 대해서만 허용되며, `std`는 예약 패키지명이다.
 
 MVP 단계의 표준 모듈은 다음과 같다.
 
 - `std.log`: `info`, `warn`, `error`
-- `std.time`: `now_millis`, `now_iso`, `sleep_millis`, `monotonic_millis`
-- `std.io`: `write`, `write_line`, `write_err`, `write_err_line`, `read_line`, `read_all` (CLI 전용, 19.9절·19.10절)
+- `std.time`: `currentTimeMillis`, `nowIso`, `sleep`, `monotonicMillis`
+- `std.io`: `write`, `writeLine`, `writeErr`, `writeErrLine`, `readLine`, `readAll` (CLI 전용, 19.9절·19.10절)
 - `std.env`: `get` (CLI 전용, 19.9절)
-- `std.fs`: `read_text`, `write_text`, `append_text`, `exists`, `remove`
-- `std.app`: `set_title`, `set_size`, `close`, `emit` (데스크톱 앱 전용)
+- `std.fs`: `readString`, `writeString`, `appendString`, `exists`, `remove`
+- `std.app`: `setTitle`, `setSize`, `close`, `emit` (데스크톱 앱 전용)
 - `std.qxide`: `check`, `run`, `qasm`, `format` (`qxide` 권한이 있는 앱 전용, 즉 Qxide Studio)
 
 각 모듈은 컴파일러 내부에 `.qx` 스텁으로 선언되어 있으며(진단 메시지에는 `std/fs.qx`와 같이 표시된다), 일반 검사기가 호출을 그대로 검증한다.
@@ -1107,7 +1107,7 @@ MVP 단계의 표준 모듈은 다음과 같다.
 | `Q0703` | 허용되지 않은 모듈(`--allow` 또는 `[app] permissions` 미지정, 또는 의존성이 `std.log` 외의 모듈을 import함) |
 | `Q0704` | 파일 작업 실패(파일 없음, 16 MiB 초과, UTF-8 아님, I/O 오류) |
 | `Q0705` | 허용되지 않은 경로(절대 경로, 드라이브/UNC 경로, `..`, 예약 장치명, 심볼릭 링크 탈출) |
-| `Q0706` | `std` 인수 범위 초과(`sleep_millis`는 `0..60000`), `int main()`의 종료 코드가 `0..=255` 밖 |
+| `Q0706` | `std` 인수 범위 초과(`sleep`는 `0..60000`), `int main()`의 종료 코드가 `0..=255` 밖 |
 | `Q0707` | HTTP 요청 실패(네트워크 오류, 2xx 외 상태 코드, 16 MiB 초과, UTF-8 아님) |
 | `Q0708` | 허용되지 않은 URL(https 아님 또는 `[app] http_hosts`에 없는 호스트) |
 | `Q0711` | 알 수 없는 앱 커맨드 |
@@ -1182,9 +1182,9 @@ int collatz(int n) {
 
 - **설계 결정(D4)**: `docs/design/general-purpose-roadmap.md`의 설계 결정 D4에 따라 순수 함수는 새 전역 내장 함수로 추가하지 않는다. 사용자 함수가 내장 함수 이름을 재사용할 수 없어(`Q0217`) 새 전역 이름이 기존 프로그램을 깨뜨릴 수 있기 때문이다. 수학 함수는 표준 모듈 `std.math`(`import std.math;` 후 `math.sqrt(x)` 형태로 호출)에 두고, 텍스트 함수는 `String` 값의 메서드(`s.trim()`)로 제공하여 전역 이름을 추가하지 않는다.
 - **순수성과 호스트 허용**: `std.math`와 `String` 메서드는 순수 연산으로, 호스트를 거치지 않고 인터프리터 내부에서 실행된다. 따라서 모든 호스트(CLI, 플레이그라운드, REPL, 데스크톱 앱, 의존 패키지)가 권한 없이 `std.math`를 허용하며, 다른 `std` 모듈과 달리(`Q0314`) 측정 비트 조건의 `if` 안에서도 사용할 수 있다.
-- **`std.math` 함수**: 별도 표기가 없는 함수는 모두 `double`을 받고 반환하며, `int` 인수는 `double`로 확장된다. `sqrt`, `cbrt`, `exp`, `log`(자연로그), `log10`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round`(중간값은 0에서 멀어지는 쪽으로 반올림), `trunc`, `abs`, `pow(x, y)`, `hypot(x, y)`, `min`, `max`(Java와 마찬가지로 두 인수 중 하나라도 NaN이면 NaN 반환)를 제공하며, `is_nan`과 `is_finite`는 `boolean`을 반환한다. 정수 함수로는 `abs_int`, `min_int`, `max_int`, `pow_int(base, exponent)`를 제공한다(오버플로는 `Q0401`, 음수 지수는 `Q0706`). 2의 보수로 래핑하는 `wrapping_add`, `wrapping_sub`, `wrapping_mul`은 19.10절에서 추가했다.
+- **`std.math` 함수**: 별도 표기가 없는 함수는 모두 `double`을 받고 반환하며, `int` 인수는 `double`로 확장된다. `sqrt`, `cbrt`, `exp`, `log`(자연로그), `log10`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `round`(중간값은 0에서 멀어지는 쪽으로 반올림), `trunc`, `abs`, `pow(x, y)`, `hypot(x, y)`, `min`, `max`(Java와 마찬가지로 두 인수 중 하나라도 NaN이면 NaN 반환)를 제공하며, `isNaN`과 `isFinite`는 `boolean`을 반환한다. 정수 함수로는 `absInt`, `minInt`, `maxInt`, `powInt(base, exponent)`를 제공한다(오버플로는 `Q0401`, 음수 지수는 `Q0706`). 2의 보수로 래핑하는 `wrappingAdd`, `wrappingSub`, `wrappingMul`은 19.10절에서 추가했다.
 - **플랫폼 차이**: `sqrt`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`는 모든 플랫폼에서 같은 결과를 낸다. 나머지 함수는 플랫폼의 부동소수점 라이브러리를 사용하므로 Java의 `Math`와 `StrictMath`처럼 플랫폼 간(예: Windows의 CLI와 WebAssembly 플레이그라운드)에 마지막 자릿수가 다를 수 있다. 단일 빌드의 모든 엔진은 동일한 결과를 낸다.
-- **`String` 메서드**: 기존 `as_int`/`to_binary`와 마찬가지로 `snake_case`를 사용하며, 인덱스는 `len`과 같이 유니코드 문자 단위로 센다. `length()`는 `int`를 반환하고, `substring(start, end)`는 `end` 미포함 범위의 부분 문자열을 반환한다(`0 <= start <= end <= length`를 벗어나면 `Q0403`). `char_at(i)`는 한 글자 `String`을 반환하며 범위를 벗어나면 `Q0403`이 발생한다. `index_of(t)`는 문자 인덱스 또는 `-1`을, `contains(t)`, `starts_with(t)`, `ends_with(t)`는 `boolean`을 반환한다. 또한 `to_upper()`, `to_lower()`, `trim()`, 모든 일치 항목을 치환하는 `replace(from, to)`, `repeat(n)`(음수 `n`은 `Q0706`), 그리고 `parse_int()`와 `parse_double()`(앞뒤 공백은 무시하며 유효하지 않은 텍스트는 새 실행 시간 오류 `Q0419`)을 제공한다. `split`은 배열과 함께 추가된다.
+- **`String` 메서드**: 기존 `asInt`/`toBinary`와 마찬가지로 Java 스타일 `camelCase` 이름을 사용하며(기존 `snake_case` 이름은 deprecated 별칭, 19.12절), 인덱스는 `len`과 같이 유니코드 문자 단위로 센다. `length()`는 `int`를 반환하고, `substring(start, end)`는 `end` 미포함 범위의 부분 문자열을 반환한다(`0 <= start <= end <= length`를 벗어나면 `Q0403`). `charAt(i)`는 한 글자 `String`을 반환하며 범위를 벗어나면 `Q0403`이 발생한다. `indexOf(t)`는 문자 인덱스 또는 `-1`을, `contains(t)`, `startsWith(t)`, `endsWith(t)`는 `boolean`을 반환한다. 또한 `toUpperCase()`, `toLowerCase()`, `trim()`, 모든 일치 항목을 치환하는 `replace(from, to)`, `repeat(n)`(음수 `n`은 `Q0706`), 그리고 `parseInt()`와 `parseDouble()`(앞뒤 공백은 무시하며 유효하지 않은 텍스트는 새 실행 시간 오류 `Q0419`)을 제공한다. `split`은 배열과 함께 추가된다.
 - **검사 오류**: 알 수 없는 메서드는 `Q0220`, 인수 개수 불일치는 `Q0203`, 인수 타입 불일치는 `Q0204`, 알 수 없는 `std.math` 함수는 `Q0701`로 보고한다.
 - **스텝 예산과 엔진**: 모든 메서드는 읽고 생성하는 바이트마다 스텝을 부과한다(다른 `String` 작업과 마찬가지로 바이트당 8스텝). 결과 크기를 미리 알 수 있는 메서드(`repeat`, `replace`)는 결과를 만들기 전에 스텝을 먼저 부과하므로, `"ab".repeat(huge)` 같은 호출은 메모리를 소진하지 않고 스텝 한도(`Q0413`)에서 중단된다. 세 엔진 모두 같은 스텝을 부과하며(모든 스텝 한도 위치에서 검증됨), JIT는 아직 이러한 호출을 포함한 함수를 컴파일하지 않는다.
 
@@ -1197,13 +1197,13 @@ double norm(double x, double y) {
 
 void main() {
     String t = "  Hello, Qxide  ".trim();
-    println("{} {} {}", t.to_upper(), t.substring(7, 12), norm(3, 4));
+    println("{} {} {}", t.toUpperCase(), t.substring(7, 12), norm(3, 4));
 }
 ```
 
 | 코드 | 의미 |
 | --- | --- |
-| `Q0419` | `parse_int()`/`parse_double()`에 숫자가 아닌 텍스트가 주어짐(실행 시간 오류) |
+| `Q0419` | `parseInt()`/`parseDouble()`에 숫자가 아닌 텍스트가 주어짐(실행 시간 오류) |
 
 ### 19.3 배열
 
@@ -1364,10 +1364,10 @@ void main() {
 
 ### 19.7 Result, Option과 `?`
 
-- **프렐류드**: 두 제네릭 열거형 `enum Result<T, E> { Ok(T value), Err(E error) }`과 `enum Option<T> { None, Some(T value) }`이 내장되어 별도 `import` 없이 모든 파일에서 사용할 수 있다(소스 `std/prelude.qx`). 둘 다 일반 열거형이므로 `Result.Ok(5)`, `Option.Some(x)`, `Option<int>.None`처럼 제네릭 추론 규칙(19.6절)에 따라 생성하고 `match`로 분해한다. 링커는 해당 이름을 언급하거나 `try_parse_int`/`try_parse_double`을 호출하는 프로그램에만 프렐류드 선언을 추가하므로 그 밖의 프로그램은 변하지 않는다. 프로그램이 자체적으로 `Result` 또는 `Option`이라는 타입(구조체·열거형, 제네릭 여부 무관)을 선언하면 19.4절의 프로그램 전역 타입 이름 규칙에 따라 모든 파일에서 프렐류드 대신 그 타입을 사용한다. 두 이름은 모든 파일에서 알려져 있으므로 `Result<`와 `Option<`은 항상 타입 인자 목록으로 읽히며, 따라서 `Result`나 `Option`이라는 변수는 `<`로 비교할 수 없다(비교 방향을 반대로 적거나 변수 이름을 바꿔야 한다).
-- **`?` 연산자**: 후위 연산자 `e?`는 `Result<T, E>` 값에 적용하면 `T` 타입의 `Ok` 페이로드를 돌려주거나 감싸는 함수에서 `Result.Err(e)`를 조기 반환하고, `Option<T>` 값에 적용하면 `Some` 페이로드를 돌려주거나 `Option.None`을 조기 반환한다. 조기 반환 값은 감싸는 함수의 반환 타입으로 다시 감싸지므로 성공 타입은 달라도 되지만(`Result<double, String>`을 반환하는 함수 안에서 `Result<int, String>`에 `?` 적용 가능), 오류 타입은 정확히 같아야 하며 자동 오류 변환은 하지 않는다. 결합력은 `.` 및 `[i]`와 같아서 `items[i].try_parse_int()?`와 `f()?.x` 모두 동작한다. 피연산자가 `Result`/`Option`이 아니거나 함수 반환 타입이 조기 반환을 담을 수 없는 경우(종류가 다름, 오류 타입이 다름, `main`을 포함한 `void` 반환)에는 `Q0231` 오류가 보고된다.
+- **프렐류드**: 두 제네릭 열거형 `enum Result<T, E> { Ok(T value), Err(E error) }`과 `enum Option<T> { None, Some(T value) }`이 내장되어 별도 `import` 없이 모든 파일에서 사용할 수 있다(소스 `std/prelude.qx`). 둘 다 일반 열거형이므로 `Result.Ok(5)`, `Option.Some(x)`, `Option<int>.None`처럼 제네릭 추론 규칙(19.6절)에 따라 생성하고 `match`로 분해한다. 링커는 해당 이름을 언급하거나 `tryParseInt`/`tryParseDouble`을 호출하는 프로그램에만 프렐류드 선언을 추가하므로 그 밖의 프로그램은 변하지 않는다. 프로그램이 자체적으로 `Result` 또는 `Option`이라는 타입(구조체·열거형, 제네릭 여부 무관)을 선언하면 19.4절의 프로그램 전역 타입 이름 규칙에 따라 모든 파일에서 프렐류드 대신 그 타입을 사용한다. 두 이름은 모든 파일에서 알려져 있으므로 `Result<`와 `Option<`은 항상 타입 인자 목록으로 읽히며, 따라서 `Result`나 `Option`이라는 변수는 `<`로 비교할 수 없다(비교 방향을 반대로 적거나 변수 이름을 바꿔야 한다).
+- **`?` 연산자**: 후위 연산자 `e?`는 `Result<T, E>` 값에 적용하면 `T` 타입의 `Ok` 페이로드를 돌려주거나 감싸는 함수에서 `Result.Err(e)`를 조기 반환하고, `Option<T>` 값에 적용하면 `Some` 페이로드를 돌려주거나 `Option.None`을 조기 반환한다. 조기 반환 값은 감싸는 함수의 반환 타입으로 다시 감싸지므로 성공 타입은 달라도 되지만(`Result<double, String>`을 반환하는 함수 안에서 `Result<int, String>`에 `?` 적용 가능), 오류 타입은 정확히 같아야 하며 자동 오류 변환은 하지 않는다. 결합력은 `.` 및 `[i]`와 같아서 `items[i].tryParseInt()?`와 `f()?.x` 모두 동작한다. 피연산자가 `Result`/`Option`이 아니거나 함수 반환 타입이 조기 반환을 담을 수 없는 경우(종류가 다름, 오류 타입이 다름, `main`을 포함한 `void` 반환)에는 `Q0231` 오류가 보고된다.
 - **큐비트 안전성**: `?`는 조기 반환이므로 `return`과 같은 규칙을 따른다. `?` 시점에 아직 살아 있는 소유 큐비트가 있으면 루프 내부를 포함해 `Q0302` 오류가 발생하며(진단 노트가 `?` 위치를 가리킨다), 측정 결과 조건의 `if` 안에서 `?`를 사용하면 `Q0308` 오류가 발생한다. 대여된 큐비트 매개변수는 호출자가 소유하므로 `?` 시점에 살아 있어도 된다. 오류는 예외가 아닌 값으로 표현하므로(설계 결정 D2) 큐비트 검사기가 스택 풀기(unwinding)를 추적할 필요가 없다.
-- **표준 함수**: `String.try_parse_int()`는 `Result<int, String>`을, `String.try_parse_double()`은 `Result<double, String>`을 반환하며, 성공 시 숫자를 담은 `Ok`, 실패 시 `parse_int`/`parse_double`이 프로그램을 중단할 때(`Q0419`) 내는 것과 같은 오류 메시지를 담은 `Err`를 돌려준다. 다른 `String` 메서드와 마찬가지로 순수 연산이어서 모든 호스트에서 사용할 수 있으며, `parse_int`/`parse_double`과 같은 스텝 비용에 오류 문자열과 열거형 값 생성 비용이 더해진다. 기존의 `parse_int`와 `parse_double`은 잘못된 입력에서 계속 프로그램을 중단한다.
+- **표준 함수**: `String.tryParseInt()`는 `Result<int, String>`을, `String.tryParseDouble()`은 `Result<double, String>`을 반환하며, 성공 시 숫자를 담은 `Ok`, 실패 시 `parseInt`/`parseDouble`이 프로그램을 중단할 때(`Q0419`) 내는 것과 같은 오류 메시지를 담은 `Err`를 돌려준다. 다른 `String` 메서드와 마찬가지로 순수 연산이어서 모든 호스트에서 사용할 수 있으며, `parseInt`/`parseDouble`과 같은 스텝 비용에 오류 문자열과 열거형 값 생성 비용이 더해진다. 기존의 `parseInt`와 `parseDouble`은 잘못된 입력에서 계속 프로그램을 중단한다.
 - **실행**: 모든 엔진이 `?`를 동일하게 실행하며 같은 스텝 비용(`?` 식에 1스텝, 그리고 일반 열거형 값과 마찬가지로 반환할 `Err`/`None` 생성 비용)을 부과하고, 트리 워킹 인터프리터와 IR 인터프리터는 모든 스텝 한도에서 일치한다. JIT는 아직 열거형 값을 컴파일하지 않으므로 `Result`/`Option` 값을 사용하는 함수는 컴파일하지 않고 IR 인터프리터에 맡긴다.
 - **아직 지원하지 않는 기능**: 오류 타입 간 자동 변환, `main`이나 REPL 최상위에서의 `?` 사용(`match`로 값을 처리해야 한다), 그리고 다른 제네릭 인스턴스와 마찬가지로 데스크톱 앱 명령의 매개변수나 반환값에 `Result`/`Option`을 사용하는 기능(`Q0714`)은 아직 지원하지 않는다.
 
@@ -1375,7 +1375,7 @@ void main() {
 Result<int, String> sum_all(String[] items) {
     int total = 0;
     for i in 0..len(items) {
-        total += items[i].try_parse_int()?;
+        total += items[i].tryParseInt()?;
     }
     return Result.Ok(total);
 }
@@ -1394,12 +1394,12 @@ void main() {
 
 | 코드 | 의미 |
 | --- | --- |
-| `Q0231` | `?` 연산자 오용(`Result`/`Option`이 아닌 피연산자, 조기 반환을 담을 수 없는 반환 타입, 다른 오류 타입, 모양이 다른 사용자 정의 `Result`와 `try_parse_int`/`try_parse_double`) |
+| `Q0231` | `?` 연산자 오용(`Result`/`Option`이 아닌 피연산자, 조기 반환을 담을 수 없는 반환 타입, 다른 오류 타입, 모양이 다른 사용자 정의 `Result`와 `tryParseInt`/`tryParseDouble`) |
 
 ### 19.8 메서드와 인터페이스(`interface`)
 
 - **메서드**: 메서드는 구조체 본문에서 필드 뒤나 필드 사이에 Java 스타일(`double len() { ... }`)로, 열거형 본문에서는 변형 목록 뒤에 `;`을 두고 선언한다(`enum Light { Red, Green; String name() { ... } }`). 메서드 본문에서 수신자는 재대입할 수 없는 `final` 지역 변수 `this`이며, 필드는 반드시 `this.x`로만 접근하고(필드 이름만 단독으로 쓸 수 없다) 열거형 메서드는 보통 `match this`로 분기한다. 제네릭 타입의 메서드는 그 타입의 타입 매개변수를 그대로 볼 수 있다(`struct Box<T> { T v; T get() { return this.v; } }`). `v.len()`이나 `Shape.Circle(1).area()`처럼 호출하며 제네릭 타입의 인스턴스에서도 똑같이 호출한다. 메서드는 같은 타입의 필드와 이름을 공유할 수 없고 타입별로 이름이 유일해야 한다(`Q0205`). 메서드는 첫 번째 매개변수로 `this`가 추가된 일반 함수이므로 일반 함수와 같은 규칙으로 큐비트를 받거나 대여하고 `consume`할 수 있다. 정적(static) 메서드, 오버로딩, 자체 타입 매개변수를 갖는 메서드는 지원하지 않는다.
-- **프렐류드 메서드**: `Result`에는 `is_ok()`, `is_err()`, `unwrap_or(T fallback)`이, `Option`에는 `is_some()`, `is_none()`, `unwrap_or(T fallback)`이 제공되며 `String` 메서드와 마찬가지로 snake_case 이름을 따른다.
+- **프렐류드 메서드**: `Result`에는 `isOk()`, `isErr()`, `orElse(T fallback)`이, `Option`에는 `isPresent()`, `isEmpty()`, `orElse(T fallback)`이 제공되며 `String` 메서드와 마찬가지로 Java 스타일 `camelCase` 이름을 따른다(`isPresent`/`isEmpty`/`orElse`는 Java의 `Optional`을 따르며, 기존 `snake_case` 이름인 `is_ok`, `is_err`, `is_some`, `is_none`, `unwrap_or`는 deprecated 별칭, 19.12절).
 - **인터페이스**: `interface Shape { double area(); String name(); }`처럼 메서드 시그니처만 나열해 선언하며, `interface Ordered<T> { int compare(T other); }`처럼 제네릭일 수 있다. 구조체나 열거형은 이름(및 타입 매개변수) 뒤에 `implements Shape, Ordered<Money>`를 적고, 인터페이스의 타입 인자를 치환한 뒤 각 메서드를 매개변수 타입·`consume` 표기·반환 타입이 정확히 일치하게 구현해야 하며, 어기면 `Q0232`다. 인터페이스 이름은 구조체·열거형과 같은 이름공간을 공유하고 동일한 파일 규칙을 따른다(19.4절: 선언된 파일 안에서만 이름을 쓸 수 있으며 값은 `var`를 통해 파일을 넘나든다).
 - **제약(bound)**: 제네릭 함수의 타입 매개변수에는 `<T extends Shape> double total(T[] xs)`나 `<T extends Ordered<T>> T max_of(T[] xs)`처럼 인터페이스 제약을 하나 붙일 수 있으며, 본문에서 `T` 값에 대해 그 제약 인터페이스의 메서드를 호출할 수 있다(나머지 연산은 여전히 `Q0230`이다). 호출마다 추론된 타입 인자는 제약을 구현해야 하며(`Q0232`), 인터페이스 타입 자체도 자기 제약을 만족한다. `T`에 대한 호출은 단형화(monomorphization) 뒤 각 인스턴스별로 결정되므로 정적 호출이 된다. 다중 제약(`A & B`)이나 구조체·열거형·인터페이스의 타입 매개변수 제약은 지원하지 않는다.
 - **인터페이스 값**: 구조체나 열거형 값은 자신이 구현한 인터페이스 타입으로 암묵 변환된다(`Shape s = new Circle(1.0);`, `Shape[] all = {new Circle(1), new Rect(2, 3)};`). 인터페이스 값에 메서드를 호출하면 실행 시점 타입의 메서드가 실행되며(동적 디스패치), 스텝 비용은 정적 호출과 같다. 인터페이스 값은 구조체와 같은 고전 참조 값으로 변수·배열 원소·필드·페이로드·타입 인자에 쓸 수 있지만, 출력·`==`·`match`·다운캐스트·인터페이스 간 변환은 지원하지 않고 `Circle[]`은 `Shape[]`이 아니다. 기본값이 없으므로 `new Shape[n]`(인터페이스 필드를 가진 구조체나 첫 변형이 인터페이스를 담는 열거형, 인터페이스로 인스턴스화된 제네릭 코드 포함)은 `Q0225`이며 초기화 목록으로 생성해야 한다.
@@ -1453,12 +1453,12 @@ void main() {
 
 - **`main` 시그니처와 인자**: `main`은 `void main()`, `int main()`, `void main(String[] args)`, `int main(String[] args)` 네 가지 형태만 허용하며, 그 외의 시그니처는 `Q0206` 오류다. `qxide run prog.qx -- a b c`처럼 `--` 뒤에 적은 인자는 모두 `main(String[] args)`에 전달되며, `--` 뒤의 `--shots` 같은 플래그도 `qxide` 옵션이 아니라 프로그램 인자로 넘어간다. 인자를 전달하지 않는 실행 환경(플레이그라운드, REPL, 데스크톱 앱)에서는 빈 배열이 전달된다.
 - **종료 코드**: `int main()`의 반환값은 `qxide run`의 프로세스 종료 코드가 된다. 반환값은 `0..=255` 범위여야 하며, 범위를 벗어나면 실행 시간 오류 `Q0706`을 보고하고 종료 코드 `1`로 종료한다. `void main()`은 종료 코드 `0`으로 끝난다. 별도의 `exit()` 함수는 두지 않는데, 프로그램이 항상 `main`의 반환을 통해 끝나야 모든 실행 경로에서 큐비트를 소비해야 한다는 검사기 규칙을 그대로 지킬 수 있기 때문이다.
-- **`std.io`와 출력 순서**: 새 표준 모듈 `std.io`는 `io.write(String text)`, `io.write_line(String text)`, `io.read_line()`, `io.read_all()`을 제공한다. `write`와 `write_line`은 고전 코드가 실행되는 동안 매 호출마다 버퍼를 비워(flush) 표준 출력으로 즉시 내보내므로 고전 명령줄 도구가 출력을 스트리밍할 수 있다(내장 `println`이 샷별 지연 출력이므로 이름을 `write`/`write_line`으로 구분했다). `read_line()`은 프렐류드 `Option<String>`을 반환하며 줄 끝의 `\n` 또는 `\r\n`을 제거하고 입력 끝에서는 `None`을 돌려준다. `read_all()`은 남은 표준 입력 전체를 `String`으로 읽는다. `std.io` 출력은 프로그램 전개(elaboration) 시점에 나타나므로 시뮬레이션 뒤에 렌더링되는 샷별 `println` 출력보다 먼저 나오며, `--shots N > 1`에서는 모든 즉시 출력 뒤에 다중 샷 표가 이어진다. 다른 `std` 호출과 마찬가지로 빌드 시점 효과이므로 `--shots`와 무관하게 실행당 한 번만 수행되며 측정 비트 조건의 `if` 안에서는 호출할 수 없다(`Q0314`).
+- **`std.io`와 출력 순서**: 새 표준 모듈 `std.io`는 `io.write(String text)`, `io.writeLine(String text)`, `io.readLine()`, `io.readAll()`을 제공한다. `write`와 `writeLine`은 고전 코드가 실행되는 동안 매 호출마다 버퍼를 비워(flush) 표준 출력으로 즉시 내보내므로 고전 명령줄 도구가 출력을 스트리밍할 수 있다(내장 `println`이 샷별 지연 출력이므로 이름을 `write`/`writeLine`으로 구분했다). `readLine()`은 프렐류드 `Option<String>`을 반환하며 줄 끝의 `\n` 또는 `\r\n`을 제거하고 입력 끝에서는 `None`을 돌려준다. `readAll()`은 남은 표준 입력 전체를 `String`으로 읽는다. `std.io` 출력은 프로그램 전개(elaboration) 시점에 나타나므로 시뮬레이션 뒤에 렌더링되는 샷별 `println` 출력보다 먼저 나오며, `--shots N > 1`에서는 모든 즉시 출력 뒤에 다중 샷 표가 이어진다. 다른 `std` 호출과 마찬가지로 빌드 시점 효과이므로 `--shots`와 무관하게 실행당 한 번만 수행되며 측정 비트 조건의 `if` 안에서는 호출할 수 없다(`Q0314`).
 - **`std.env`**: 새 표준 모듈 `std.env`는 `env.get(String name)`을 제공하며, 환경 변수가 설정되어 있지 않거나 유효한 유니코드가 아니면 `None`, 그 외에는 값을 담은 `Option<String>`을 반환한다. 다른 `std` 호출과 마찬가지로 빌드 시점 효과이며 측정 비트 조건의 `if` 안에서는 호출할 수 없다(`Q0314`).
-- **단조 시계(`std.time.monotonic_millis`)**: `std.time`에 추가된 `time.monotonic_millis()`는 프로세스 내 고정 기준점으로부터 흐른 밀리초를 반환한다. 절대 시각이 아니라 두 호출의 차이를 구해 경과 시간을 재는 용도이며, 기존의 `now_millis()`는 계속 벽시계(wall-clock) 유닉스 시각을 반환한다.
-- **스텝 예산과 16 MiB 한도**: `io.read_line()`과 `io.read_all()`의 읽기는 최대 16 MiB로 제한되며, 한도를 넘기거나 입력이 유효한 UTF-8이 아니면 `Q0704` 오류가 발생한다. `io.write`와 `io.write_line`으로 출력하는 텍스트는 프로그램이 만드는 문자열과 마찬가지로 바이트당 스텝 예산이 부과된다.
+- **단조 시계(`std.time.monotonicMillis`)**: `std.time`에 추가된 `time.monotonicMillis()`는 프로세스 내 고정 기준점으로부터 흐른 밀리초를 반환한다. 절대 시각이 아니라 두 호출의 차이를 구해 경과 시간을 재는 용도이며, 기존의 `currentTimeMillis()`는 계속 벽시계(wall-clock) 유닉스 시각을 반환한다.
+- **스텝 예산과 16 MiB 한도**: `io.readLine()`과 `io.readAll()`의 읽기는 최대 16 MiB로 제한되며, 한도를 넘기거나 입력이 유효한 UTF-8이 아니면 `Q0704` 오류가 발생한다. `io.write`와 `io.writeLine`으로 출력하는 텍스트는 프로그램이 만드는 문자열과 마찬가지로 바이트당 스텝 예산이 부과된다.
 - **예제(`examples/cli/wc.qx`)**: 표준 입력의 줄·단어·문자 수를 세는 소형 `wc` 도구 예제를 `examples/cli/wc.qx`에 추가했다. `--` 뒤에 `-l`이나 `-w`를 넘기면 해당 항목만 출력하며, 알 수 없는 옵션은 `std.log`로 오류를 기록하고 종료 코드 `2`를 반환한다(`qxide run examples/cli/wc.qx -- -w < notes.txt`). 브라우저 플레이그라운드와 Studio에서는 `std.io`를 제공하지 않으므로 기존 `examples/qx/`가 아니라 `examples/cli/`에 둔다.
-- **호스트와 권한**: `std.io`와 `std.env`는 `qxide run`을 실행한 사용자의 터미널과 환경 변수에 닿으므로 CLI(`qxide run`/`qxide check`)에서만 제공한다. 플레이그라운드, REPL, 데스크톱 앱에서는 사용할 수 없고(`Q0702`), 앱은 `[app] permissions`로도 이 두 모듈을 허가받을 수 없다. 의존성 패키지는 다른 효과 모듈과 마찬가지로 이 두 모듈을 import할 수 없다(`Q0703`). `std.time.monotonic_millis`는 `std.time`의 기존 허용 범위를 따른다.
+- **호스트와 권한**: `std.io`와 `std.env`는 `qxide run`을 실행한 사용자의 터미널과 환경 변수에 닿으므로 CLI(`qxide run`/`qxide check`)에서만 제공한다. 플레이그라운드, REPL, 데스크톱 앱에서는 사용할 수 없고(`Q0702`), 앱은 `[app] permissions`로도 이 두 모듈을 허가받을 수 없다. 의존성 패키지는 다른 효과 모듈과 마찬가지로 이 두 모듈을 import할 수 없다(`Q0703`). `std.time.monotonicMillis`는 `std.time`의 기존 허용 범위를 따른다.
 - **후속 단계(2b·2c)로 남긴 항목**: 명령줄 인자로 넘긴 임의 경로의 파일 읽기(`qxide run wc.qx -- file.txt`)는 2a 범위에 포함하지 않았다(`std.fs`는 기존처럼 `data/` 폴더 범위 안에 머문다). 문자열 `split`, 컬렉션, 비트 연산자, PRNG는 2b에서, 경로 처리·`std.fs` 확장·JSON은 2c에서 다룬다.
 
 ```qx
@@ -1468,7 +1468,7 @@ int main(String[] args) {
     int lines = 0;
     boolean more = true;
     while more {
-        match io.read_line() {
+        match io.readLine() {
             Some(line) => {
                 lines += 1;
             }
@@ -1477,7 +1477,7 @@ int main(String[] args) {
             }
         }
     }
-    io.write_line("lines: " + lines);
+    io.writeLine("lines: " + lines);
     return 0;
 }
 ```
@@ -1485,45 +1485,45 @@ int main(String[] args) {
 | 코드 | 의미 |
 | --- | --- |
 | `Q0206` | `main` 함수가 없거나 허용된 네 가지 시그니처(`void main()`, `int main()`, `void main(String[] args)`, `int main(String[] args)`)가 아님 |
-| `Q0706` | `std` 인수 범위 초과(`sleep_millis`는 `0..60000`) 또는 `int main()`의 종료 코드가 `0..=255` 범위를 벗어남 |
+| `Q0706` | `std` 인수 범위 초과(`sleep`는 `0..60000`) 또는 `int main()`의 종료 코드가 `0..=255` 범위를 벗어남 |
 
 ### 19.10 기초 데이터 도구: 비트 연산, 문자열 분할, for-each, List·Map·Random
 
 로드맵 Stage 2의 두 번째 단계(2b)로, 고전 데이터 처리를 위해 비트 연산자와 래핑 정수 산술, 문자열 분할·결합 메서드, for-each 반복문, 그리고 내장 컬렉션·의사 난수 타입(`List<T>`, `Map<K, V>`, `Random`)을 추가한다.
 
 - **비트 연산자와 우선순위**: `int` 전용 비트 연산자 `&`, `|`, `^`, 단항 `~`, `<<`, `>>`(부호를 확장하는 산술 시프트), `>>>`(0으로 채우는 논리 시프트)와 복합 대입 `&=`, `|=`, `^=`, `<<=`, `>>=`, `>>>=`(배열 원소와 구조체 필드에서도 동작)를 지원한다. `int`가 아닌 타입의 피연산자는 `Q0204` 오류다. 연산자 우선순위는 Java가 아니라 Rust를 따라 느슨한 순서에서 촘촘한 순서로 `||`, `&&`, 비교 연산자(`==`, `!=`, `<`, `<=`, `>`, `>=`, 비결합), `|`, `^`, `&`, 시프트(`<<`, `>>`, `>>>`), `+ -`, `* / %` 순이다. 따라서 `x & 1 == 0`은 `(x & 1) == 0`으로 해석된다(Java에서는 흔한 함정인 `x & (1 == 0)`이 된다). `>>`와 `>>>`는 인접한 `>` 문자로 표기하고 파서가 이를 구분하므로 `Option<Option<int>>`처럼 중첩된 제네릭 타입 인자 목록도 기존대로 두 개의 `>`로 닫힌다.
-- **시프트 범위(`Q0420`)와 래핑 산술**: 시프트 양은 `0..=63` 범위여야 하며, 음수이거나 64 이상이면 새 실행 시간 오류 `Q0420`이 발생한다(Java처럼 시프트 양을 조용히 마스킹하거나 C처럼 미정의 동작으로 두지 않고 qxide의 검사된 `int` 산술과 동일하게 오류로 보고한다). 밀려 나간 비트는 버려지므로 `<<`는 오버플로를 보고하지 않는다. 해시와 생성기 작성을 위해 `std.math`에는 오버플로 오류(`Q0401`) 대신 2의 보수로 래핑하는 `wrapping_add`, `wrapping_sub`, `wrapping_mul`을 추가했다.
-- **`String` 분할·결합 메서드**: `split(sep)`은 Rust의 `split`과 마찬가지로 구분자 사이의 모든 조각을 빈 조각까지 포함해 `String[]`로 반환하며(`"a,,b".split(",")`은 원소 3개, `"".split(",")`은 빈 문자열 원소 1개), 빈 구분자를 넘기면 실행 시간 오류 `Q0706`이 발생한다. `split_whitespace()`는 연속된 유니코드 공백 기준으로 나누고 빈 조각은 버린다. `lines()`는 줄바꿈(`\n`) 기준으로 나누되 각 줄바꿈 앞의 캐리지 리턴(`\r`)을 제거하고, 끝의 마지막 줄바꿈은 빈 줄을 추가하지 않는다. `chars()`는 유니코드 스칼라 값 하나당 한 글자 `String` 원소 하나를 담은 `String[]`을 반환한다(`char_at` 반복문과 달리 선형 시간). `sep.join(parts)`는 수신자 문자열을 원소 사이에 끼워 `String[]`을 결합한다(예: `", ".join(names)`).
+- **시프트 범위(`Q0420`)와 래핑 산술**: 시프트 양은 `0..=63` 범위여야 하며, 음수이거나 64 이상이면 새 실행 시간 오류 `Q0420`이 발생한다(Java처럼 시프트 양을 조용히 마스킹하거나 C처럼 미정의 동작으로 두지 않고 qxide의 검사된 `int` 산술과 동일하게 오류로 보고한다). 밀려 나간 비트는 버려지므로 `<<`는 오버플로를 보고하지 않는다. 해시와 생성기 작성을 위해 `std.math`에는 오버플로 오류(`Q0401`) 대신 2의 보수로 래핑하는 `wrappingAdd`, `wrappingSub`, `wrappingMul`을 추가했다.
+- **`String` 분할·결합 메서드**: `split(sep)`은 Rust의 `split`과 마찬가지로 구분자 사이의 모든 조각을 빈 조각까지 포함해 `String[]`로 반환하며(`"a,,b".split(",")`은 원소 3개, `"".split(",")`은 빈 문자열 원소 1개), 빈 구분자를 넘기면 실행 시간 오류 `Q0706`이 발생한다. `splitWhitespace()`는 연속된 유니코드 공백 기준으로 나누고 빈 조각은 버린다. `lines()`는 줄바꿈(`\n`) 기준으로 나누되 각 줄바꿈 앞의 캐리지 리턴(`\r`)을 제거하고, 끝의 마지막 줄바꿈은 빈 줄을 추가하지 않는다. `chars()`는 유니코드 스칼라 값 하나당 한 글자 `String` 원소 하나를 담은 `String[]`을 반환한다(`charAt` 반복문과 달리 선형 시간). `sep.join(parts)`는 수신자 문자열을 원소 사이에 끼워 `String[]`을 결합한다(예: `", ".join(names)`).
 - **for-each 반복문**: `for x in xs { ... }`로 배열이나 `List`를 순회한다(카운팅 루프는 기존처럼 `for i in a..b`를 유지한다). 컬렉션과 그 길이는 루프가 시작할 때 한 번만 평가되므로(숨겨진 참조 사본에 대한 `for i in 0..len(xs)`와 동일), 루프 도중 `List`에 추가된 원소는 방문하지 않으며 원소를 제거하면 뒤이은 원소 읽기가 `Q0403`으로 실패할 수 있다. `x`는 매 반복마다 새 변수로 바인딩된다. `break`, `continue`와 모든 큐비트 규칙은 기존 `for`와 동일하며(본문 안에서 외부 큐비트 소비는 `Q0305`, 본문 안에서 할당한 큐비트는 본문 안에서 소비해야 함), `in` 뒤에 배열이나 `List`가 아닌 값이 오면 `Q0204` 오류가 발생한다.
 - **내장 타입(`List<T>`, `Map<K, V>`, `Random`)과 섀도잉**: 세 타입은 별도 `import` 없이 모든 파일에서 사용할 수 있다. 프로그램이나 파일이 같은 이름의 자체 타입을 선언하면 내장 타입 대신 그 사용자 타입을 사용하므로 `enum List<T>`를 선언한 기존 프로그램도 그대로 동작한다.
-- **`List<T>`**: 배열과 같은 참조 의미론을 갖는 가변 길이 배열이다. `new List<int>()`로 생성하거나 선언된 타입이 타입 인자를 결정하면 `new List()`처럼 생략할 수 있다(`List<int> xs = new List();`). 메서드로 `add(v)`, `get(i)`, `set(i, v)`, `insert(i, v)`(인덱스는 현재 크기와 같을 수 있음), `remove_at(i)`(제거한 원소 반환), `pop()`(`Option<T>` 반환, 비어 있으면 `None`), `clear()`, `size()`, `is_empty()`, `to_array()`(새 `T[]` 반환)를 제공하며, `len(xs)`와 읽기 전용 색인 `xs[i]`도 지원한다. 범위를 벗어난 인덱스는 `Q0403`이다.
-- **`Map<K, V>`**: 삽입 순서를 유지하는 해시 맵이다. `keys()`, `values()`, 그리고 `keys()`에 대한 for-each는 키가 처음 추가된 순서를 그대로 따르므로 모든 엔진과 호스트에서 출력이 같다(기존 키를 다시 `put`하면 기존 자리가 유지되고, `remove` 후 다시 추가하면 맨 뒤로 간다). 키는 값으로 비교하며 `int`, `String`, `boolean`만 허용되고 그 밖의 키 타입은 `Q0230`이다. 메서드로 `put(k, v)`, `get(k)`(`Option<V>` 반환), `get_or(k, fallback)`, `contains_key(k)`, `remove(k)`(`Option<V>` 반환), `clear()`, `size()`, `is_empty()`, `keys()`(새 `K[]` 반환), `values()`(새 `V[]` 반환)를 제공한다.
-- **`Random`**: splitmix64 정수 산술 기반의 시드 의사 난수 생성기로, 같은 시드이면 WebAssembly 플레이그라운드를 포함한 모든 엔진과 호스트에서 동일한 수열을 낸다. `new Random(seed)`로 생성하며, 기각 표본추출로 `0..bound` 균일 분포를 내는 `next_int(bound)`(`bound <= 0`이면 `Q0706`), 53비트 무작위 비트로 `[0, 1)` 균일 분포를 내는 `next_double()`, 그리고 `next_bool()`을 제공한다. 암호학적 용도에는 적합하지 않다. `Random`에는 기본값이 없으므로 `new Random[n]`은 `Q0225` 오류다.
+- **`List<T>`**: 배열과 같은 참조 의미론을 갖는 가변 길이 배열이다. `new List<int>()`로 생성하거나 선언된 타입이 타입 인자를 결정하면 `new List()`처럼 생략할 수 있다(`List<int> xs = new List();`). 메서드로 `add(v)`, `get(i)`, `set(i, v)`, `insert(i, v)`(인덱스는 현재 크기와 같을 수 있음), `removeAt(i)`(제거한 원소 반환), `pop()`(`Option<T>` 반환, 비어 있으면 `None`), `clear()`, `size()`, `isEmpty()`, `toArray()`(새 `T[]` 반환)를 제공하며, `len(xs)`와 읽기 전용 색인 `xs[i]`도 지원한다. 범위를 벗어난 인덱스는 `Q0403`이다.
+- **`Map<K, V>`**: 삽입 순서를 유지하는 해시 맵이다. `keys()`, `values()`, 그리고 `keys()`에 대한 for-each는 키가 처음 추가된 순서를 그대로 따르므로 모든 엔진과 호스트에서 출력이 같다(기존 키를 다시 `put`하면 기존 자리가 유지되고, `remove` 후 다시 추가하면 맨 뒤로 간다). 키는 값으로 비교하며 `int`, `String`, `boolean`만 허용되고 그 밖의 키 타입은 `Q0230`이다. 메서드로 `put(k, v)`, `get(k)`(`Option<V>` 반환), `getOrDefault(k, fallback)`, `containsKey(k)`, `remove(k)`(`Option<V>` 반환), `clear()`, `size()`, `isEmpty()`, `keys()`(새 `K[]` 반환), `values()`(새 `V[]` 반환)를 제공한다.
+- **`Random`**: splitmix64 정수 산술 기반의 시드 의사 난수 생성기로, 같은 시드이면 WebAssembly 플레이그라운드를 포함한 모든 엔진과 호스트에서 동일한 수열을 낸다. `new Random(seed)`로 생성하며, 기각 표본추출로 `0..bound` 균일 분포를 내는 `nextInt(bound)`(`bound <= 0`이면 `Q0706`), 53비트 무작위 비트로 `[0, 1)` 균일 분포를 내는 `nextDouble()`, 그리고 `nextBoolean()`을 제공한다. 암호학적 용도에는 적합하지 않다. `Random`에는 기본값이 없으므로 `new Random[n]`은 `Q0225` 오류다.
 - **타입 제약, 기본값, 재귀 규칙**: 원소·값·키 타입은 모두 고전 타입이어야 하므로(`List<Qubit>`은 `Q0230`) 큐비트 소유권 규칙은 컬렉션과 만나지 않는다. `List`와 `Map`은 배열 원소, 구조체 필드, 열거형 페이로드, 타입 인자로 쓸 수 있으며 `new T[n]`이나 구조체 기본값에서는 빈 컬렉션으로 시작한다. 구조체나 열거형이 `List`나 `Map`을 거쳐 자기 자신에 도달할 수 있는 경우는 다른 가변 재귀 타입과 마찬가지로 `Q0227`로 거부된다. 컬렉션에 대한 `==` 비교와 `println` 출력은 지원하지 않으므로 원소를 직접 출력해야 한다.
-- **측정 비트 조건 `if` 규칙**: 컬렉션이나 `Random`을 변경하는 메서드(`add`, `set`, `insert`, `remove_at`, `pop`, `clear`, `put`, `remove`, `next_int`, `next_double`, `next_bool`)는 공유 데이터에 대한 저장으로 취급한다. 측정 비트 조건의 `if` 안에서 이 메서드들을 직접 호출하면 `Q0308` 오류가 발생하며, 이 이름의 메서드를 호출하는 함수(해당 분석에서는 수신자 타입을 알지 못하므로 모든 타입에 보수적으로 적용)는 이러한 `if` 안에서 호출할 수 없다(`Q0314`). `get`, `size` 같은 읽기 메서드는 허용된다.
-- **스텝 예산과 JIT**: 각 메서드 호출은 1스텝을 소비한다. 새로 추가되는 `List` 원소와 `Map` 항목은 배열 할당과 마찬가지로 메모리 바이트당 8스텝을 부과해 스텝 예산이 컬렉션 메모리도 함께 제한한다. `insert`와 `remove_at`은 이동하는 원소마다 1스텝을 추가로 부과하고, `keys()`, `values()`, `to_array()`는 배열 할당과 동일하게 과금한다. 두 인터프리터는 모든 스텝 한도에서 동일하게 과금한다. JIT는 컬렉션을 사용하는 함수를 인터프리터에 맡기고, 새 비트 연산자를 포함해 `int`·`double`·`boolean`만 사용하는 함수는 네이티브 코드로 컴파일한다(Cranelift의 `band`, `bor`, `bxor`, `bnot`, `ishl`, `sshr`, `ushr`을 사용하며 동일한 `Q0420` 검사를 수행한다).
-- **`std.io` 표준 오류 출력**: `std.io`에 `write_err(text)`와 `write_err_line(text)`를 추가해 표준 오류(`stderr`)로 즉시 출력한다. 호스트 규칙은 나머지 `std.io`와 동일하게 CLI 전용이다.
-- **예제**: `examples/qx/collections.qx`는 `Map`을 이용한 단어 빈도 계산, `List`, 고정 시드의 `Random` 주사위 굴리기, 비트 플래그를 보여 주며 플레이그라운드에서도 실행된다. `examples/cli/wc.qx`는 `split_whitespace`와 `Map`을 사용하도록 갱신했고, `-f` 옵션을 주면 단어 빈도를 높은 순으로 출력한다(`List`에 삽입해 순서를 유지한다).
+- **측정 비트 조건 `if` 규칙**: 컬렉션이나 `Random`을 변경하는 메서드(`add`, `set`, `insert`, `removeAt`, `pop`, `clear`, `put`, `remove`, `nextInt`, `nextDouble`, `nextBoolean`)는 공유 데이터에 대한 저장으로 취급한다. 측정 비트 조건의 `if` 안에서 이 메서드들을 직접 호출하면 `Q0308` 오류가 발생하며, 이 이름의 메서드를 호출하는 함수(해당 분석에서는 수신자 타입을 알지 못하므로 모든 타입에 보수적으로 적용)는 이러한 `if` 안에서 호출할 수 없다(`Q0314`). `get`, `size` 같은 읽기 메서드는 허용된다.
+- **스텝 예산과 JIT**: 각 메서드 호출은 1스텝을 소비한다. 새로 추가되는 `List` 원소와 `Map` 항목은 배열 할당과 마찬가지로 메모리 바이트당 8스텝을 부과해 스텝 예산이 컬렉션 메모리도 함께 제한한다. `insert`와 `removeAt`은 이동하는 원소마다 1스텝을 추가로 부과하고, `keys()`, `values()`, `toArray()`는 배열 할당과 동일하게 과금한다. 두 인터프리터는 모든 스텝 한도에서 동일하게 과금한다. JIT는 컬렉션을 사용하는 함수를 인터프리터에 맡기고, 새 비트 연산자를 포함해 `int`·`double`·`boolean`만 사용하는 함수는 네이티브 코드로 컴파일한다(Cranelift의 `band`, `bor`, `bxor`, `bnot`, `ishl`, `sshr`, `ushr`을 사용하며 동일한 `Q0420` 검사를 수행한다).
+- **`std.io` 표준 오류 출력**: `std.io`에 `writeErr(text)`와 `writeErrLine(text)`를 추가해 표준 오류(`stderr`)로 즉시 출력한다. 호스트 규칙은 나머지 `std.io`와 동일하게 CLI 전용이다.
+- **예제**: `examples/qx/collections.qx`는 `Map`을 이용한 단어 빈도 계산, `List`, 고정 시드의 `Random` 주사위 굴리기, 비트 플래그를 보여 주며 플레이그라운드에서도 실행된다. `examples/cli/wc.qx`는 `splitWhitespace`와 `Map`을 사용하도록 갱신했고, `-f` 옵션을 주면 단어 빈도를 높은 순으로 출력한다(`List`에 삽입해 순서를 유지한다).
 - **2b에서 남긴 항목**: 컬렉션의 `==` 및 출력, 집합(set), 비교자(comparator)를 받는 정렬(제네릭 메서드 필요), `Map` 직접 순회(`keys()` 사용), 그 밖의 타입을 키로 쓰는 `Map`은 이후 단계로 남겼다.
 
 ```qx
 void main() {
     Map<String, int> counts = new Map();
-    for word in "red blue red green blue red".split_whitespace() {
-        counts.put(word, counts.get_or(word, 0) + 1);
+    for word in "red blue red green blue red".splitWhitespace() {
+        counts.put(word, counts.getOrDefault(word, 0) + 1);
     }
     List<String> repeated = new List();
     for word in counts.keys() {
-        if counts.get_or(word, 0) > 1 {
+        if counts.getOrDefault(word, 0) > 1 {
             repeated.add(word);
         }
     }
-    println("repeated: {}", ", ".join(repeated.to_array()));
+    println("repeated: {}", ", ".join(repeated.toArray()));
 
     Random rng = new Random(42);
     int mask = 0;
     for i in 0..4 {
-        mask |= 1 << rng.next_int(8);
+        mask |= 1 << rng.nextInt(8);
     }
     println("mask={} low={}", mask, mask & 1 == 1);
 }
@@ -1533,7 +1533,7 @@ void main() {
 | --- | --- |
 | `Q0420` | 시프트 양이 `0..=63` 범위를 벗어남(실행 시간 오류) |
 | `Q0230` | 타입 인자 오류(`Map` 키 타입이 `int`·`String`·`boolean`이 아닌 경우, 내장 타입 `List`·`Map`의 타입 인자 누락 포함) |
-| `Q0706` | 인수 범위 초과(`String.split("")`의 빈 구분자, `Random.next_int(bound)`의 `bound <= 0` 포함) |
+| `Q0706` | 인수 범위 초과(`String.split("")`의 빈 구분자, `Random.nextInt(bound)`의 `bound <= 0` 포함) |
 
 ### 19.11 네이티브 함수 호출: `extern` (최소 C FFI)
 
@@ -1571,3 +1571,73 @@ void main() {
 | `Q0702` | `extern`을 제공하지 않는 호스트이거나 `ffi` 기능 없이 빌드된 `qxide` |
 | `Q0703` | `--allow ffi` 없이 `extern` 선언, 또는 진입 파일이 아닌 모듈·의존성 패키지의 `extern` 선언 |
 | `Q0717` | 네이티브 라이브러리를 열 수 없거나 함수가 없음(실행 시간 오류) |
+
+### 19.12 내장 메서드·표준 함수 명명 전환: Java 스타일 camelCase (폐지 예정 snake_case 별칭)
+
+- **결정 배경 (2026-11-23, 로드맵 §7)**: 내장 메서드와 표준 라이브러리 함수의 이름을 Java 스타일의 camelCase로 통일한다. 의미가 일치하는 경우에는 Java 표준 라이브러리 이름(`length()`, `substring`, `charAt`, `toUpperCase`, `parseInt`, `isNaN`, `getOrDefault`, `nextBoolean`, `Optional` 계열의 `isPresent`/`isEmpty`/`orElse`, `System.currentTimeMillis`, `Thread.sleep`, `Files.readString`/`writeString`, `Frame.setTitle`/`setSize`)을 따르고, 대응하는 표준 이름이 없는 경우에는 기존 이름을 기계적으로 camelCase로 변환한다.
+- **적용 범위**: `String`, `BitReg`, `List`·`Map`·`Random` 메서드, 프렐류드 `Result`·`Option` 메서드, 그리고 `std` 모듈 함수(`std.math`, `std.time`, `std.io`, `std.fs`, `std.app`)를 대상으로 한다. 총 51개 이름이 변경되며, 이미 camelCase와 호환되는 기존 이름(`length`, `trim`, `split`, `add`, `sqrt` 등)은 그대로 유지한다.
+- **개별 명명 판단**: qx는 오버로딩을 지원하지 않으므로 정수 변형 함수는 Java식 오버로드 대신 접미사(`absInt`, `minInt`, `maxInt`, `powInt`)를 유지한다. `List.remove_at`은 향후 값 기준 삭제 메서드를 추가할 수 있도록 Java의 `remove(int)` 대신 `removeAt`으로 정한다. `BitReg`의 변환 메서드는 선행 0을 생략하는 Java의 `toBinaryString`과 구분하기 위해 `asInt`·`toBinary`를 택한다. `Result`는 Java에 직접 대응하는 타입이 없어 `isOk`·`isErr`을 부여하고 `orElse`는 `Option`과 공유하며, 파일 시스템 함수는 Java `Files`와의 일관성을 위해 `readString`·`writeString`·`appendString`으로 정한다.
+- **폐지 예정 별칭 (Deprecated Aliases)**: 기존 snake_case 이름은 한 릴리스 동안 폐지 예정 별칭으로 계속 동작한다. 검사기는 구 이름을 새 이름으로 해석해 최초의 경고 코드 `Q0801`을 stderr에 출력하고 호출을 새 이름으로 재작성하므로, 모든 엔진(`ast`/`ir`/`jit`)과 호스트는 새 이름만 전달받으며 출력·종료 코드·엔진 실행 결과는 완전히 동일하다.
+- **철자가 아닌 해석 기준 적용**: 별칭은 수신자가 내장 타입이나 프렐류드 `Result`·`Option`이거나 피호출자가 `std` 함수일 때만 적용된다. 따라서 프로그램이 직접 정의한 함수나 구조체 메서드(예: `is_empty`)는 영향을 받지 않으며, 사용자 정의 `Result` 타입에도 별칭이 적용되지 않는다. `std`의 구 이름은 임포트 문(`import std.math.abs_int;`)에서도 동일하게 허용된다.
+- **경고 출력 경로**: `qxide check`/`qasm`/`run`/`build`는 명령이 끝날 때(실행 중 출력된 `std.log`/`std.io`의 stderr 출력 뒤, 난수 시드 안내 앞) `Q0801` 경고를 stderr에 출력하며, stdout과 종료 코드는 변경하지 않는다. 플레이그라운드는 stderr 창에 표시하며, 언어 서버는 경고(warning) 심각도로 보고한다. 반면 REPL은 매 입력마다 전체 세션을 재실행하므로 경고를 표시하지 않는다.
+- **도구 지원**: `.` 뒤의 코드 자동 완성은 새 camelCase 이름만 제안하며, VS Code 문법 정의도 새 이름을 강조 표시한다.
+
+아래 표는 변경된 51개 이름 전체를 소유 타입 또는 모듈, 이전 이름, 새 이름, 대응하는 Java 표준 이름(`-`는 Java 명명 관례만 따른 이름)으로 정리한 것이다.
+
+| 소유 타입·모듈 | 이전 이름 | 새 이름 | Java 대응 이름 |
+| --- | --- | --- | --- |
+| `String` | `char_at` | `charAt` | `String.charAt` |
+| `String` | `index_of` | `indexOf` | `String.indexOf` |
+| `String` | `starts_with` | `startsWith` | `String.startsWith` |
+| `String` | `ends_with` | `endsWith` | `String.endsWith` |
+| `String` | `to_upper` | `toUpperCase` | `String.toUpperCase` |
+| `String` | `to_lower` | `toLowerCase` | `String.toLowerCase` |
+| `String` | `parse_int` | `parseInt` | `Integer.parseInt` |
+| `String` | `parse_double` | `parseDouble` | `Double.parseDouble` |
+| `String` | `try_parse_int` | `tryParseInt` | - |
+| `String` | `try_parse_double` | `tryParseDouble` | - |
+| `String` | `split_whitespace` | `splitWhitespace` | - |
+| `BitReg` | `as_int` | `asInt` | - |
+| `BitReg` | `to_binary` | `toBinary` | - |
+| `List` | `remove_at` | `removeAt` | - |
+| `List` | `is_empty` | `isEmpty` | `List.isEmpty` |
+| `List` | `to_array` | `toArray` | `List.toArray` |
+| `Map` | `get_or` | `getOrDefault` | `Map.getOrDefault` |
+| `Map` | `contains_key` | `containsKey` | `Map.containsKey` |
+| `Map` | `is_empty` | `isEmpty` | `Map.isEmpty` |
+| `Random` | `next_int` | `nextInt` | `Random.nextInt` |
+| `Random` | `next_double` | `nextDouble` | `Random.nextDouble` |
+| `Random` | `next_bool` | `nextBoolean` | `Random.nextBoolean` |
+| `Result` | `is_ok` | `isOk` | - |
+| `Result` | `is_err` | `isErr` | - |
+| `Result` | `unwrap_or` | `orElse` | - |
+| `Option` | `is_some` | `isPresent` | `Optional.isPresent` |
+| `Option` | `is_none` | `isEmpty` | `Optional.isEmpty` |
+| `Option` | `unwrap_or` | `orElse` | `Optional.orElse` |
+| `std.math` | `is_nan` | `isNaN` | `Double.isNaN` |
+| `std.math` | `is_finite` | `isFinite` | `Double.isFinite` |
+| `std.math` | `abs_int` | `absInt` | - |
+| `std.math` | `min_int` | `minInt` | - |
+| `std.math` | `max_int` | `maxInt` | - |
+| `std.math` | `pow_int` | `powInt` | - |
+| `std.math` | `wrapping_add` | `wrappingAdd` | - |
+| `std.math` | `wrapping_sub` | `wrappingSub` | - |
+| `std.math` | `wrapping_mul` | `wrappingMul` | - |
+| `std.time` | `now_millis` | `currentTimeMillis` | `System.currentTimeMillis` |
+| `std.time` | `now_iso` | `nowIso` | - |
+| `std.time` | `sleep_millis` | `sleep` | `Thread.sleep` |
+| `std.time` | `monotonic_millis` | `monotonicMillis` | - |
+| `std.io` | `write_line` | `writeLine` | - |
+| `std.io` | `write_err` | `writeErr` | - |
+| `std.io` | `write_err_line` | `writeErrLine` | - |
+| `std.io` | `read_line` | `readLine` | `BufferedReader.readLine` |
+| `std.io` | `read_all` | `readAll` | - |
+| `std.fs` | `read_text` | `readString` | `Files.readString` |
+| `std.fs` | `write_text` | `writeString` | `Files.writeString` |
+| `std.fs` | `append_text` | `appendString` | - |
+| `std.app` | `set_title` | `setTitle` | `Frame.setTitle` |
+| `std.app` | `set_size` | `setSize` | `Frame.setSize` |
+
+| 코드 | 의미 |
+| --- | --- |
+| `Q0801` | 폐지 예정인 snake_case 내장 이름 사용(경고, 19.12절) |

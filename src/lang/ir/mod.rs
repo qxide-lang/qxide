@@ -32,7 +32,7 @@ pub enum IrTy {
     Str,
     Bit,
     Bits,
-    // `r.as_int()` and `r.to_binary()`: printable only.
+    // `r.asInt()` and `r.toBinary()`: printable only.
     ShotInt,
     ShotBinary,
     Qubit,
@@ -222,7 +222,7 @@ pub enum Inst {
         index: Reg,
         span: Span,
     },
-    /// `r.as_int()` or `r.to_binary()`.
+    /// `r.asInt()` or `r.toBinary()`.
     View {
         dst: Reg,
         src: Reg,

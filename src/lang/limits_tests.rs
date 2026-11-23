@@ -358,13 +358,13 @@ fn str_literals_are_charged_each_time_they_are_built() {
     });
 }
 
-/// `std.fs` that never touches the disk: `read_text` returns 1 MiB, the rest succeed.
+/// `std.fs` that never touches the disk: `readString` returns 1 MiB, the rest succeed.
 struct BigFiles;
 
 impl stdlib::Host for BigFiles {
     fn call(&mut self, _: &str, function: &str, _: Vec<stdlib::HostValue>) -> stdlib::StdResult {
         Ok(match function {
-            "read_text" => stdlib::HostValue::Str("y".repeat(1 << 20)),
+            "readString" => stdlib::HostValue::Str("y".repeat(1 << 20)),
             "exists" => stdlib::HostValue::Bool(true),
             _ => stdlib::HostValue::Unit,
         })
@@ -381,13 +381,13 @@ fn run_with_files(body: &str, limits: Limits) -> Result<String, Failure> {
 #[test]
 fn std_results_are_charged_per_byte() {
     let body =
-        "String t = \"\";\n    for i in 0..1000 {\n        t = fs.read_text(\"a.txt\");\n    }";
+        "String t = \"\";\n    for i in 0..1000 {\n        t = fs.readString(\"a.txt\");\n    }";
     within(20, move || {
         fails_with(run_with_files(body, medium()), "Q0413")
     });
     // One read of the same file is well within the budget.
     within(20, move || {
-        run_with_files("String t = fs.read_text(\"a.txt\");", medium())
+        run_with_files("String t = fs.readString(\"a.txt\");", medium())
     })
     .unwrap_or_else(|Failure(d)| panic!("{d}"));
 }
@@ -395,7 +395,7 @@ fn std_results_are_charged_per_byte() {
 #[test]
 fn std_arguments_are_charged_per_byte() {
     let body = format!(
-        "{}    for i in 0..1000 {{\n        fs.write_text(\"a.txt\", s);\n    }}",
+        "{}    for i in 0..1000 {{\n        fs.writeString(\"a.txt\", s);\n    }}",
         doubled(20)
     );
     within(20, move || {

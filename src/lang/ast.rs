@@ -69,7 +69,7 @@ pub enum Ty {
     Qubit,
     QReg,
     Void,
-    // Per-shot views of a `BitReg` (`r.as_int()`, `r.to_binary()`); printable only.
+    // Per-shot views of a `BitReg` (`r.asInt()`, `r.toBinary()`); printable only.
     ShotInt,
     ShotBinary,
     // Placeholder after an error, so one mistake does not cascade.
@@ -247,8 +247,8 @@ impl Ty {
             Ty::Qubit => "Qubit",
             Ty::QReg => "QReg",
             Ty::Void => "void",
-            Ty::ShotInt => "BitReg.as_int()",
-            Ty::ShotBinary => "BitReg.to_binary()",
+            Ty::ShotInt => "BitReg.asInt()",
+            Ty::ShotBinary => "BitReg.toBinary()",
             Ty::Error => "{error}",
         }
     }
@@ -384,6 +384,8 @@ pub struct EnumDecl {
     pub variants: Vec<Variant>,
     // Methods declared after the variants (`Program::lift_methods` moves them to `fns`).
     pub methods: Vec<FnDecl>,
+    // `Result` or `Option` of the prelude (`link::add_prelude`), not a program's own type.
+    pub prelude: bool,
 }
 
 /// One variant of an `enum`: its payload fields are named like parameters.
@@ -628,7 +630,7 @@ pub enum ExprKind {
         base: Box<Expr>,
         index: Box<Expr>,
     },
-    // `r.as_int()` on a value, or `fs.read_text(p)` on a module alias (rewritten to a `Call`
+    // `r.asInt()` on a value, or `fs.readString(p)` on a module alias (rewritten to a `Call`
     // by the linker).
     Method {
         recv: Box<Expr>,

@@ -119,8 +119,8 @@ impl Host for AppHost {
             ));
         }
         match (module, function) {
-            ("app", "set_title") => self.send(UserEvent::SetTitle(arg_str(&args, 0))),
-            ("app", "set_size") => {
+            ("app", "setTitle") => self.send(UserEvent::SetTitle(arg_str(&args, 0))),
+            ("app", "setSize") => {
                 let (w, h) = (arg_int(&args, 0), arg_int(&args, 1));
                 if !(200..=8192).contains(&w) || !(200..=8192).contains(&h) {
                     return Err(StdError::new(

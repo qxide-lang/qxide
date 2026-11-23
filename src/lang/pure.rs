@@ -31,28 +31,28 @@ pub fn is_pure_fn(qualified: &str) -> bool {
 pub const STRING_METHODS: &[(&str, &[Ty], Ty)] = &[
     ("length", &[], Ty::Int),
     ("substring", &[Ty::Int, Ty::Int], Ty::String),
-    ("char_at", &[Ty::Int], Ty::String),
-    ("index_of", &[Ty::String], Ty::Int),
+    ("charAt", &[Ty::Int], Ty::String),
+    ("indexOf", &[Ty::String], Ty::Int),
     ("contains", &[Ty::String], Ty::Boolean),
-    ("starts_with", &[Ty::String], Ty::Boolean),
-    ("ends_with", &[Ty::String], Ty::Boolean),
-    ("to_upper", &[], Ty::String),
-    ("to_lower", &[], Ty::String),
+    ("startsWith", &[Ty::String], Ty::Boolean),
+    ("endsWith", &[Ty::String], Ty::Boolean),
+    ("toUpperCase", &[], Ty::String),
+    ("toLowerCase", &[], Ty::String),
     ("trim", &[], Ty::String),
     ("replace", &[Ty::String, Ty::String], Ty::String),
     ("repeat", &[Ty::Int], Ty::String),
-    ("parse_int", &[], Ty::Int),
-    ("parse_double", &[], Ty::Double),
+    ("parseInt", &[], Ty::Int),
+    ("parseDouble", &[], Ty::Double),
     // Listed with their `Ok` type; they return `Result<int, String>` (`string_method`).
-    ("try_parse_int", &[], Ty::Int),
-    ("try_parse_double", &[], Ty::Double),
+    ("tryParseInt", &[], Ty::Int),
+    ("tryParseDouble", &[], Ty::Double),
 ];
 
-/// The `Ok` type of `try_parse_int` and `try_parse_double`.
+/// The `Ok` type of `tryParseInt` and `tryParseDouble`.
 pub fn try_parse_ok(name: &str) -> Option<Ty> {
     match name {
-        "try_parse_int" => Some(Ty::Int),
-        "try_parse_double" => Some(Ty::Double),
+        "tryParseInt" => Some(Ty::Int),
+        "tryParseDouble" => Some(Ty::Double),
         _ => None,
     }
 }
@@ -63,7 +63,7 @@ pub fn parse_result(ok: Ty) -> Ty {
 }
 
 /// Methods of `String` values that take or return `String[]`.
-pub const STRING_ARRAY_METHODS: &[&str] = &["split", "split_whitespace", "lines", "chars", "join"];
+pub const STRING_ARRAY_METHODS: &[&str] = &["split", "splitWhitespace", "lines", "chars", "join"];
 
 /// Name, parameter types and result type of the `String` method `name`.
 pub fn string_method(name: &str) -> Option<(&'static str, Vec<Ty>, Ty)> {
@@ -152,15 +152,15 @@ pub fn math(function: &str, args: &[HostValue], span: Span) -> R<HostValue> {
                 a.max(b)
             })
         }
-        ("is_nan", 1) => Ok(HostValue::Bool(x(0)?.is_nan())),
-        ("is_finite", 1) => Ok(HostValue::Bool(x(0)?.is_finite())),
-        ("abs_int", 1) => n(0)?
+        ("isNaN", 1) => Ok(HostValue::Bool(x(0)?.is_nan())),
+        ("isFinite", 1) => Ok(HostValue::Bool(x(0)?.is_finite())),
+        ("absInt", 1) => n(0)?
             .checked_abs()
             .map(HostValue::Int)
             .ok_or_else(|| overflow(span)),
-        ("min_int", 2) => Ok(HostValue::Int(n(0)?.min(n(1)?))),
-        ("max_int", 2) => Ok(HostValue::Int(n(0)?.max(n(1)?))),
-        ("pow_int", 2) => {
+        ("minInt", 2) => Ok(HostValue::Int(n(0)?.min(n(1)?))),
+        ("maxInt", 2) => Ok(HostValue::Int(n(0)?.max(n(1)?))),
+        ("powInt", 2) => {
             let (b, e) = (n(0)?, n(1)?);
             if e < 0 {
                 return Err(Diagnostic::new(
@@ -181,9 +181,9 @@ pub fn math(function: &str, args: &[HostValue], span: Span) -> R<HostValue> {
                 .ok_or_else(|| overflow(span))
         }
         // Two's-complement arithmetic that wraps instead of stopping (hashes, PRNGs).
-        ("wrapping_add", 2) => Ok(HostValue::Int(n(0)?.wrapping_add(n(1)?))),
-        ("wrapping_sub", 2) => Ok(HostValue::Int(n(0)?.wrapping_sub(n(1)?))),
-        ("wrapping_mul", 2) => Ok(HostValue::Int(n(0)?.wrapping_mul(n(1)?))),
+        ("wrappingAdd", 2) => Ok(HostValue::Int(n(0)?.wrapping_add(n(1)?))),
+        ("wrappingSub", 2) => Ok(HostValue::Int(n(0)?.wrapping_sub(n(1)?))),
+        ("wrappingMul", 2) => Ok(HostValue::Int(n(0)?.wrapping_mul(n(1)?))),
         _ => Err(internal(span)),
     }
 }
@@ -256,7 +256,7 @@ impl Machine<'_> {
                 };
                 built(self, s[i..j].to_string())
             }
-            "char_at" => {
+            "charAt" => {
                 let k = int(0)?;
                 let n = s.chars().count();
                 match usize::try_from(k).ok().and_then(|k| s.chars().nth(k)) {
@@ -268,7 +268,7 @@ impl Machine<'_> {
                     )),
                 }
             }
-            "index_of" => {
+            "indexOf" => {
                 let t = text(0)?;
                 self.charge_text(t.len(), span)?;
                 Ok(Value::Int(match s.find(&*t) {
@@ -276,19 +276,19 @@ impl Machine<'_> {
                     None => -1,
                 }))
             }
-            "contains" | "starts_with" | "ends_with" => {
+            "contains" | "startsWith" | "endsWith" => {
                 let t = text(0)?;
                 self.charge_text(t.len(), span)?;
                 Ok(Value::Bool(match name {
                     "contains" => s.contains(&*t),
-                    "starts_with" => s.starts_with(&*t),
+                    "startsWith" => s.starts_with(&*t),
                     _ => s.ends_with(&*t),
                 }))
             }
             // Case mapping can grow the text (`ß` -> `SS`), at most 3x per char.
-            "to_upper" | "to_lower" => {
+            "toUpperCase" | "toLowerCase" => {
                 self.charge_text(s.len().saturating_mul(3), span)?;
-                let out = if name == "to_upper" {
+                let out = if name == "toUpperCase" {
                     s.to_uppercase()
                 } else {
                     s.to_lowercase()
@@ -322,14 +322,14 @@ impl Machine<'_> {
                 self.charge_text(s.len().saturating_mul(k), span)?;
                 Ok(Value::Str(Rc::from(s.repeat(k))))
             }
-            "parse_int" => s.trim().parse::<i64>().map(Value::Int).map_err(|_| {
+            "parseInt" => s.trim().parse::<i64>().map(Value::Int).map_err(|_| {
                 Diagnostic::new(
                     Code::ParseNumber,
                     span,
                     msg::parse_number(&shown(&s), "int"),
                 )
             }),
-            "parse_double" => match s.trim().parse::<f64>() {
+            "parseDouble" => match s.trim().parse::<f64>() {
                 Ok(v) => Ok(Value::Double(v)),
                 Err(_) => Err(Diagnostic::new(
                     Code::ParseNumber,
@@ -337,9 +337,9 @@ impl Machine<'_> {
                     msg::parse_number(&shown(&s), "double"),
                 )),
             },
-            // `Ok(value)`, or `Err(message)` with the text `parse_int` would stop with.
-            "try_parse_int" | "try_parse_double" => {
-                let (ok, parsed) = if name == "try_parse_int" {
+            // `Ok(value)`, or `Err(message)` with the text `parseInt` would stop with.
+            "tryParseInt" | "tryParseDouble" => {
+                let (ok, parsed) = if name == "tryParseInt" {
                     (Ty::Int, s.trim().parse::<i64>().ok().map(Value::Int))
                 } else {
                     (Ty::Double, s.trim().parse::<f64>().ok().map(Value::Double))
@@ -375,7 +375,7 @@ impl Machine<'_> {
                 Ok(self.texts(s.split(&*sep)))
             }
             // Runs of Unicode white space separate the pieces; none are empty.
-            "split_whitespace" => {
+            "splitWhitespace" => {
                 let n = s.split_whitespace().count();
                 self.charge_texts(n, s.len(), span)?;
                 Ok(self.texts(s.split_whitespace()))

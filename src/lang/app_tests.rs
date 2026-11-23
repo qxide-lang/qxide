@@ -84,13 +84,13 @@ fn string_type_errors() {
 fn std_imports_by_module_function_and_wildcard() {
     let src = r#"
 import std.log;
-import std.time.now_iso;
+import std.time.nowIso;
 import std.time.*;
 
 void main() {
     log.info("hello");
-    String t = now_iso();
-    int ms = now_millis();
+    String t = nowIso();
+    int ms = currentTimeMillis();
     println("{} {}", len(t), ms > 1700000000000);
 }
 "#;
@@ -99,7 +99,7 @@ void main() {
 
 #[test]
 fn std_permissions_per_host() {
-    let fs = "import std.fs;\nvoid main() {\n    fs.write_text(\"a.txt\", \"x\");\n}\n";
+    let fs = "import std.fs;\nvoid main() {\n    fs.writeString(\"a.txt\", \"x\");\n}\n";
     assert_eq!(err_codes(fs, Permissions::cli(false)), ["Q0703"]);
     assert_eq!(err_codes(fs, Permissions::playground()), ["Q0702"]);
     assert_eq!(err_codes(fs, Permissions::app(&[])), ["Q0703"]);
@@ -183,7 +183,7 @@ fn input_shots() -> u64 {
 
 #[test]
 fn qasm_refuses_effects() {
-    let src = "import std.fs;\nvoid main() {\n    fs.write_text(\"a.txt\", \"x\");\n}\n";
+    let src = "import std.fs;\nvoid main() {\n    fs.writeString(\"a.txt\", \"x\");\n}\n";
     let mut input = Input::file("t.qx", src);
     input.perms = Permissions::cli(true);
     let Err(Failure(d)) = super::qasm_input(&input) else {
@@ -200,9 +200,9 @@ fn std_fs_through_the_cli_host() {
 import std.fs;
 
 void main() {
-    fs.write_text("notes/a.txt", "one");
-    fs.append_text("notes/a.txt", " two");
-    println("{} {}", fs.read_text("notes/a.txt"), fs.exists("nope.txt"));
+    fs.writeString("notes/a.txt", "one");
+    fs.appendString("notes/a.txt", " two");
+    println("{} {}", fs.readString("notes/a.txt"), fs.exists("nope.txt"));
     fs.remove("notes/a.txt");
 }
 "#;
@@ -213,7 +213,7 @@ void main() {
         super::run_input(&input, 1, 0, &mut host).unwrap(),
         "one two false\n"
     );
-    let escape = "import std.fs;\nvoid main() {\n    fs.write_text(\"../x.txt\", \"x\");\n}\n";
+    let escape = "import std.fs;\nvoid main() {\n    fs.writeString(\"../x.txt\", \"x\");\n}\n";
     let mut input = Input::file("t.qx", escape);
     input.perms = Permissions::cli(true);
     let Err(Failure(d)) = super::run_input(&input, 1, 0, &mut host) else {

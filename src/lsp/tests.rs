@@ -146,13 +146,20 @@ fn start(d: &Value) -> (u64, u64) {
 
 /// (code, line, column, caret count) of every error `qxide check` prints, 1-based as printed.
 fn check_locations(src: &str) -> Vec<(String, u64, u64, Option<u64>)> {
-    let Err(lang::Failure(out)) = lang::check("t.qx", src) else {
-        return Vec::new();
+    // The errors, then the `Q0801` warnings: the order of the editor's diagnostics.
+    let mut out = match lang::check("t.qx", src) {
+        Err(lang::Failure(out)) => out,
+        Ok(()) => String::new(),
     };
+    out.push_str(&lang::take_warnings());
     let lines: Vec<&str> = out.lines().collect();
     let mut found = Vec::new();
     for (i, l) in lines.iter().enumerate() {
-        let Some(code) = l.strip_prefix("error[").and_then(|r| r.get(..5)) else {
+        let code = l
+            .strip_prefix("error[")
+            .or_else(|| l.strip_prefix("warning["))
+            .and_then(|r| r.get(..5));
+        let Some(code) = code else {
             continue;
         };
         // The closing Q0418 summary of a capped report has no location.
@@ -248,7 +255,9 @@ fn diagnostics_match_check_for_every_catalog_example() {
             for (d, (code, line, col, carets)) in lsp.iter().zip(&want) {
                 assert_eq!(d["code"], code.as_str(), "{src}");
                 assert_eq!(d["source"], "qxide");
-                assert_eq!(d["severity"], 1);
+                // 2 (warning) for `Q08xx`, 1 (error) otherwise.
+                let severity = if code.starts_with("Q08") { 2 } else { 1 };
+                assert_eq!(d["severity"], severity, "{code}");
                 assert_eq!(start(d), (line - 1, col - 1), "{code} in\n{src}");
                 let end = &d["range"]["end"];
                 if end["line"].as_u64() == Some(line - 1) {
@@ -485,14 +494,23 @@ fn completion_offers_names_in_scope_keywords_and_builtins() {
     c.change(URI, 4, "import x");
     assert!(labels(&c.at("textDocument/completion", URI, l, ch)).is_empty());
 
-    // After `.`: the BitReg methods.
+    // After `.`: the built-in methods (camelCase names only), `BitReg` first.
     let dotted = "void main() {\n    QReg r = qreg(2);\n    BitReg m = measure(r);\n    println(\"{}\", m.);\n}\n";
     c.change(URI, 3, dotted);
     let (l, ch) = pos_of(dotted, "m.)", 0, 2);
-    assert_eq!(
-        labels(&c.at("textDocument/completion", URI, l, ch)),
-        ["as_int", "to_binary"]
-    );
+    let got = labels(&c.at("textDocument/completion", URI, l, ch));
+    assert_eq!(got[..2], ["asInt", "toBinary"]);
+    for m in [
+        "indexOf",
+        "toUpperCase",
+        "tryParseInt",
+        "nextBoolean",
+        "getOrDefault",
+        "orElse",
+    ] {
+        assert!(got.iter().any(|g| g == m), "{m}: {got:?}");
+    }
+    assert!(got.iter().all(|g| !g.contains('_')), "{got:?}");
     c.shutdown();
 }
 

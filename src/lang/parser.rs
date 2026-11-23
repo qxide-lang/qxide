@@ -696,6 +696,7 @@ impl Parser {
             implements,
             variants,
             methods,
+            prelude: false,
         })
     }
 
@@ -1225,7 +1226,7 @@ impl Parser {
                     span,
                 };
             } else if self.eat(&Tok::Dot) {
-                // `r.as_int()`, or a call through a module alias: `fs.read_text(path)`.
+                // `r.asInt()`, or a call through a module alias: `fs.readString(path)`.
                 let name = self.ident()?;
                 // `p.x`: a field.
                 if self.peek() != &Tok::LParen {
@@ -1479,7 +1480,7 @@ mod tests {
     #[test]
     fn java_style_declarations_and_methods() {
         let p = parse_src(
-            "void main() { final double t = 0.5; Qubit q = qubit(); BitReg m = measure(qreg(2)); println(\"{}\", m.as_int()); }",
+            "void main() { final double t = 0.5; Qubit q = qubit(); BitReg m = measure(qreg(2)); println(\"{}\", m.asInt()); }",
         )
         .unwrap();
         let f = &p.fns[0];
@@ -1505,7 +1506,7 @@ mod tests {
         let ExprKind::Call { args, .. } = &call.kind else {
             panic!()
         };
-        assert!(matches!(&args[1].kind, ExprKind::Method { name, .. } if name.name == "as_int"));
+        assert!(matches!(&args[1].kind, ExprKind::Method { name, .. } if name.name == "asInt"));
     }
 
     #[test]

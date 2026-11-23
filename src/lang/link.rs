@@ -223,7 +223,7 @@ fn extern_errors(p: &Program, perms: &Permissions, entry: bool) -> Vec<Diagnosti
     errors
 }
 
-// Adds the prelude types the program's files mention (`try_parse_int` returns a `Result`) and do
+// Adds the prelude types the program's files mention (`tryParseInt` returns a `Result`) and do
 // not declare themselves: a program-wide `Result` or `Option` replaces the prelude's. Programs
 // that mention neither are unchanged.
 fn add_prelude(map: &mut SourceMap, p: &mut Program) {
@@ -236,7 +236,7 @@ fn add_prelude(map: &mut SourceMap, p: &mut Program) {
         .filter(|n| !declared(p, n))
         .filter(|n| {
             map.mentions(n)
-                || (*n == "Result" && map.mentions("try_parse_"))
+                || (*n == "Result" && (map.mentions("tryParse") || map.mentions("try_parse_")))
                 // `get`, `pop` and `remove` of `List` and `Map` return an `Option`.
                 || (*n == "Option" && (map.mentions("List") || map.mentions("Map")))
         })
@@ -252,7 +252,8 @@ fn add_prelude(map: &mut SourceMap, p: &mut Program) {
         prelude
             .enums
             .into_iter()
-            .filter(|e| wanted.contains(&e.name.name.as_str())),
+            .filter(|e| wanted.contains(&e.name.name.as_str()))
+            .map(|e| EnumDecl { prelude: true, ..e }),
     );
 }
 
@@ -384,7 +385,7 @@ impl Linker<'_> {
         d.notes = notes;
     }
 
-    // `import std.fs;` (a module alias), `import std.fs.read_text;` or `import std.fs.*;`:
+    // `import std.fs;` (a module alias), `import std.fs.readString;` or `import std.fs.*;`:
     // checks that the module exists and that this host and the importing package may use it.
     fn std_import(&mut self, m: usize, i: usize, imp: &Import) -> Option<(usize, Vec<String>)> {
         let (module, alias) = match (imp.module.len(), &imp.item) {
@@ -794,7 +795,7 @@ impl Linker<'_> {
                 self.rewrite_expr(scope, index);
             }
             ExprKind::Method { recv, name, args } => {
-                // `fs.read_text(p)` through a module alias becomes a call of `std.fs.read_text`.
+                // `fs.readString(p)` through a module alias becomes a call of `std.fs.readString`.
                 let target = match &recv.kind {
                     ExprKind::Var(a) => scope.aliases.get(a).copied(),
                     _ => None,

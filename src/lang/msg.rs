@@ -74,6 +74,10 @@ pub fn unknown_fn(name: &str) -> String {
     format!("cannot find function `{name}` in this scope")
 }
 
+pub fn deprecated_name(old: &str, new: &str) -> String {
+    format!("deprecated name `{old}`; use `{new}` instead")
+}
+
 pub fn arity(name: &str, want: usize, got: usize) -> String {
     format!("function `{name}` takes {want} argument(s) but {got} were supplied")
 }
@@ -283,7 +287,7 @@ pub fn empty_separator() -> String {
 }
 
 pub fn random_bound(bound: i64) -> String {
-    format!("invalid bound for `next_int`: bound must be positive, got {bound}")
+    format!("invalid bound for `nextInt`: bound must be positive, got {bound}")
 }
 
 pub fn map_key(ty: &str) -> String {
@@ -472,7 +476,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::SimWorkLimit => "use fewer shots, qubits or operations, or run `qxide qasm` to export the circuit without simulating it".into(),
         Code::TooManyDiagnostics => "fix the errors shown first, then run the command again to see the rest".into(),
         Code::RemovedSyntax => "declare variables like `int x = 1;` or `Qubit q = qubit();`, functions like `void main()` or `int add(int a, int b)`, and use `final` for constants".into(),
-        Code::UnknownMethod => "use `to_binary()` or `as_int()`, the available methods on `BitReg` values".into(),
+        Code::UnknownMethod => "use `toBinary()` or `asInt()`, the available methods on `BitReg` values".into(),
         Code::VarNotAllowed => "write the type explicitly, such as `int n` or `double theta`".into(),
         Code::TypeNameAsIdent => "choose a different name".into(),
         Code::ConsumeNonQuantum => "remove `consume`; classical values are always copied".into(),
@@ -481,7 +485,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::BorrowedConsume => "add `consume` before the parameter type, such as `void f(consume Qubit q)`, to take ownership and become responsible for measuring or discarding it".into(),
         Code::ConditionalCall => "a function called inside an `if` on a measurement result may only apply gates and `reset` to borrowed qubits, so it cannot allocate, measure, discard, print, take a `consume` parameter, or return a qubit; call it before or after the `if`".into(),
         Code::NonFiniteAngle => "check the arithmetic computing the angle, such as division by zero".into(),
-        Code::AsIntTooWide => "print it with `to_binary()` or as an array using a plain placeholder instead".into(),
+        Code::AsIntTooWide => "print it with `toBinary()` or as an array using a plain placeholder instead".into(),
         Code::UnknownPackage => "declare the dependency by running `qxide add <package>`, which edits `qxide.toml`".into(),
         Code::PrivateFunction => "add `public` before the function declaration, e.g. `public void prepare(Qubit q)`".into(),
         Code::ImportCycle => "move the shared functions into a separate module that both modules import".into(),
@@ -503,6 +507,7 @@ pub fn help(code: Code) -> Option<String> {
         Code::BadAppConfig => "see the `[app]` section reference in `docs/design/qx-app.md`".into(),
         Code::BadExtern => "declare native functions with `int` and `double` parameters only, such as `extern \"m\" double pow(double x, double y);`".into(),
         Code::Ffi => "check the library name and that it exports the function; a bare name is searched only in the system directories, so give a path for any other library".into(),
+        Code::Deprecated => "rename the call to the camelCase name above; run `qxide explain Q0801` to list all renamed names".into(),
         _ => return None,
     })
 }
@@ -528,7 +533,7 @@ pub fn non_finite_angle(gate: &str, value: f64) -> String {
 }
 
 pub fn as_int_too_wide(len: usize) -> String {
-    format!("method `as_int()` supports at most 64 bits, but the register has {len}")
+    format!("method `asInt()` supports at most 64 bits, but the register has {len}")
 }
 
 pub fn var_not_allowed() -> String {
@@ -736,7 +741,7 @@ pub fn ffi_symbol(file: &str, sym: &str) -> String {
 }
 
 pub fn std_sleep_range(ms: i64, max: i64) -> String {
-    format!("duration {ms} ms for `sleep_millis` is outside the allowed range 0 to {max}")
+    format!("duration {ms} ms for `sleep` is outside the allowed range 0 to {max}")
 }
 
 pub fn std_io(path: &str, err: &str) -> String {
@@ -872,7 +877,7 @@ pub fn bad_app_config(reason: &str) -> String {
 }
 
 pub fn std_size_range(width: i64, height: i64) -> String {
-    format!("invalid window size {width}x{height} in `std.app.set_size`: each side must be between 200 and 8192 pixels")
+    format!("invalid window size {width}x{height} in `std.app.setSize`: each side must be between 200 and 8192 pixels")
 }
 
 pub fn type_args_count(ty: &str, want: usize, got: usize) -> String {

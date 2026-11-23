@@ -84,9 +84,9 @@ impl Host for AppStd {
     fn call(&mut self, module: &str, function: &str, args: Vec<HostValue>) -> StdResult {
         Ok(match (module, function) {
             ("qxide", f) => return studio::call(f, &args, &|| false),
-            ("fs", "read_text") => HostValue::Str(self.file.clone()),
+            ("fs", "readString") => HostValue::Str(self.file.clone()),
             ("fs", "exists") => HostValue::Bool(true),
-            ("time", "now_iso") => HostValue::Str("2026-11-21T00:00:00.000Z".into()),
+            ("time", "nowIso") => HostValue::Str("2026-11-21T00:00:00.000Z".into()),
             _ => HostValue::Unit,
         })
     }

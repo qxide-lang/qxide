@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::msg;
+use super::names;
 use super::native;
 use super::pure;
 
@@ -101,6 +102,11 @@ pub struct Inferred {
     pub types: HashMap<(usize, usize), Ty>,
     pub calls: HashMap<(usize, usize), Vec<Ty>>,
     pub methods: HashMap<(usize, usize), MethodCall>,
+    /// Calls and method calls written with a deprecated alias (src/lang/names.rs): the span of
+    /// the called name and its canonical name, for `names::rename`.
+    pub renames: HashMap<(usize, usize), String>,
+    /// `Q0801` warnings for those aliases, one per call site.
+    pub warnings: Vec<Diagnostic>,
 }
 
 fn key(s: Span) -> (usize, usize) {
@@ -296,7 +302,7 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
         ExprKind::Method { recv, args, name } => {
             // `List`, `Map` and `Random` are shared references: a method that changes one may
             // change the caller's data (any method of such a name counts, as types are unknown).
-            if native::MUTATORS.contains(&name.name.as_str()) && out.op.is_none() {
+            if native::is_mutator(&name.name) && out.op.is_none() {
                 out.op = Some((e.span, format!("x.{}(...)", name.name)));
             }
             // Resolved per method name by `conditional_safety`: the call may run any method
@@ -375,6 +381,8 @@ struct Checker {
     scopes: Vec<Vec<usize>>,
     // Condition spans of the enclosing `if`-on-`Bit` statements.
     bit_ifs: Vec<Span>,
+    // The prelude's `Result` and `Option` (not a program's own types of those names).
+    prelude: HashSet<Ty>,
     // Collections of `for x in xs` loops already reported as not iterable (by span start).
     for_each_bad: HashSet<usize>,
     // Qubits lent to calls whose arguments are still being checked, as (variable, use site).
@@ -402,6 +410,12 @@ pub fn type_cycles(p: &Program) -> Vec<Diagnostic> {
 /// Checks the program and returns what inference chose for its generic code.
 pub fn check_infer(p: &Program, require_main: bool) -> (Vec<Diagnostic>, Inferred) {
     let mut c = Checker::new();
+    c.prelude = p
+        .enums
+        .iter()
+        .filter(|e| e.prelude)
+        .map(|e| Ty::enum_named(&e.name.name))
+        .collect();
     c.struct_decls(p);
     c.signatures(p, require_main);
     c.conformance(p);
@@ -431,6 +445,7 @@ impl Checker {
             vars: Vec::new(),
             scopes: Vec::new(),
             bit_ifs: Vec::new(),
+            prelude: HashSet::new(),
             for_each_bad: HashSet::new(),
             held: Vec::new(),
             loops: Vec::new(),
@@ -442,6 +457,25 @@ impl Checker {
     fn err(&mut self, code: Code, span: Span, message: String) -> &mut Diagnostic {
         self.errors.push(Diagnostic::new(code, span, message));
         self.errors.last_mut().unwrap()
+    }
+
+    // `name` is a deprecated alias of `new` (`qualified` for a standard function): warns once
+    // per call site and returns the name to check the call as.
+    fn deprecated(&mut self, name: &Ident, new: &str, qualified: Option<String>) -> Ident {
+        let k = key(name.span);
+        let target = qualified.unwrap_or_else(|| new.to_string());
+        if self.inferred.renames.insert(k, target).is_none() {
+            let old = name.name.rsplit('.').next().unwrap_or(&name.name);
+            self.inferred.warnings.push(Diagnostic::new(
+                Code::Deprecated,
+                name.span,
+                msg::deprecated_name(old, new),
+            ));
+        }
+        Ident {
+            name: new.to_string(),
+            span: name.span,
+        }
     }
 
     // Struct names are unique, fields are unique and of build-time classical types, and no
@@ -1869,9 +1903,15 @@ impl Checker {
                     }
                     return Ty::Error;
                 }
-                match (t, name.name.as_str()) {
-                    (Ty::BitReg, "as_int") => Ty::ShotInt,
-                    (Ty::BitReg, "to_binary") => Ty::ShotBinary,
+                let mut m = name.name.clone();
+                if t == Ty::BitReg {
+                    if let Some(new) = names::canonical("BitReg", &m) {
+                        m = self.deprecated(name, new, None).name;
+                    }
+                }
+                match (t, m.as_str()) {
+                    (Ty::BitReg, "asInt") => Ty::ShotInt,
+                    (Ty::BitReg, "toBinary") => Ty::ShotBinary,
                     (Ty::Error, _) => Ty::Error,
                     _ => {
                         self.err(
@@ -2734,8 +2774,15 @@ impl Checker {
         ty
     }
 
-    // `xs.add(1)`, `m.get("a")`, `rng.next_int(6)`: methods of the built-in types.
+    // `xs.add(1)`, `m.get("a")`, `rng.nextInt(6)`: methods of the built-in types.
     fn native_method(&mut self, t: Ty, name: &Ident, args: &[Expr], span: Span) -> Ty {
+        if native::method_sig(t, &name.name).is_none() {
+            let alias = native::kind(t).and_then(|(base, _)| names::canonical(base, &name.name));
+            if let Some(new) = alias {
+                let id = self.deprecated(name, new, None);
+                return self.native_method(t, &id, args, span);
+            }
+        }
         let sig = native::method_sig(t, &name.name);
         let Some((params, ret, mutates)) = sig.clone().filter(|(p, _, _)| p.len() == args.len())
         else {
@@ -2792,6 +2839,12 @@ impl Checker {
 
     // `s.substring(0, 3)` and the other methods of `String` (src/lang/pure.rs).
     fn string_method(&mut self, name: &Ident, args: &[Expr], span: Span) -> Ty {
+        if pure::string_method(&name.name).is_none() {
+            if let Some(new) = names::canonical("String", &name.name) {
+                let id = self.deprecated(name, new, None);
+                return self.string_method(&id, args, span);
+            }
+        }
         let sig = pure::string_method(&name.name);
         let Some((_, params, ret)) = sig.clone().filter(|(_, p, _)| p.len() == args.len()) else {
             match sig {
@@ -2819,7 +2872,7 @@ impl Checker {
             let found = self.expr(a);
             self.expect_ty(a.span, *want, found);
         }
-        // `try_parse_int` returns the prelude `Result`; a program's own `Result` replaces it.
+        // `tryParseInt` returns the prelude `Result`; a program's own `Result` replaces it.
         if let Some(ok) = pure::try_parse_ok(&name.name) {
             let shaped = self
                 .try_shape(ret)
@@ -2870,6 +2923,12 @@ impl Checker {
     fn user_method(&mut self, t: Ty, at: Span, name: &Ident, args: &[Expr], span: Span) -> Ty {
         let base = t.generic_args().map_or(t, |(b, _)| b);
         let fname = format!("{}.{}", base.name(), name.name);
+        if !self.fns.contains_key(&fname) && self.prelude.contains(&base) {
+            if let Some(new) = names::canonical(base.name(), &name.name) {
+                let id = self.deprecated(name, new, None);
+                return self.user_method(t, at, &id, args, span);
+            }
+        }
         let Some(sig) = self.fns.get(&fname) else {
             self.err(
                 Code::UnknownMethod,
@@ -2943,6 +3002,13 @@ impl Checker {
         let n = name.name.as_str();
         if BUILTINS.contains(&n) {
             return self.builtin(name, args, span);
+        }
+        // Old names of standard functions are declared as stubs too (`names::std_alias_stubs`).
+        if n.starts_with("std.") {
+            if let Some(new) = names::canonical_std(n) {
+                let short = new.rsplit('.').next().unwrap_or_default().to_string();
+                self.deprecated(name, &short, Some(new));
+            }
         }
         let Some(sig) = self.fns.get(n) else {
             self.err(Code::UnknownFn, name.span, msg::unknown_fn(n));

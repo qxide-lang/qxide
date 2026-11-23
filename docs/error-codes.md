@@ -689,7 +689,7 @@ No action is needed on current compiler versions because `Q0219` is no longer pr
 
 ## Q0220: unknown method on a type
 
-This error occurs when a method call names a method that does not exist on the receiver's type. In `.qx`, only `to_binary()` and `as_int()` are supported as methods on `BitReg` values. Checking method names at compile time ensures that every call refers to an operation actually defined for that type.
+This error occurs when a method call names a method that does not exist on the receiver's type. In `.qx`, only `toBinary()` and `asInt()` are supported as methods on `BitReg` values. Checking method names at compile time ensures that every call refers to an operation actually defined for that type.
 
 Erroneous code example:
 
@@ -701,13 +701,13 @@ void main() {
 }
 ```
 
-To fix it, replace the unknown `as_string()` call on `b` with `to_binary()`, one of the two methods available on `BitReg` values alongside `as_int()`.
+To fix it, replace the unknown `as_string()` call on `b` with `toBinary()`, one of the two methods available on `BitReg` values alongside `asInt()`.
 
 ```qx
 void main() {
     QReg r = qreg(2);
     BitReg b = measure(r);
-    println("{}", b.to_binary());
+    println("{}", b.toBinary());
 }
 ```
 
@@ -1032,13 +1032,13 @@ void main() {
 
 ## Q0231: invalid use of the `?` operator
 
-The postfix `?` operator was applied to a value that does not support it, used in a function whose return type cannot carry the early return, or paired with a user-defined `Result` type that conflicts with `try_parse_int` or `try_parse_double`. In `.qx`, `?` works only on the prelude types `Result<T, E>` and `Option<T>`: on `Ok(v)` or `Some(v)` it evaluates to `v`, and on `Err(e)` or `None` it returns early from the enclosing function with `Result.Err(e)` or `Option.None` of the function's own return type. Because the early return must fit the enclosing signature without implicit error conversion, a `Result` operand requires a function returning a `Result` with the exact same error type `E` (the success types may differ), an `Option` operand requires a function returning an `Option`, and `void` functions—including `main`—never qualify. This code is also reported when calling `try_parse_int` or `try_parse_double` in a program that declares its own `Result` type with a different shape, since those `String` methods return the prelude `Result<int, String>` and `Result<double, String>`. Like `return`, `?` may not leave an owned qubit unmeasured (which is `Q0302`) and is not allowed inside an `if` on a measurement result (`Q0308`).
+The postfix `?` operator was applied to a value that does not support it, used in a function whose return type cannot carry the early return, or paired with a user-defined `Result` type that conflicts with `tryParseInt` or `tryParseDouble`. In `.qx`, `?` works only on the prelude types `Result<T, E>` and `Option<T>`: on `Ok(v)` or `Some(v)` it evaluates to `v`, and on `Err(e)` or `None` it returns early from the enclosing function with `Result.Err(e)` or `Option.None` of the function's own return type. Because the early return must fit the enclosing signature without implicit error conversion, a `Result` operand requires a function returning a `Result` with the exact same error type `E` (the success types may differ), an `Option` operand requires a function returning an `Option`, and `void` functions—including `main`—never qualify. This code is also reported when calling `tryParseInt` or `tryParseDouble` in a program that declares its own `Result` type with a different shape, since those `String` methods return the prelude `Result<int, String>` and `Result<double, String>`. Like `return`, `?` may not leave an owned qubit unmeasured (which is `Q0302`) and is not allowed inside an `if` on a measurement result (`Q0308`).
 
 Erroneous code example:
 
 ```qx
 void main() {
-    int n = "42".try_parse_int()?;  // error[Q0231]
+    int n = "42".tryParseInt()?;  // error[Q0231]
     println("{}", n);
 }
 ```
@@ -1047,7 +1047,7 @@ To fix it, handle the `Result` with `match` directly in `main` (since `main` ret
 
 ```qx
 Result<int, String> doubled(String s) {
-    int n = s.try_parse_int()?;
+    int n = s.tryParseInt()?;
     return Result.Ok(n * 2);
 }
 
@@ -1722,9 +1722,9 @@ void main() {
 }
 ```
 
-## Q0410: calling `as_int()` on a register exceeding 64 bits
+## Q0410: calling `asInt()` on a register exceeding 64 bits
 
-This error occurs when `as_int()` is called on a `BitReg` with more than 64 bits. The `as_int()` method supports at most 64 bits because a wider register cannot fit into a 64-bit integer. Any call to `as_int()` on a register exceeding 64 bits is rejected with `Q0410`.
+This error occurs when `asInt()` is called on a `BitReg` with more than 64 bits. The `asInt()` method supports at most 64 bits because a wider register cannot fit into a 64-bit integer. Any call to `asInt()` on a register exceeding 64 bits is rejected with `Q0410`.
 
 Erroneous code example:
 
@@ -1732,17 +1732,17 @@ Erroneous code example:
 void main() {
     QReg r = qreg(65);
     BitReg b = measure(r);
-    println("{}", b.as_int());  // error[Q0410]
+    println("{}", b.asInt());  // error[Q0410]
 }
 ```
 
-To fix it, keep the register at 64 bits or fewer, as in `qreg(64)`, so `as_int()` can convert the resulting `BitReg`. If you need a register wider than 64 bits, print it with `to_binary()` or as an array using a plain placeholder instead.
+To fix it, keep the register at 64 bits or fewer, as in `qreg(64)`, so `asInt()` can convert the resulting `BitReg`. If you need a register wider than 64 bits, print it with `toBinary()` or as an array using a plain placeholder instead.
 
 ```qx
 void main() {
     QReg r = qreg(64);
     BitReg b = measure(r);
-    println("{}", b.as_int());
+    println("{}", b.asInt());
 }
 ```
 
@@ -1962,14 +1962,14 @@ void main() {
 
 ## Q0419: text is not a valid number
 
-The `String` method `parse_int()` or `parse_double()` was called on text that is not a valid number of that type. This is a runtime error raised while the program runs rather than by `qxide check`. Leading and trailing whitespace is ignored; `parse_int()` accepts an optional sign and decimal digits that fit in a 64-bit `int`, while `parse_double()` also accepts a fraction and an exponent such as `2.5e3`. Because the language has no recoverable errors yet, the program stops when parsing fails, so check the text first (for example with `contains` or `length`) when it may not be a number.
+The `String` method `parseInt()` or `parseDouble()` was called on text that is not a valid number of that type. This is a runtime error raised while the program runs rather than by `qxide check`. Leading and trailing whitespace is ignored; `parseInt()` accepts an optional sign and decimal digits that fit in a 64-bit `int`, while `parseDouble()` also accepts a fraction and an exponent such as `2.5e3`. Because the language has no recoverable errors yet, the program stops when parsing fails, so check the text first (for example with `contains` or `length`) when it may not be a number.
 
 Erroneous code example:
 
 ```qx
 void main() {
     String s = "42 apples";
-    int n = s.parse_int();  // error[Q0419]
+    int n = s.parseInt();  // error[Q0419]
     println("{}", n);
 }
 ```
@@ -1979,7 +1979,7 @@ To fix it, parse only the part of the text that holds the number, here the first
 ```qx
 void main() {
     String s = "42 apples";
-    int n = s.substring(0, 2).parse_int();
+    int n = s.substring(0, 2).parseInt();
     println("{}", n);
 }
 ```
@@ -2375,7 +2375,7 @@ Check the spelling against `qxide.toml`. Package names use hyphens, whereas `.qx
 
 ## Q0701: unknown standard library module or function
 
-The program imports a `std` module that does not exist or calls a function that the module does not define, such as `fs.read(...)` instead of `fs.read_text(...)`. Qxide validates standard library imports and member calls at compile time so typos and nonexistent APIs fail before execution. The available standard library modules are `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`.
+The program imports a `std` module that does not exist or calls a function that the module does not define, such as `fs.read(...)` instead of `fs.readString(...)`. Qxide validates standard library imports and member calls at compile time so typos and nonexistent APIs fail before execution. The available standard library modules are `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`.
 
 Erroneous code example:
 
@@ -2407,7 +2407,7 @@ Erroneous code example:
 import std.app;  // error[Q0702]
 
 void main() {
-    app.set_title("Bell lab");
+    app.setTitle("Bell lab");
 }
 ```
 
@@ -2432,7 +2432,7 @@ Erroneous code example:
 import std.fs;  // error[Q0703]
 
 void main() {
-    fs.write_text("note.txt", "hello");
+    fs.writeString("note.txt", "hello");
 }
 ```
 
@@ -2444,7 +2444,7 @@ To fix it, grant the required permission via the CLI flag or `qxide.toml` as sho
 import std.fs;
 
 void main() {
-    fs.write_text("note.txt", "hello");
+    fs.writeString("note.txt", "hello");
 }
 ```
 
@@ -2456,7 +2456,7 @@ Erroneous code example:
 
 ```java
 // qxide run --allow fs read.qx   (data/missing.txt does not exist)
-String text = fs.read_text("missing.txt");  // error[Q0704]
+String text = fs.readString("missing.txt");  // error[Q0704]
 ```
 
 To fix it, check whether the file exists with `fs.exists` before reading it.
@@ -2464,7 +2464,7 @@ To fix it, check whether the file exists with `fs.exists` before reading it.
 ```java
 String text = "";
 if (fs.exists("missing.txt")) {
-    text = fs.read_text("missing.txt");
+    text = fs.readString("missing.txt");
 }
 ```
 
@@ -2475,22 +2475,22 @@ A path passed to `std.fs` is not a valid relative path inside the sandboxed data
 Erroneous code example:
 
 ```java
-fs.write_text("../secrets.txt", "x");  // error[Q0705]
+fs.writeString("../secrets.txt", "x");  // error[Q0705]
 ```
 
 To fix it, use a relative path that stays inside the data folder.
 
 ```java
-fs.write_text("notes/secrets.txt", "x");
+fs.writeString("notes/secrets.txt", "x");
 ```
 
 ## Q0706: standard function argument out of range
 
-A standard library function received an argument outside its allowed range, such as passing a negative duration or a value greater than 60000 milliseconds to `time.sleep_millis`. Enforcing argument bounds prevents invalid runtime operations and protects execution from unbounded waits or resource exhaustion.
+A standard library function received an argument outside its allowed range, such as passing a negative duration or a value greater than 60000 milliseconds to `time.sleep`. Enforcing argument bounds prevents invalid runtime operations and protects execution from unbounded waits or resource exhaustion.
 
 This error is also reported when `int main()` returns a value outside `0..=255`. Portable process exit codes are restricted to the range `0..=255`, so returning a negative number or a value above `255` fails at run time with exit code 1 instead of being truncated silently.
 
-This run-time error is also reported for `String.split("")` when given an empty separator (use `chars()` to split a string into individual characters) and for `Random.next_int(bound)` when the bound is zero or less.
+This run-time error is also reported for `String.split("")` when given an empty separator (use `chars()` to split a string into individual characters) and for `Random.nextInt(bound)` when the bound is zero or less.
 
 Erroneous code example:
 
@@ -2498,7 +2498,7 @@ Erroneous code example:
 import std.time;
 
 void main() {
-    time.sleep_millis(120000);  // error[Q0706]
+    time.sleep(120000);  // error[Q0706]
 }
 ```
 
@@ -2508,7 +2508,7 @@ To fix it, pass a value that falls within the function's allowed range.
 import std.time;
 
 void main() {
-    time.sleep_millis(10);
+    time.sleep(10);
 }
 ```
 
@@ -2598,7 +2598,7 @@ await qxide.invoke("save_result", { text: "00=493 11=507" });
 
 ## Q0713: call cancelled
 
-An in-flight call was cancelled through its `AbortSignal` or because the window closed. The runtime checks for cancellation between shots, inside `time.sleep_millis`, and during elaboration so aborted calls stop promptly rather than continuing to consume resources. Nothing is wrong with the program itself; the runtime is reporting that execution was stopped externally.
+An in-flight call was cancelled through its `AbortSignal` or because the window closed. The runtime checks for cancellation between shots, inside `time.sleep`, and during elaboration so aborted calls stop promptly rather than continuing to consume resources. Nothing is wrong with the program itself; the runtime is reporting that execution was stopped externally.
 
 Erroneous code example:
 
@@ -2688,3 +2688,79 @@ To fix it, check the library name and the exact name the library exports.
 ```java
 extern "ucrtbase" double cos(double x);
 ```
+
+## Q0801: deprecated snake_case built-in name
+
+`Q0801` is the first warning code; warnings are printed as `warning[Q0801]` on stderr and never change a program's output or exit code. Starting with this release, built-in methods and standard-library functions use Java-style camelCase names (`indexOf`, `toUpperCase`, `parseInt`), while the old snake_case names (`index_of`, `to_upper`, `parse_int`) remain accepted for one release as deprecated aliases and will be removed after that. Only built-in names are aliased—methods of `String`, `BitReg`, `List`, `Map`, and `Random` values, methods of the prelude's `Result` and `Option`, and `std` module functions—so a program's own functions and methods with such names are unaffected. The language server shows the same warning.
+
+Erroneous code example:
+
+```qx
+void main() {
+    println("{}", "qubit".to_upper());  // warning[Q0801]: `to_upper` is now `toUpperCase`
+}
+```
+
+To fix it, call the camelCase name instead; the table below lists every renamed method and function.
+
+```qx
+void main() {
+    println("{}", "qubit".toUpperCase());
+}
+```
+
+The table below lists every renamed name by its owner type or `std` module, old name, new name, and matching Java standard name (`-` marks a name that follows Java's camelCase convention without an exact Java counterpart).
+
+| Owner | Old name | New name | Java counterpart |
+| --- | --- | --- | --- |
+| `String` | `char_at` | `charAt` | `String.charAt` |
+| `String` | `index_of` | `indexOf` | `String.indexOf` |
+| `String` | `starts_with` | `startsWith` | `String.startsWith` |
+| `String` | `ends_with` | `endsWith` | `String.endsWith` |
+| `String` | `to_upper` | `toUpperCase` | `String.toUpperCase` |
+| `String` | `to_lower` | `toLowerCase` | `String.toLowerCase` |
+| `String` | `parse_int` | `parseInt` | `Integer.parseInt` |
+| `String` | `parse_double` | `parseDouble` | `Double.parseDouble` |
+| `String` | `try_parse_int` | `tryParseInt` | - |
+| `String` | `try_parse_double` | `tryParseDouble` | - |
+| `String` | `split_whitespace` | `splitWhitespace` | - |
+| `BitReg` | `as_int` | `asInt` | - |
+| `BitReg` | `to_binary` | `toBinary` | - |
+| `List` | `remove_at` | `removeAt` | - |
+| `List` | `is_empty` | `isEmpty` | `List.isEmpty` |
+| `List` | `to_array` | `toArray` | `List.toArray` |
+| `Map` | `get_or` | `getOrDefault` | `Map.getOrDefault` |
+| `Map` | `contains_key` | `containsKey` | `Map.containsKey` |
+| `Map` | `is_empty` | `isEmpty` | `Map.isEmpty` |
+| `Random` | `next_int` | `nextInt` | `Random.nextInt` |
+| `Random` | `next_double` | `nextDouble` | `Random.nextDouble` |
+| `Random` | `next_bool` | `nextBoolean` | `Random.nextBoolean` |
+| `Result` | `is_ok` | `isOk` | - |
+| `Result` | `is_err` | `isErr` | - |
+| `Result` | `unwrap_or` | `orElse` | - |
+| `Option` | `is_some` | `isPresent` | `Optional.isPresent` |
+| `Option` | `is_none` | `isEmpty` | `Optional.isEmpty` |
+| `Option` | `unwrap_or` | `orElse` | `Optional.orElse` |
+| `std.math` | `is_nan` | `isNaN` | `Double.isNaN` |
+| `std.math` | `is_finite` | `isFinite` | `Double.isFinite` |
+| `std.math` | `abs_int` | `absInt` | - |
+| `std.math` | `min_int` | `minInt` | - |
+| `std.math` | `max_int` | `maxInt` | - |
+| `std.math` | `pow_int` | `powInt` | - |
+| `std.math` | `wrapping_add` | `wrappingAdd` | - |
+| `std.math` | `wrapping_sub` | `wrappingSub` | - |
+| `std.math` | `wrapping_mul` | `wrappingMul` | - |
+| `std.time` | `now_millis` | `currentTimeMillis` | `System.currentTimeMillis` |
+| `std.time` | `now_iso` | `nowIso` | - |
+| `std.time` | `sleep_millis` | `sleep` | `Thread.sleep` |
+| `std.time` | `monotonic_millis` | `monotonicMillis` | - |
+| `std.io` | `write_line` | `writeLine` | - |
+| `std.io` | `write_err` | `writeErr` | - |
+| `std.io` | `write_err_line` | `writeErrLine` | - |
+| `std.io` | `read_line` | `readLine` | `BufferedReader.readLine` |
+| `std.io` | `read_all` | `readAll` | - |
+| `std.fs` | `read_text` | `readString` | `Files.readString` |
+| `std.fs` | `write_text` | `writeString` | `Files.writeString` |
+| `std.fs` | `append_text` | `appendString` | - |
+| `std.app` | `set_title` | `setTitle` | `Frame.setTitle` |
+| `std.app` | `set_size` | `setSize` | `Frame.setSize` |

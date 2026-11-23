@@ -13,7 +13,7 @@ use super::machine::{self, coerce, internal, Gate1, Machine, Rot, R};
 use super::stdlib::Host;
 use super::{msg, Limits};
 
-// How a `BitReg` is printed: `{}` gives an array, `.to_binary()` and `.as_int()` give numbers.
+// How a `BitReg` is printed: `{}` gives an array, `.toBinary()` and `.asInt()` give numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitsFmt {
     Array,
@@ -962,7 +962,7 @@ impl<'p> Interp<'p, '_> {
         self.m.one_qubit(c, g, i, span)
     }
 
-    // `std.fs.read_text(p)`: evaluates the arguments and lets the host run the effect.
+    // `std.fs.readString(p)`: evaluates the arguments and lets the host run the effect.
     fn std_call(
         &mut self,
         c: &mut Circuit,

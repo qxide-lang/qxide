@@ -280,7 +280,7 @@ fn a_job_runs_end_to_end_against_the_fake_service() {
 fn a_device_too_small_is_refused_before_submitting() {
     let program = tmp(
         "qpu_ten.qx",
-        "void main() {\n    QReg r = qreg(10);\n    x(r[0]);\n    BitReg m = measure(r);\n    println(\"{}\", m.as_int());\n}\n",
+        "void main() {\n    QReg r = qreg(10);\n    x(r[0]);\n    BitReg m = measure(r);\n    println(\"{}\", m.asInt());\n}\n",
     );
     let fake = ibm(fixture("results_10bit.json"), "Completed");
     let args = [
@@ -304,7 +304,7 @@ fn a_device_too_small_is_refused_before_submitting() {
 fn records_keep_their_bit_order() {
     let program = tmp(
         "qpu_ten_ok.qx",
-        "void main() {\n    QReg r = qreg(10);\n    x(r[0]);\n    BitReg m = measure(r);\n    println(\"{}\", m.as_int());\n}\n",
+        "void main() {\n    QReg r = qreg(10);\n    x(r[0]);\n    BitReg m = measure(r);\n    println(\"{}\", m.asInt());\n}\n",
     );
     let line12: Vec<String> = (0..11)
         .flat_map(|i| [format!("[{i}, {}]", i + 1), format!("[{}, {i}]", i + 1)])

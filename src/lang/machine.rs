@@ -639,7 +639,7 @@ impl<'h> Machine<'h> {
         host_value(v, at)
     }
 
-    // `std.fs.read_text(p)`: the arguments are evaluated; the host runs the effect.
+    // `std.fs.readString(p)`: the arguments are evaluated; the host runs the effect.
     pub fn std_call(&mut self, n: &str, vals: Vec<HostValue>, span: Span) -> R<Value> {
         let rest = n.strip_prefix("std.").ok_or_else(|| internal(span))?;
         let (module, function) = rest.split_once('.').ok_or_else(|| internal(span))?;
@@ -800,20 +800,20 @@ pub fn index(b: Value, i: i64, span: Span) -> R<Value> {
     }
 }
 
-/// `r.as_int()` and `r.to_binary()` on a measured register.
+/// `r.asInt()` and `r.toBinary()` on a measured register.
 pub fn method(v: Value, name: &str, span: Span) -> R<Value> {
     let Value::Bits(v) = v else {
         return Err(internal(span));
     };
     match name {
         // Printed as an unsigned integer with r[0] as the least significant bit.
-        "as_int" if v.len() > 64 => Err(Diagnostic::new(
+        "asInt" if v.len() > 64 => Err(Diagnostic::new(
             Code::AsIntTooWide,
             span,
             msg::as_int_too_wide(v.len()),
         )),
-        "as_int" => Ok(Value::ShotView(v, BitsFmt::Int)),
-        "to_binary" => Ok(Value::ShotView(v, BitsFmt::Binary)),
+        "asInt" => Ok(Value::ShotView(v, BitsFmt::Int)),
+        "toBinary" => Ok(Value::ShotView(v, BitsFmt::Binary)),
         _ => Err(internal(span)),
     }
 }

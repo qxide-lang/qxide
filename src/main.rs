@@ -529,7 +529,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                     lang::stdlib::Permissions::cli(allow_fs).with_ffi(allow_ffi)
                 }),
             };
-            match cmd.as_str() {
+            let result = match cmd.as_str() {
                 "check" => lang::check_input(&input).map(|()| {
                     let mut line = format!("{path}: ok");
                     line.push('\n');
@@ -553,7 +553,9 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                     lang::run_input_report(&input, shots, seed, &mut host)
                         .map(|r| (r.text, r.simulated, r.exit_code))
                 }
-            }
+            };
+            eprint!("{}", lang::take_warnings());
+            result
         });
     match worker.map(|h| h.join()) {
         Ok(Ok(Ok((out, simulated, code)))) => {
@@ -663,6 +665,7 @@ fn build_command(args: &[String]) -> ExitCode {
             perms: lang::stdlib::Permissions::cli(allow_fs).with_ffi(allow_ffi),
         };
         let checked = lang::check_input(&input);
+        eprint!("{}", lang::take_warnings());
         checked.map(|()| files.into_inner())
     });
     let files = match checked {

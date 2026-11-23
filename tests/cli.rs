@@ -716,7 +716,7 @@ fn qxide_io(args: &[&str], env: &[(&str, &str)], input: &str) -> std::process::O
 // reads the environment.
 #[test]
 fn process_io_args_stdin_env_and_exit_code() {
-    let src = "import std.io;\nimport std.env;\n\nint main(String[] args) {\n    println(\"deferred\");\n    io.write_line(\"args \" + len(args) + \" \" + args[1]);\n    String text = io.read_all();\n    io.write_line(\"read \" + text.trim());\n    io.write_line(env.get(\"QX_CLI_TEST\").unwrap_or(\"unset\"));\n    return 7;\n}\n";
+    let src = "import std.io;\nimport std.env;\n\nint main(String[] args) {\n    println(\"deferred\");\n    io.writeLine(\"args \" + len(args) + \" \" + args[1]);\n    String text = io.readAll();\n    io.writeLine(\"read \" + text.trim());\n    io.writeLine(env.get(\"QX_CLI_TEST\").orElse(\"unset\"));\n    return 7;\n}\n";
     let path = tmp_qx("process_io.qx", src);
     for engine in ["ast", "ir"] {
         let out = qxide_io(
@@ -879,7 +879,7 @@ fn build_writes_an_executable_that_runs_without_the_sources() {
     let dir = fresh_dir("build_basic");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
-    let src = "import std.io;\n\nint main(String[] args) {\n    println(\"deferred {}\", len(args));\n    String text = io.read_all();\n    io.write_line(\"read \" + text.trim());\n    for a in args {\n        io.write_line(a);\n    }\n    return 3;\n}\n";
+    let src = "import std.io;\n\nint main(String[] args) {\n    println(\"deferred {}\", len(args));\n    String text = io.readAll();\n    io.writeLine(\"read \" + text.trim());\n    for a in args {\n        io.writeLine(a);\n    }\n    return 3;\n}\n";
     let entry = dir.join("src/tool.qx");
     std::fs::write(&entry, src).unwrap();
     let entry_s = entry.to_str().unwrap();
@@ -1060,4 +1060,31 @@ fn extern_functions_need_allow_ffi() {
     let out = run_exe(&exe, &dir, &["x", "y"], "");
     assert_eq!(out.status.code(), Some(4), "{out:?}");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "1.0 2\n");
+}
+
+// Deprecated snake_case names still run: the warning goes to stderr, stdout and the exit code
+// are those of the canonical name.
+#[test]
+fn deprecated_names_warn_on_stderr_only() {
+    let old = tmp_qx(
+        "old_names.qx",
+        "void main() {\n    println(\"{}\", \"ab\".to_upper());\n}\n",
+    );
+    let new = tmp_qx(
+        "new_names.qx",
+        "void main() {\n    println(\"{}\", \"ab\".toUpperCase());\n}\n",
+    );
+    let (o, n) = (qxide(&["run", &old]), qxide(&["run", &new]));
+    assert!(o.status.success() && n.status.success());
+    assert_eq!(o.stdout, n.stdout);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("warning[Q0801]"), "{err}");
+    assert!(
+        n.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&n.stderr)
+    );
+    let checked = qxide(&["check", &old]);
+    assert!(checked.status.success());
+    assert!(String::from_utf8_lossy(&checked.stderr).contains("warning[Q0801]"));
 }

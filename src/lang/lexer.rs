@@ -471,7 +471,7 @@ mod tests {
         );
         let d = |v: f64| Tok::Double(v.to_bits());
         assert_eq!(
-            toks("0.5 1e3 2.5E-2 1..2 m.as_int"),
+            toks("0.5 1e3 2.5E-2 1..2 m.asInt"),
             vec![
                 d(0.5),
                 d(1000.0),
@@ -481,7 +481,7 @@ mod tests {
                 Tok::Int(2),
                 Tok::Ident("m".into()),
                 Tok::Dot,
-                Tok::Ident("as_int".into()),
+                Tok::Ident("asInt".into()),
                 Tok::Eof
             ]
         );

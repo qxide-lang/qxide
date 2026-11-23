@@ -306,7 +306,7 @@ impl Mono<'_> {
         let ExprKind::Method { recv, name, args } = &mut e.kind else {
             return Ok(());
         };
-        // `s.try_parse_int()` returns `Result<int, String>`, which no declaration names.
+        // `s.tryParseInt()` returns `Result<int, String>`, which no declaration names.
         if let Some(ok) = super::pure::try_parse_ok(&name.name) {
             self.need(super::pure::parse_result(ok), at)?;
         }

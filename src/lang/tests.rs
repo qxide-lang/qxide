@@ -155,14 +155,14 @@ impl Host for Term {
                 self.out.push_str(&text(0));
                 V::Unit
             }
-            ("io", "write_line") => {
+            ("io", "writeLine") => {
                 self.out.push_str(&text(0));
                 self.out.push('\n');
                 V::Unit
             }
-            ("io", "read_line") if self.input.is_empty() => V::Unit,
-            ("io", "read_line") => V::Str(self.input.remove(0)),
-            ("io", "read_all") => V::Str(std::mem::take(&mut self.input).join("\n")),
+            ("io", "readLine") if self.input.is_empty() => V::Unit,
+            ("io", "readLine") => V::Str(self.input.remove(0)),
+            ("io", "readAll") => V::Str(std::mem::take(&mut self.input).join("\n")),
             ("env", "get") => self
                 .env
                 .iter()
@@ -184,7 +184,7 @@ fn run_term(src: &str, term: &mut Term) -> Result<(u8, String), Vec<&'static str
 
 #[test]
 fn process_io_args_env_and_exit_code() {
-    let src = "import std.io;\nimport std.env;\n\nint main(String[] args) {\n    println(\"deferred\");\n    io.write(\"args \" + len(args));\n    io.write_line(\" first \" + args[0]);\n    int total = 0;\n    boolean more = true;\n    while more {\n        match io.read_line() {\n            Some(line) => {\n                total += line.parse_int();\n            }\n            None => {\n                more = false;\n            }\n        }\n    }\n    io.write_line(\"sum \" + total);\n    io.write_line(env.get(\"HOME\").unwrap_or(\"?\") + \" \" + env.get(\"NOPE\").unwrap_or(\"unset\"));\n    return total % 7;\n}\n";
+    let src = "import std.io;\nimport std.env;\n\nint main(String[] args) {\n    println(\"deferred\");\n    io.write(\"args \" + len(args));\n    io.writeLine(\" first \" + args[0]);\n    int total = 0;\n    boolean more = true;\n    while more {\n        match io.readLine() {\n            Some(line) => {\n                total += line.parseInt();\n            }\n            None => {\n                more = false;\n            }\n        }\n    }\n    io.writeLine(\"sum \" + total);\n    io.writeLine(env.get(\"HOME\").orElse(\"?\") + \" \" + env.get(\"NOPE\").orElse(\"unset\"));\n    return total % 7;\n}\n";
     let mut term = Term {
         args: vec!["a".into(), "b c".into()],
         input: vec!["4".into(), "5".into()],
@@ -195,7 +195,7 @@ fn process_io_args_env_and_exit_code() {
     assert_eq!(term.out, "args 2 first a\nsum 9\n/h unset\n");
     // `void main(String[] args)` on a host without arguments gets an empty array.
     let mut term = Term::default();
-    let none = "import std.io;\n\nvoid main(String[] args) {\n    io.write_line(\"n=\" + len(args) + \" \" + io.read_all().length());\n}\n";
+    let none = "import std.io;\n\nvoid main(String[] args) {\n    io.writeLine(\"n=\" + len(args) + \" \" + io.readAll().length());\n}\n";
     assert_eq!(run_term(none, &mut term), Ok((0, String::new())));
     assert_eq!(term.out, "n=0 0\n");
     // Exit codes are 0..=255.
@@ -205,7 +205,7 @@ fn process_io_args_env_and_exit_code() {
     assert_eq!(run_term(neg, &mut Term::default()), Err(vec!["Q0706"]));
     // Terminal effects are unconditional: not inside an `if` on a measured bit.
     assert_eq!(
-        codes_cli("import std.io;\n\nvoid main() {\n    Qubit q = qubit();\n    h(q);\n    Bit b = measure(q);\n    if b {\n        io.write_line(\"x\");\n    }\n}\n"),
+        codes_cli("import std.io;\n\nvoid main() {\n    Qubit q = qubit();\n    h(q);\n    Bit b = measure(q);\n    if b {\n        io.writeLine(\"x\");\n    }\n}\n"),
         ["Q0314"]
     );
 }
@@ -502,7 +502,7 @@ fn runtime_errors_have_positions() {
     );
     assert_eq!(
         runtime_error(&main_body(
-            "BitReg m = measure(qreg(65));\nprintln(\"{}\", m.as_int());"
+            "BitReg m = measure(qreg(65));\nprintln(\"{}\", m.asInt());"
         )),
         ("Q0410", 3, 15)
     );
@@ -545,11 +545,11 @@ fn remainder_of_min_by_minus_one_is_zero() {
     );
 }
 
-// `[0, 1, 1]` lists r[0] first; `0b110` and `as_int() == 6` read r[0] as the least significant bit.
+// `[0, 1, 1]` lists r[0] first; `0b110` and `asInt() == 6` read r[0] as the least significant bit.
 #[test]
 fn bit_registers_print_as_array_binary_and_int() {
     let src = main_body(
-        "QReg r = qreg(3);\nx(r[1]);\nx(r[2]);\nBitReg m = measure(r);\nprintln(\"{} {} {} {}\", m, m.to_binary(), m.as_int(), m[0]);",
+        "QReg r = qreg(3);\nx(r[1]);\nx(r[2]);\nBitReg m = measure(r);\nprintln(\"{} {} {} {}\", m, m.toBinary(), m.asInt(), m[0]);",
     );
     assert_eq!(run_ok(&src, 1), "[0, 1, 1] 0b110 6 0\n");
     assert_eq!(
@@ -557,12 +557,12 @@ fn bit_registers_print_as_array_binary_and_int() {
         "[0, 1, 1]  0b110 = 6  ×5\n  [0, 1, 1] 0b110 6 0\n"
     );
     let empty = main_body(
-        "BitReg m = measure(qreg(0));\nprintln(\"{} {} {}\", m, m.to_binary(), m.as_int());",
+        "BitReg m = measure(qreg(0));\nprintln(\"{} {} {}\", m, m.toBinary(), m.asInt());",
     );
     assert_eq!(run_ok(&empty, 1), "[] 0b0 0\n");
     let m = "BitReg m = measure(qreg(2));";
     assert_eq!(
-        codes(&main_body(&format!("{m} int v = m.as_int();"))),
+        codes(&main_body(&format!("{m} int v = m.asInt();"))),
         ["Q0218"]
     );
     assert_eq!(
@@ -571,7 +571,7 @@ fn bit_registers_print_as_array_binary_and_int() {
     );
     assert_eq!(
         codes(&main_body(
-            "Qubit q = qubit(); println(\"{}\", q.to_binary()); discard(q);"
+            "Qubit q = qubit(); println(\"{}\", q.toBinary()); discard(q);"
         )),
         ["Q0220"]
     );
@@ -714,7 +714,7 @@ fn diagnostics_are_english_with_help_lines() {
         main_body("Qubit a = qubit(); Qubit t = qubit(); Bit m = measure(a); if m { println(\"x\"); } discard(t);"),
         main_body("QReg r = qreg(30);\nt(r[0]);\nBitReg m = measure(r);\nprintln(\"{}\", m);"),
         main_body("QReg r = qreg(200000);\nBitReg m = measure(r);\nprintln(\"{}\", m);"),
-        main_body("BitReg m = measure(qreg(65));\nprintln(\"{}\", m.as_int());"),
+        main_body("BitReg m = measure(qreg(65));\nprintln(\"{}\", m.asInt());"),
         "int f(int n) {\n    return f(n + 1);\n}\nvoid main() {\n    int x = f(0);\n}\n".to_string(),
         "void f(Qubit q) {\n    discard(q);\n}\nvoid main() {}\n".to_string(),
         "void f(consume int n, var x) {}\nvoid main() {}\n".to_string(),
@@ -868,7 +868,7 @@ fn var_infers_classical_local_types() {
     );
     assert_eq!(
         codes(&main_body(
-            "BitReg m = measure(qreg(2));\nvar v = m.as_int();"
+            "BitReg m = measure(qreg(2));\nvar v = m.asInt();"
         )),
         ["Q0222"]
     );
@@ -969,7 +969,7 @@ fn same_qasm(a: &str, b: &str) {
 
 #[test]
 fn functions_return_qubits_to_the_caller() {
-    let ghz = "QReg ghz(int n) {\n    QReg r = qreg(n);\n    h(r[0]);\n    for i in 1..n {\n        cx(r[0], r[i]);\n    }\n    return r;\n}\n\nvoid main() {\n    QReg r = ghz(5);\n    BitReg m = measure(r);\n    println(\"{}  {} = {}\", m, m.to_binary(), m.as_int());\n}\n";
+    let ghz = "QReg ghz(int n) {\n    QReg r = qreg(n);\n    h(r[0]);\n    for i in 1..n {\n        cx(r[0], r[i]);\n    }\n    return r;\n}\n\nvoid main() {\n    QReg r = ghz(5);\n    BitReg m = measure(r);\n    println(\"{}  {} = {}\", m, m.toBinary(), m.asInt());\n}\n";
     // Building the register in a function gives the same circuit as examples/qx/ghz.qx.
     same_qasm(ghz, GHZ);
     let rows = table(&run_ok(ghz, 200));
@@ -1420,16 +1420,16 @@ fn string_methods_and_std_math() {
     let src = "import std.math;
 void main() {
     String t = \"  Hello, Qxide  \".trim();
-    println(\"{} {} {} {}\", t, t.length(), t.to_upper(), t.to_lower());
-    println(\"{} {} {} {}\", t.substring(7, 12), t.char_at(0), t.index_of(\"Qx\"), t.index_of(\"zz\"));
-    println(\"{} {} {}\", t.contains(\"lo\"), t.starts_with(\"He\"), t.ends_with(\"x\"));
+    println(\"{} {} {} {}\", t, t.length(), t.toUpperCase(), t.toLowerCase());
+    println(\"{} {} {} {}\", t.substring(7, 12), t.charAt(0), t.indexOf(\"Qx\"), t.indexOf(\"zz\"));
+    println(\"{} {} {}\", t.contains(\"lo\"), t.startsWith(\"He\"), t.endsWith(\"x\"));
     println(\"{} {} {}\", t.replace(\"l\", \"L\"), \"ab\".repeat(3), \"x\".replace(\"\", \"-\"));
-    println(\"{} {}\", \" 42 \".parse_int() + 1, \"2.5e3\".parse_double());
-    println(\"{} {} {} {}\", \"한글\".length(), \"한글\".substring(1, 2), \"한글\".index_of(\"글\"), \"ß\".to_upper());
+    println(\"{} {}\", \" 42 \".parseInt() + 1, \"2.5e3\".parseDouble());
+    println(\"{} {} {} {}\", \"한글\".length(), \"한글\".substring(1, 2), \"한글\".indexOf(\"글\"), \"ß\".toUpperCase());
     println(\"{} {} {} {} {}\", math.sqrt(16), math.floor(-2.5), math.ceil(2.1), math.round(2.5), math.trunc(-2.7));
     println(\"{} {} {} {}\", math.abs(-1.5), math.min(1, 2.5), math.max(0.0 / 0.0, 1.0), math.hypot(3, 4));
-    println(\"{} {} {} {}\", math.abs_int(-9), math.min_int(3, 7), math.max_int(3, 7), math.pow_int(-2, 5));
-    println(\"{} {} {}\", math.pow_int(1, 1000000), math.is_nan(0.0 / 0.0), math.is_finite(1.0 / 0.0));
+    println(\"{} {} {} {}\", math.absInt(-9), math.minInt(3, 7), math.maxInt(3, 7), math.powInt(-2, 5));
+    println(\"{} {} {}\", math.powInt(1, 1000000), math.isNaN(0.0 / 0.0), math.isFinite(1.0 / 0.0));
 }
 ";
     assert_eq!(
@@ -1494,7 +1494,7 @@ fn string_method_and_std_math_errors() {
         "Q0403"
     );
     assert_eq!(
-        rt("    String s = \"abc\";\n    println(\"{}\", s.char_at(-1));"),
+        rt("    String s = \"abc\";\n    println(\"{}\", s.charAt(-1));"),
         "Q0403"
     );
     assert_eq!(
@@ -1502,11 +1502,11 @@ fn string_method_and_std_math_errors() {
         "Q0706"
     );
     assert_eq!(
-        rt("    String s = \"4x\";\n    println(\"{}\", s.parse_int());"),
+        rt("    String s = \"4x\";\n    println(\"{}\", s.parseInt());"),
         "Q0419"
     );
     assert_eq!(
-        rt("    String s = \"\";\n    println(\"{}\", s.parse_double());"),
+        rt("    String s = \"\";\n    println(\"{}\", s.parseDouble());"),
         "Q0419"
     );
     let math = |body: &str| {
@@ -1514,11 +1514,11 @@ fn string_method_and_std_math_errors() {
         runtime_error(&src).0
     };
     assert_eq!(
-        math("    println(\"{}\", math.abs_int(-9223372036854775807 - 1));"),
+        math("    println(\"{}\", math.absInt(-9223372036854775807 - 1));"),
         "Q0401"
     );
-    assert_eq!(math("    println(\"{}\", math.pow_int(3, 40));"), "Q0401");
-    assert_eq!(math("    println(\"{}\", math.pow_int(2, -1));"), "Q0706");
+    assert_eq!(math("    println(\"{}\", math.powInt(3, 40));"), "Q0401");
+    assert_eq!(math("    println(\"{}\", math.powInt(2, -1));"), "Q0706");
     // A huge result is refused by the step budget before it is built.
     assert_eq!(
         rt("    String s = \"ab\";\n    println(\"{}\", s.repeat(4611686018427387903).length());"),
@@ -2280,7 +2280,7 @@ fn result_option_and_try() {
 
 Result<int, String> count(String[] items) {
     int i = 0;
-    while items[i].try_parse_int()? > 0 {
+    while items[i].tryParseInt()? > 0 {
         i += 1;
     }
     return Result.Ok(i);
@@ -2309,7 +2309,7 @@ void main() {
     let src = "enum Option {\n    A,\n    B,\n}\n\nvoid main() {\n    Option o = Option.B;\n    match o {\n        A => {\n            println(\"a\");\n        }\n        B => {\n            println(\"b\");\n        }\n    }\n}\n";
     assert_eq!(run_ok(src, 1), "b\n");
     // A borrowed qubit parameter may stay live at a `?`; the caller owns it.
-    ok("Result<int, String> f(Qubit q) {\n    h(q);\n    int x = \"1\".try_parse_int()?;\n    return Result.Ok(x);\n}\n\nvoid main() {}\n");
+    ok("Result<int, String> f(Qubit q) {\n    h(q);\n    int x = \"1\".tryParseInt()?;\n    return Result.Ok(x);\n}\n\nvoid main() {}\n");
 }
 
 #[test]
@@ -2321,15 +2321,15 @@ fn try_errors() {
     );
     // The function must return the same kind with the same error type; `main` returns nothing.
     assert_eq!(
-        errors("void main() {\n    int x = \"1\".try_parse_int()?;\n}"),
-        [("Q0231", 2, 32)]
+        errors("void main() {\n    int x = \"1\".tryParseInt()?;\n}"),
+        [("Q0231", 2, 30)]
     );
     assert_eq!(
         codes("Result<int, int> g() { return Result.Ok(1); } Result<int, String> f() { int x = g()?; return Result.Ok(x); } void main() {}"),
         ["Q0231"]
     );
     assert_eq!(
-        codes("Option<int> f() { int x = \"1\".try_parse_int()?; return Option.Some(x); } void main() {}"),
+        codes("Option<int> f() { int x = \"1\".tryParseInt()?; return Option.Some(x); } void main() {}"),
         ["Q0231"]
     );
     assert_eq!(
@@ -2338,21 +2338,21 @@ fn try_errors() {
     );
     // Like `return`: an owned qubit may not be live at a `?`, also inside a loop.
     assert_eq!(
-        errors("Result<int, String> f() {\n    Qubit q = qubit();\n    int x = \"1\".try_parse_int()?;\n    discard(q);\n    return Result.Ok(x);\n}\nvoid main() {}"),
+        errors("Result<int, String> f() {\n    Qubit q = qubit();\n    int x = \"1\".tryParseInt()?;\n    discard(q);\n    return Result.Ok(x);\n}\nvoid main() {}"),
         [("Q0302", 2, 11)]
     );
     assert_eq!(
-        codes("Result<int, String> f(String[] a) { int t = 0; for i in 0..len(a) { Qubit q = qubit(); t += a[i].try_parse_int()?; discard(q); } return Result.Ok(t); } void main() {}"),
+        codes("Result<int, String> f(String[] a) { int t = 0; for i in 0..len(a) { Qubit q = qubit(); t += a[i].tryParseInt()?; discard(q); } return Result.Ok(t); } void main() {}"),
         ["Q0302"]
     );
     // Like `return`: not inside an `if` on a measured bit.
     assert_eq!(
-        codes("Result<int, String> f() { Qubit q = qubit(); h(q); Bit b = measure(q); if b { int x = \"1\".try_parse_int()?; } return Result.Ok(1); } void main() {}"),
+        codes("Result<int, String> f() { Qubit q = qubit(); h(q); Bit b = measure(q); if b { int x = \"1\".tryParseInt()?; } return Result.Ok(1); } void main() {}"),
         ["Q0308"]
     );
-    // `try_parse_int` needs the prelude's shape of `Result`.
+    // `tryParseInt` needs the prelude's shape of `Result`.
     assert_eq!(
-        codes("enum Result { Ok(int v), Err(String e), Other } void main() { var r = \"1\".try_parse_int(); }"),
+        codes("enum Result { Ok(int v), Err(String e), Other } void main() { var r = \"1\".tryParseInt(); }"),
         ["Q0231"]
     );
 }
@@ -2478,8 +2478,8 @@ void main() {
     Option<int> none = Option.None;
     println(\"{} {} {} {}\", c.get(), c.twice(), b.get(), unbox(bb).get());
     println(\"{} {}\", Coin.Heads.flip().heads(), Coin.Tails.flip().heads());
-    println(\"{} {} {}\", none.is_none(), none.unwrap_or(3), Option.Some(5).unwrap_or(0));
-    println(\"{} {}\", \"x\".try_parse_int().is_err(), \"12\".try_parse_int().unwrap_or(0));
+    println(\"{} {} {}\", none.isEmpty(), none.orElse(3), Option.Some(5).orElse(0));
+    println(\"{} {}\", \"x\".tryParseInt().isErr(), \"12\".tryParseInt().orElse(0));
 }
 ";
     assert_eq!(run_ok(src, 1), "5 10 ab 7\nfalse true\ntrue 3 5\ntrue 12\n");
@@ -2624,7 +2624,7 @@ fn recursion_through_interfaces() {
 // interfaces (the monomorphized program is checked again in debug builds).
 #[test]
 fn interface_calls_on_generic_types() {
-    let src = "interface Shape {\n    double area();\n}\n\ninterface Holder<T> {\n    T get();\n}\n\nstruct Wrap<T> implements Shape, Holder<T> {\n    T v;\n    double k;\n\n    double area() {\n        return this.k;\n    }\n\n    T get() {\n        return this.v;\n    }\n}\n\nvoid main() {\n    Shape a = new Wrap(5, 2.5);\n    Shape b = new Wrap(\"s\", 1);\n    Holder<String> h = new Wrap(\"held\", 0);\n    Option<Shape> maybe = Option.Some(a);\n    println(\"{} {} {} {}\", a.area(), b.area(), h.get(), maybe.unwrap_or(b).area());\n}\n";
+    let src = "interface Shape {\n    double area();\n}\n\ninterface Holder<T> {\n    T get();\n}\n\nstruct Wrap<T> implements Shape, Holder<T> {\n    T v;\n    double k;\n\n    double area() {\n        return this.k;\n    }\n\n    T get() {\n        return this.v;\n    }\n}\n\nvoid main() {\n    Shape a = new Wrap(5, 2.5);\n    Shape b = new Wrap(\"s\", 1);\n    Holder<String> h = new Wrap(\"held\", 0);\n    Option<Shape> maybe = Option.Some(a);\n    println(\"{} {} {} {}\", a.area(), b.area(), h.get(), maybe.orElse(b).area());\n}\n";
     assert_eq!(run_ok(src, 1), "2.5 1.0 held 2.5\n");
 }
 
@@ -2659,13 +2659,13 @@ fn bitwise_operators() {
         ["Q0204", "Q0204", "Q0204", "Q0204"]
     );
     // Wrapping arithmetic for hashes and generators; plain `*` still stops on overflow.
-    let src = "import std.math;\n\nvoid main() {\n    println(\"{} {}\", math.wrapping_mul(9223372036854775807, 3), math.wrapping_add(9223372036854775807, 1));\n}\n";
+    let src = "import std.math;\n\nvoid main() {\n    println(\"{} {}\", math.wrappingMul(9223372036854775807, 3), math.wrappingAdd(9223372036854775807, 1));\n}\n";
     assert_eq!(run_ok(src, 1), "9223372036854775805 -9223372036854775808\n");
 }
 
 #[test]
 fn string_split_join_lines_and_chars() {
-    let src = main_body("    String[] p = \"a,,b\".split(\",\");\n    println(\"{} {}\", len(p), \"|\".join(p));\n    String t = \" one  two\\tthree \\nfour\\nfive\\n\";\n    println(\"{} {}\", len(t.split_whitespace()), \"/\".join(t.lines()));\n    println(\"{} {}\", \"-\".join(\"héllo\".chars()), len(\"\".split(\",\")));\n    println(\"[{}]\", \", \".join(new String[0]));");
+    let src = main_body("    String[] p = \"a,,b\".split(\",\");\n    println(\"{} {}\", len(p), \"|\".join(p));\n    String t = \" one  two\\tthree \\nfour\\nfive\\n\";\n    println(\"{} {}\", len(t.splitWhitespace()), \"/\".join(t.lines()));\n    println(\"{} {}\", \"-\".join(\"héllo\".chars()), len(\"\".split(\",\")));\n    println(\"[{}]\", \", \".join(new String[0]));");
     assert_eq!(
         run_ok(&src, 1),
         "3 a||b\n5  one  two\tthree /four/five\nh-é-l-l-o 1\n[]\n"
@@ -2697,7 +2697,7 @@ fn for_each_loops() {
 
 #[test]
 fn lists_maps_and_random() {
-    let src = "struct Body {\n    double mass;\n    List<double> trail;\n}\n\nvoid main() {\n    List<int> xs = new List<int>();\n    for i in 0..5 {\n        xs.add(i * i);\n    }\n    xs.set(0, 100);\n    xs.insert(1, 7);\n    int removed = xs.remove_at(2);\n    println(\"{} {} {} {}\", xs.size(), removed, xs[0], xs.pop().unwrap_or(-1));\n    xs.clear();\n    println(\"{} {}\", xs.is_empty(), xs.pop().is_none());\n    Map<int, double> m = new Map();\n    m.put(3, 1);\n    m.put(1, 2.5);\n    m.put(3, 4);\n    println(\"{} {} {}\", m.get(3).unwrap_or(0), m.remove(1).is_some(), m.contains_key(1));\n    var keys = m.keys();\n    println(\"{} {}\", len(keys), len(m.values()));\n    Body b = new Body(1.5, new List());\n    b.trail.add(2);\n    Body[] bodies = new Body[2];\n    bodies[1].trail.add(3.5);\n    println(\"{} {} {}\", b.trail.get(0), bodies[1].trail.size(), bodies[0].trail.is_empty());\n    List<List<String>> nested = new List();\n    nested.add(new List());\n    nested.get(0).add(\"deep\");\n    println(\"{}\", nested.get(0).get(0));\n}\n";
+    let src = "struct Body {\n    double mass;\n    List<double> trail;\n}\n\nvoid main() {\n    List<int> xs = new List<int>();\n    for i in 0..5 {\n        xs.add(i * i);\n    }\n    xs.set(0, 100);\n    xs.insert(1, 7);\n    int removed = xs.removeAt(2);\n    println(\"{} {} {} {}\", xs.size(), removed, xs[0], xs.pop().orElse(-1));\n    xs.clear();\n    println(\"{} {}\", xs.isEmpty(), xs.pop().isEmpty());\n    Map<int, double> m = new Map();\n    m.put(3, 1);\n    m.put(1, 2.5);\n    m.put(3, 4);\n    println(\"{} {} {}\", m.get(3).orElse(0), m.remove(1).isPresent(), m.containsKey(1));\n    var keys = m.keys();\n    println(\"{} {}\", len(keys), len(m.values()));\n    Body b = new Body(1.5, new List());\n    b.trail.add(2);\n    Body[] bodies = new Body[2];\n    bodies[1].trail.add(3.5);\n    println(\"{} {} {}\", b.trail.get(0), bodies[1].trail.size(), bodies[0].trail.isEmpty());\n    List<List<String>> nested = new List();\n    nested.add(new List());\n    nested.get(0).add(\"deep\");\n    println(\"{}\", nested.get(0).get(0));\n}\n";
     assert_eq!(
         run_ok(src, 1),
         "5 1 100 16\ntrue true\n4.0 true false\n1 1\n2.0 1 true\ndeep\n"
@@ -2716,13 +2716,13 @@ fn lists_maps_and_random() {
 // The same seed gives the same numbers on every engine and host (splitmix64).
 #[test]
 fn random_is_seeded_and_uniform_in_range() {
-    let src = main_body("    Random a = new Random(7);\n    Random b = new Random(7);\n    boolean same = true;\n    int low = 0;\n    for i in 0..2000 {\n        int x = a.next_int(10);\n        same = same && x == b.next_int(10);\n        if x < 5 {\n            low += 1;\n        }\n    }\n    double d = a.next_double();\n    println(\"{} {} {} {}\", same, low > 900 && low < 1100, d >= 0.0 && d < 1.0, new Random(1).next_int(1000000));");
+    let src = main_body("    Random a = new Random(7);\n    Random b = new Random(7);\n    boolean same = true;\n    int low = 0;\n    for i in 0..2000 {\n        int x = a.nextInt(10);\n        same = same && x == b.nextInt(10);\n        if x < 5 {\n            low += 1;\n        }\n    }\n    double d = a.nextDouble();\n    println(\"{} {} {} {}\", same, low > 900 && low < 1100, d >= 0.0 && d < 1.0, new Random(1).nextInt(1000000));");
     let out = run_ok(&src, 1);
     assert!(out.starts_with("true true true "), "{out}");
     assert_eq!(out, run_ok(&src, 1));
     assert_eq!(
         runtime_error(&main_body(
-            "    Random r = new Random(1);\n    int v = r.next_int(0);"
+            "    Random r = new Random(1);\n    int v = r.nextInt(0);"
         )),
         ("Q0706", 3, 13)
     );

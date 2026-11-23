@@ -23,20 +23,20 @@ public void error(String message) {}
     ),
     (
         "time",
-        "public int now_millis() { return 0; }
-public String now_iso() { return \"\"; }
-public void sleep_millis(int ms) {}
-public int monotonic_millis() { return 0; }
+        "public int currentTimeMillis() { return 0; }
+public String nowIso() { return \"\"; }
+public void sleep(int ms) {}
+public int monotonicMillis() { return 0; }
 ",
     ),
     (
         "io",
         "public void write(String text) {}
-public void write_line(String text) {}
-public void write_err(String text) {}
-public void write_err_line(String text) {}
-public Option<String> read_line() { return Option.None; }
-public String read_all() { return \"\"; }
+public void writeLine(String text) {}
+public void writeErr(String text) {}
+public void writeErrLine(String text) {}
+public Option<String> readLine() { return Option.None; }
+public String readAll() { return \"\"; }
 ",
     ),
     (
@@ -46,17 +46,17 @@ public String read_all() { return \"\"; }
     ),
     (
         "fs",
-        "public String read_text(String path) { return \"\"; }
-public void write_text(String path, String text) {}
-public void append_text(String path, String text) {}
+        "public String readString(String path) { return \"\"; }
+public void writeString(String path, String text) {}
+public void appendString(String path, String text) {}
 public boolean exists(String path) { return false; }
 public void remove(String path) {}
 ",
     ),
     (
         "app",
-        "public void set_title(String title) {}
-public void set_size(int width, int height) {}
+        "public void setTitle(String title) {}
+public void setSize(int width, int height) {}
 public void close() {}
 public void emit(String event, String payload) {}
 ",
@@ -88,15 +88,15 @@ public double atan2(double y, double x) { return 0.0; }
 public double hypot(double x, double y) { return 0.0; }
 public double min(double a, double b) { return 0.0; }
 public double max(double a, double b) { return 0.0; }
-public boolean is_nan(double x) { return false; }
-public boolean is_finite(double x) { return false; }
-public int abs_int(int x) { return 0; }
-public int min_int(int a, int b) { return 0; }
-public int max_int(int a, int b) { return 0; }
-public int pow_int(int base, int exponent) { return 0; }
-public int wrapping_add(int a, int b) { return 0; }
-public int wrapping_sub(int a, int b) { return 0; }
-public int wrapping_mul(int a, int b) { return 0; }
+public boolean isNaN(double x) { return false; }
+public boolean isFinite(double x) { return false; }
+public int absInt(int x) { return 0; }
+public int minInt(int a, int b) { return 0; }
+public int maxInt(int a, int b) { return 0; }
+public int powInt(int base, int exponent) { return 0; }
+public int wrappingAdd(int a, int b) { return 0; }
+public int wrappingSub(int a, int b) { return 0; }
+public int wrappingMul(int a, int b) { return 0; }
 ",
     ),
     (
@@ -122,7 +122,7 @@ pub const PRELUDE: &str = "enum Result<T, E> {
     Ok(T value),
     Err(E error);
 
-    boolean is_ok() {
+    boolean isOk() {
         match this {
             Ok(_) => {
                 return true;
@@ -133,11 +133,11 @@ pub const PRELUDE: &str = "enum Result<T, E> {
         }
     }
 
-    boolean is_err() {
-        return !this.is_ok();
+    boolean isErr() {
+        return !this.isOk();
     }
 
-    T unwrap_or(T fallback) {
+    T orElse(T fallback) {
         match this {
             Ok(v) => {
                 return v;
@@ -153,7 +153,7 @@ enum Option<T> {
     None,
     Some(T value);
 
-    boolean is_some() {
+    boolean isPresent() {
         match this {
             None => {
                 return false;
@@ -164,11 +164,11 @@ enum Option<T> {
         }
     }
 
-    boolean is_none() {
-        return !this.is_some();
+    boolean isEmpty() {
+        return !this.isPresent();
     }
 
-    T unwrap_or(T fallback) {
+    T orElse(T fallback) {
         match this {
             None => {
                 return fallback;
@@ -181,14 +181,25 @@ enum Option<T> {
 }
 ";
 
+/// The declarations of standard module `name`, followed by stubs for its deprecated function
+/// names (`super::names`), which the checker accepts with a warning.
 pub fn module_source(name: &str) -> Option<&'static str> {
-    MODULES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+    static SOURCES: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    let all = SOURCES.get_or_init(|| {
+        MODULES
+            .iter()
+            .map(|&(n, s)| (n, format!("{s}{}", super::names::std_alias_stubs(n, s))))
+            .collect()
+    });
+    all.iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| s.as_str())
 }
 
 /// Std functions that return the prelude's `Option<String>`: the host answers with the text
 /// (`Some`) or `HostValue::Unit` (`None`).
 pub fn returns_option(module: &str, function: &str) -> bool {
-    matches!((module, function), ("io", "read_line") | ("env", "get"))
+    matches!((module, function), ("io", "readLine") | ("env", "get"))
 }
 
 // Process-level modules: they reach the terminal and the environment of the user who started
@@ -366,7 +377,7 @@ impl StdError {
 
 pub type StdResult = Result<HostValue, StdError>;
 
-/// Runs standard-library calls for the interpreter. `module` is `fs` for `std.fs.read_text`.
+/// Runs standard-library calls for the interpreter. `module` is `fs` for `std.fs.readString`.
 pub trait Host {
     fn call(&mut self, module: &str, function: &str, args: Vec<HostValue>) -> StdResult;
 
@@ -433,13 +444,13 @@ pub struct HttpAccess {
     pub get: HttpGet,
 }
 
-/// Largest file `std.fs.read_text` reads.
+/// Largest file `std.fs.readString` reads.
 pub const MAX_READ_BYTES: u64 = 16 << 20;
 /// Largest response body `std.http.get` returns.
 pub const MAX_HTTP_BYTES: usize = 16 << 20;
 /// Longest URL `std.http.get` accepts.
 pub const MAX_URL_LEN: usize = 2048;
-/// Longest single `std.time.sleep_millis`.
+/// Longest single `std.time.sleep`.
 pub const MAX_SLEEP_MS: i64 = 60_000;
 
 fn str_arg(args: &[HostValue], i: usize) -> &str {
@@ -516,10 +527,10 @@ impl NativeStd {
                 (self.log)(level, str_arg(args, 0));
                 Ok(HostValue::Unit)
             }
-            ("time", "now_millis") => Ok(HostValue::Int(now_millis())),
-            ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
-            ("time", "sleep_millis") => self.sleep(int_arg(args, 0)),
-            ("time", "monotonic_millis") => Ok(HostValue::Int(monotonic_millis())),
+            ("time", "currentTimeMillis") => Ok(HostValue::Int(now_millis())),
+            ("time", "nowIso") => Ok(HostValue::Str(iso_utc(now_millis()))),
+            ("time", "sleep") => self.sleep(int_arg(args, 0)),
+            ("time", "monotonicMillis") => Ok(HostValue::Int(monotonic_millis())),
             ("io", f) => terminal(f, str_arg(args, 0)),
             ("env", "get") => {
                 Ok(std::env::var(str_arg(args, 0)).map_or(HostValue::Unit, HostValue::Str))
@@ -565,7 +576,7 @@ impl NativeStd {
         let io =
             |e: std::io::Error| StdError::new(StdErrorKind::Io, msg::std_io(rel, &e.to_string()));
         match function {
-            "read_text" => {
+            "readString" => {
                 let meta = std::fs::metadata(&path).map_err(io)?;
                 if meta.len() > MAX_READ_BYTES {
                     return Err(StdError::new(
@@ -578,14 +589,14 @@ impl NativeStd {
                     .map(HostValue::Str)
                     .map_err(|_| StdError::new(StdErrorKind::Io, msg::std_not_utf8(rel)))
             }
-            "write_text" | "append_text" => {
+            "writeString" | "appendString" => {
                 if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir).map_err(io)?;
                 }
                 // Re-check after creating folders: a symlinked folder may point elsewhere.
                 confine(&self.data_root, rel)?;
                 let text = str_arg(args, 1);
-                if function == "write_text" {
+                if function == "writeString" {
                     std::fs::write(&path, text).map_err(io)?;
                 } else {
                     use std::io::Write;
@@ -632,10 +643,10 @@ impl Host for NoEffects {
     fn call(&mut self, module: &str, function: &str, _args: Vec<HostValue>) -> StdResult {
         match (module, function) {
             ("log", _) => Ok(HostValue::Unit),
-            ("time", "now_millis") => Ok(HostValue::Int(now_millis())),
-            ("time", "now_iso") => Ok(HostValue::Str(iso_utc(now_millis()))),
-            ("time", "sleep_millis") => Ok(HostValue::Unit),
-            ("time", "monotonic_millis") => Ok(HostValue::Int(monotonic_millis())),
+            ("time", "currentTimeMillis") => Ok(HostValue::Int(now_millis())),
+            ("time", "nowIso") => Ok(HostValue::Str(iso_utc(now_millis()))),
+            ("time", "sleep") => Ok(HostValue::Unit),
+            ("time", "monotonicMillis") => Ok(HostValue::Int(monotonic_millis())),
             _ => Err(StdError::new(
                 StdErrorKind::Unavailable,
                 msg::std_unavailable(&format!("std.{module}.{function}"), self.what),
@@ -685,13 +696,13 @@ fn terminal(function: &str, text: &str) -> StdResult {
         )
     };
     match function {
-        "write" | "write_line" | "write_err" | "write_err_line" => {
-            let nl: &[u8] = if function.ends_with("_line") {
+        "write" | "writeLine" | "writeErr" | "writeErrLine" => {
+            let nl: &[u8] = if function.ends_with("Line") {
                 b"\n"
             } else {
                 b""
             };
-            let err = function.starts_with("write_err");
+            let err = function.starts_with("writeErr");
             let mut out: Box<dyn Write> = if err {
                 Box::new(std::io::stderr().lock())
             } else {
@@ -706,7 +717,7 @@ fn terminal(function: &str, text: &str) -> StdResult {
                 })?;
             Ok(HostValue::Unit)
         }
-        "read_line" => {
+        "readLine" => {
             let mut buf = Vec::new();
             std::io::stdin()
                 .lock()
@@ -727,7 +738,7 @@ fn terminal(function: &str, text: &str) -> StdResult {
             }
             utf8(buf).map(HostValue::Str)
         }
-        "read_all" => {
+        "readAll" => {
             let mut buf = Vec::new();
             std::io::stdin()
                 .lock()
@@ -950,12 +961,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
         let p = |v: &str| HostValue::Str(v.into());
-        s.call("fs", "write_text", &[p("d/a.txt"), p("one")])
+        s.call("fs", "writeString", &[p("d/a.txt"), p("one")])
             .unwrap();
-        s.call("fs", "append_text", &[p("d/a.txt"), p(" two")])
+        s.call("fs", "appendString", &[p("d/a.txt"), p(" two")])
             .unwrap();
         assert_eq!(
-            s.call("fs", "read_text", &[p("d/a.txt")]).unwrap(),
+            s.call("fs", "readString", &[p("d/a.txt")]).unwrap(),
             p("one two")
         );
         assert_eq!(
@@ -964,12 +975,12 @@ mod tests {
         );
         s.call("fs", "remove", &[p("d/a.txt")]).unwrap();
         s.call("fs", "remove", &[p("d/a.txt")]).unwrap();
-        let e = s.call("fs", "read_text", &[p("d/a.txt")]).unwrap_err();
+        let e = s.call("fs", "readString", &[p("d/a.txt")]).unwrap_err();
         assert_eq!(e.kind, StdErrorKind::Io);
-        let e = s.call("fs", "read_text", &[p("../a.txt")]).unwrap_err();
+        let e = s.call("fs", "readString", &[p("../a.txt")]).unwrap_err();
         assert_eq!(e.kind, StdErrorKind::Path);
         let e = s
-            .call("time", "sleep_millis", &[HostValue::Int(60_001)])
+            .call("time", "sleep", &[HostValue::Int(60_001)])
             .unwrap_err();
         assert_eq!(e.kind, StdErrorKind::Argument);
         let _ = std::fs::remove_dir_all(&root);
@@ -1012,7 +1023,7 @@ mod tests {
     }
 
     // B-A1: a symlink inside the data root whose target does not exist yet must not let
-    // `write_text`/`append_text` create that target outside the root.
+    // `writeString`/`appendString` create that target outside the root.
     #[test]
     fn fs_refuses_dangling_symlink_escape() {
         let base = scratch("ba1");
@@ -1027,7 +1038,7 @@ mod tests {
         }
         let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
         let p = |v: &str| HostValue::Str(v.into());
-        for f in ["write_text", "append_text"] {
+        for f in ["writeString", "appendString"] {
             let e = s.call("fs", f, &[p("notes.txt"), p("x")]).unwrap_err();
             assert_eq!(e.kind, StdErrorKind::Path, "{f}");
             let e = s.call("fs", f, &[p("sub/x.txt"), p("x")]).unwrap_err();
@@ -1065,7 +1076,7 @@ mod tests {
             let p = |v: &str| HostValue::Str(v.into());
             let mut s = NativeStd::new(jroot.clone(), Box::new(|_, _| {}));
             let e = s
-                .call("fs", "write_text", &[p("b.txt"), p("x")])
+                .call("fs", "writeString", &[p("b.txt"), p("x")])
                 .unwrap_err();
             assert_eq!(e.kind, StdErrorKind::Path);
             assert!(
@@ -1080,7 +1091,7 @@ mod tests {
         let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
         let p = |v: &str| HostValue::Str(v.into());
         let e = s
-            .call("fs", "write_text", &[p("a.txt"), p("x")])
+            .call("fs", "writeString", &[p("a.txt"), p("x")])
             .unwrap_err();
         assert_eq!(e.kind, StdErrorKind::Path);
         assert!(confine(&root, "a.txt").is_err());
@@ -1101,7 +1112,7 @@ mod tests {
         }
         let mut s = NativeStd::new(root.clone(), Box::new(|_, _| {}));
         let p = |v: &str| HostValue::Str(v.into());
-        s.call("fs", "write_text", &[p("alias/a.txt"), p("ok")])
+        s.call("fs", "writeString", &[p("alias/a.txt"), p("ok")])
             .unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("real").join("a.txt")).unwrap(),

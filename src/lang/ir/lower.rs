@@ -1033,8 +1033,8 @@ impl<'p, 'a> FnLower<'p, 'a> {
                     return dst;
                 }
                 let (name, ty) = match name.name.as_str() {
-                    "as_int" => ("as_int", IrTy::ShotInt),
-                    "to_binary" => ("to_binary", IrTy::ShotBinary),
+                    "asInt" => ("asInt", IrTy::ShotInt),
+                    "toBinary" => ("toBinary", IrTy::ShotBinary),
                     _ => {
                         self.trap(internal(e.span));
                         return self.reg(IrTy::Unit);

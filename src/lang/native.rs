@@ -37,14 +37,51 @@ pub const MUTATORS: &[&str] = &[
     "add",
     "set",
     "pop",
-    "remove_at",
+    "removeAt",
     "insert",
     "clear",
     "put",
     "remove",
-    "next_int",
-    "next_double",
-    "next_bool",
+    "nextInt",
+    "nextDouble",
+    "nextBoolean",
+];
+
+/// Whether `name`, or the method it is a deprecated alias of, is one of the `MUTATORS`.
+pub fn is_mutator(name: &str) -> bool {
+    MUTATORS.contains(&name)
+        || ["List", "Map", "Random"]
+            .iter()
+            .filter_map(|o| super::names::canonical(o, name))
+            .any(|n| MUTATORS.contains(&n))
+}
+
+/// Every method of the built-in types as (type, method), for completion; `method_sig` knows
+/// each of them.
+pub const METHODS: &[(&str, &str)] = &[
+    ("List", "add"),
+    ("List", "get"),
+    ("List", "set"),
+    ("List", "insert"),
+    ("List", "removeAt"),
+    ("List", "pop"),
+    ("List", "clear"),
+    ("List", "size"),
+    ("List", "isEmpty"),
+    ("List", "toArray"),
+    ("Map", "put"),
+    ("Map", "get"),
+    ("Map", "getOrDefault"),
+    ("Map", "containsKey"),
+    ("Map", "remove"),
+    ("Map", "clear"),
+    ("Map", "size"),
+    ("Map", "isEmpty"),
+    ("Map", "keys"),
+    ("Map", "values"),
+    ("Random", "nextInt"),
+    ("Random", "nextDouble"),
+    ("Random", "nextBoolean"),
 ];
 
 /// The base name and type arguments of a built-in type (`List<int>` is `("List", [int])`).
@@ -80,12 +117,12 @@ pub fn method_sig(t: Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
                 "get" => (vec![Ty::Int], e, false),
                 "set" => (vec![Ty::Int, e], Ty::Void, true),
                 "insert" => (vec![Ty::Int, e], Ty::Void, true),
-                "remove_at" => (vec![Ty::Int], e, true),
+                "removeAt" => (vec![Ty::Int], e, true),
                 "pop" => (vec![], option_of(e), true),
                 "clear" => (vec![], Ty::Void, true),
                 "size" => (vec![], Ty::Int, false),
-                "is_empty" => (vec![], Ty::Boolean, false),
-                "to_array" => (vec![], Ty::array_of(e), false),
+                "isEmpty" => (vec![], Ty::Boolean, false),
+                "toArray" => (vec![], Ty::array_of(e), false),
                 _ => return None,
             }
         }
@@ -94,21 +131,21 @@ pub fn method_sig(t: Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
             match name {
                 "put" => (vec![k, v], Ty::Void, true),
                 "get" => (vec![k], option_of(v), false),
-                "get_or" => (vec![k, v], v, false),
-                "contains_key" => (vec![k], Ty::Boolean, false),
+                "getOrDefault" => (vec![k, v], v, false),
+                "containsKey" => (vec![k], Ty::Boolean, false),
                 "remove" => (vec![k], option_of(v), true),
                 "clear" => (vec![], Ty::Void, true),
                 "size" => (vec![], Ty::Int, false),
-                "is_empty" => (vec![], Ty::Boolean, false),
+                "isEmpty" => (vec![], Ty::Boolean, false),
                 "keys" => (vec![], Ty::array_of(k), false),
                 "values" => (vec![], Ty::array_of(v), false),
                 _ => return None,
             }
         }
         "Random" => match name {
-            "next_int" => (vec![Ty::Int], Ty::Int, true),
-            "next_double" => (vec![], Ty::Double, true),
-            "next_bool" => (vec![], Ty::Boolean, true),
+            "nextInt" => (vec![Ty::Int], Ty::Int, true),
+            "nextDouble" => (vec![], Ty::Double, true),
+            "nextBoolean" => (vec![], Ty::Boolean, true),
             _ => return None,
         },
         _ => return None,
@@ -349,7 +386,7 @@ impl Machine<'_> {
                         items.borrow_mut().insert(i, v);
                         Ok(Value::Unit)
                     }
-                    "remove_at" => {
+                    "removeAt" => {
                         let i = checked_index(int(arg()?)?, len, span)?;
                         self.charge((len - i - 1) as u64, span)?;
                         Ok(items.borrow_mut().remove(i))
@@ -364,8 +401,8 @@ impl Machine<'_> {
                         Ok(Value::Unit)
                     }
                     "size" => Ok(Value::Int(len as i64)),
-                    "is_empty" => Ok(Value::Bool(len == 0)),
-                    "to_array" => {
+                    "isEmpty" => Ok(Value::Bool(len == 0)),
+                    "toArray" => {
                         let vals = items.borrow().clone();
                         self.array_lit(Ty::array_of(n.elem), vals, span)
                     }
@@ -389,7 +426,7 @@ impl Machine<'_> {
                     }
                     Ok(Value::Unit)
                 }
-                "get" | "get_or" | "contains_key" => {
+                "get" | "getOrDefault" | "containsKey" => {
                     let k = Key::of(&arg()?, span)?;
                     let found = {
                         let d = m.borrow();
@@ -399,7 +436,7 @@ impl Machine<'_> {
                     };
                     match name {
                         "get" => self.option(n.opt, found, span),
-                        "get_or" => {
+                        "getOrDefault" => {
                             let fallback = machine::coerce(arg()?, n.elem);
                             Ok(found.unwrap_or(fallback))
                         }
@@ -417,7 +454,7 @@ impl Machine<'_> {
                     Ok(Value::Unit)
                 }
                 "size" => Ok(Value::Int(m.borrow().len() as i64)),
-                "is_empty" => Ok(Value::Bool(m.borrow().len() == 0)),
+                "isEmpty" => Ok(Value::Bool(m.borrow().len() == 0)),
                 "keys" | "values" => {
                     let (vals, elem): (Vec<Value>, Ty) = {
                         let d = m.borrow();
@@ -433,7 +470,7 @@ impl Machine<'_> {
             },
             Obj::Random(state) => match name {
                 // Uniform in `0..bound` by rejection, so no value is more likely than another.
-                "next_int" => {
+                "nextInt" => {
                     let b = int(arg()?)?;
                     if b <= 0 {
                         return Err(Diagnostic::new(
@@ -452,10 +489,10 @@ impl Machine<'_> {
                     }
                 }
                 // 53 random bits: a multiple of 2^-53 in [0, 1).
-                "next_double" => Ok(Value::Double(
+                "nextDouble" => Ok(Value::Double(
                     (next_u64(state) >> 11) as f64 * (1.0 / (1u64 << 53) as f64),
                 )),
-                "next_bool" => Ok(Value::Bool(next_u64(state) >> 63 == 1)),
+                "nextBoolean" => Ok(Value::Bool(next_u64(state) >> 63 == 1)),
                 _ => Err(internal(span)),
             },
         }
