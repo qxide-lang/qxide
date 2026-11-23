@@ -119,6 +119,7 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf(coll, "Random"), "support.type.builtin.qx");
   const js = "Json v = json.ofInt(1); String t = json.stringify(v);";
   assert.equal(scopeOf(js, "Json"), "support.type.builtin.qx");
+  assert.equal(scopeOf("String s = v.asString();", "asString"), "support.function.method.qx");
   assert.equal(scopeOf(coll, "put"), "support.function.method.qx");
   assert.equal(scopeOf(coll, "nextInt"), "support.function.method.qx");
   assert.equal(scopeOf(coll, "split"), "support.function.method.qx");

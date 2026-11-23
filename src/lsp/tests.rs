@@ -507,6 +507,9 @@ fn completion_offers_names_in_scope_keywords_and_builtins() {
         "nextBoolean",
         "getOrDefault",
         "orElse",
+        "asString",
+        "items",
+        "isNull",
     ] {
         assert!(got.iter().any(|g| g == m), "{m}: {got:?}");
     }

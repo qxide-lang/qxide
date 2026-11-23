@@ -154,7 +154,7 @@
       "captures": { "1": { "name": "support.function.builtin.qx" } }
     },
     "method": {
-      "match": "(\\.)\\s*(asInt|toBinary|length|substring|charAt|indexOf|contains|startsWith|endsWith|toUpperCase|toLowerCase|trim|replace|repeat|parseInt|parseDouble|tryParseInt|tryParseDouble|split|splitWhitespace|lines|chars|join|add|get|set|insert|removeAt|pop|clear|size|isEmpty|toArray|put|getOrDefault|containsKey|remove|keys|values|nextInt|nextDouble|nextBoolean|isOk|isErr|isPresent|orElse)\\b",
+      "match": "(\\.)\\s*(asInt|toBinary|length|substring|charAt|indexOf|contains|startsWith|endsWith|toUpperCase|toLowerCase|trim|replace|repeat|parseInt|parseDouble|tryParseInt|tryParseDouble|split|splitWhitespace|lines|chars|join|add|get|set|insert|removeAt|pop|clear|size|isEmpty|toArray|put|getOrDefault|containsKey|remove|keys|values|nextInt|nextDouble|nextBoolean|isOk|isErr|isPresent|orElse|kind|isNull|asBoolean|asDouble|asString|at|has|items)\\b",
       "captures": {
         "1": { "name": "punctuation.accessor.qx" },
         "2": { "name": "support.function.method.qx" }
