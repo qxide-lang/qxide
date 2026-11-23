@@ -646,6 +646,19 @@ impl Limits {
         max_cond_depth: 64,
     };
 
+    /// `qxide run --trusted` and `qxide qasm --trusted`: the CLI with larger execution budgets
+    /// for local programs the user trusts (D7). Only the command line can select it, never a
+    /// source file, a project file or a `qxide build` bundle. Nesting and condition depth stay
+    /// as in `CLI`, since `STACK_SIZE` is sized for them.
+    #[allow(dead_code)]
+    pub const TRUSTED: Limits = Limits {
+        max_steps: 1 << 36,
+        max_ops: 1 << 26,
+        max_sim_work: 1 << 40,
+        max_output_bytes: 1 << 30,
+        ..Limits::CLI
+    };
+
     /// The qxide.dev playground: 20 state-vector qubits (16 MiB), a 512 MiB tableau, and budgets
     /// that keep a run well inside the page's 30 s worker limit.
     // Read by the wasm binding only.
@@ -726,7 +739,18 @@ pub fn run_input_report(
     seed: u64,
     host: &mut dyn Host,
 ) -> Result<RunOut, Failure> {
-    let limits = Limits::CLI;
+    run_input_report_with(input, shots, seed, Limits::CLI, host)
+}
+
+/// `run_input_report` with explicit resource limits (`Limits::TRUSTED` for `run --trusted`).
+#[allow(dead_code)]
+pub fn run_input_report_with(
+    input: &Input,
+    shots: u64,
+    seed: u64,
+    limits: Limits,
+    host: &mut dyn Host,
+) -> Result<RunOut, Failure> {
     let (map, run) = run_diag(input, shots, seed, limits, host);
     run.map_err(|e| render(&map, &e, &limits))
 }

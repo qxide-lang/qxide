@@ -402,3 +402,18 @@ fn std_arguments_are_charged_per_byte() {
         fails_with(run_with_files(&body, medium()), "Q0413")
     });
 }
+
+// D7: `--trusted` raises only the execution budgets; the depth limits that `STACK_SIZE` is sized
+// for, and the diagnostic limits, stay those of the CLI.
+#[test]
+fn trusted_limits_raise_budgets_only() {
+    let (t, c) = (Limits::TRUSTED, Limits::CLI);
+    assert!(t.max_steps > c.max_steps && t.max_ops > c.max_ops);
+    assert!(t.max_sim_work > c.max_sim_work && t.max_output_bytes > c.max_output_bytes);
+    assert_eq!(t.max_cond_depth, c.max_cond_depth);
+    assert_eq!(t.max_diagnostics, c.max_diagnostics);
+    assert_eq!(t.max_line_chars, c.max_line_chars);
+    assert_eq!(t.max_state_vector_qubits, c.max_state_vector_qubits);
+    assert_eq!(t.stabilizer_bytes, c.stabilizer_bytes);
+    assert!(t.scope == LimitScope::Cli);
+}

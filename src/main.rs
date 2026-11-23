@@ -42,6 +42,7 @@ Commands:
 {}{}
 Options:
   --engine ast|ir|jit                {}
+  --trusted                          {}
   -V, --version                      Print version
   -h, --help                         Print help
 ",
@@ -51,7 +52,8 @@ Options:
         LSP_HELP,
         pkg::cli::usage(),
         app::usage(),
-        ENGINE_HELP
+        ENGINE_HELP,
+        TRUSTED_HELP
     )
 }
 
@@ -61,6 +63,8 @@ const BACKEND_HELP: &str =
 const BACKEND_FLAGS_HELP: &str = "--dry-run (preview), --yes (no prompt), --max-seconds S (QPU cap, default 120), --device-config FILE (dry-run)";
 
 const BUILD_HELP: &str = "Package a .qx program into a standalone executable";
+
+const TRUSTED_HELP: &str = "Raise the step, operation, simulation and output limits of run and qasm (only for programs you trust)";
 
 const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
 
@@ -406,6 +410,8 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
     let mut allow_ffi = false;
     let mut engine = None;
+    // `--trusted`: `Limits::TRUSTED` instead of `Limits::CLI`. A command-line flag only.
+    let mut trusted = false;
     // `run --backend PROVIDER:DEVICE` (src/qpu): a quantum computer service instead of the simulator.
     let (mut backend, mut dry_run, mut yes) = (None, false, false);
     let (mut max_seconds, mut device_config) = (None, None);
@@ -420,6 +426,10 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             }
             ("run" | "qasm", "--engine") => {
                 parse_engine(arg, rest.next().map(String::as_str)).map(|e| engine = Some(e))
+            }
+            ("run" | "qasm", "--trusted") => {
+                trusted = true;
+                Ok(())
             }
             ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             ("run", "--seed") => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
@@ -520,6 +530,11 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
         .stack_size(LANG_STACK)
         .spawn(move || {
             lang::set_engine(engine);
+            let limits = if trusted {
+                lang::Limits::TRUSTED
+            } else {
+                lang::Limits::CLI
+            };
             let input = lang::Input {
                 name: &path,
                 src: &src,
@@ -535,7 +550,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                     line.push('\n');
                     (line, false, 0)
                 }),
-                "qasm" => lang::qasm_input(&input).map(|out| (out, false, 0)),
+                "qasm" => lang::qasm_input_with(&input, &limits).map(|out| (out, false, 0)),
                 _ if backend.is_some() => {
                     let spec = backend.as_deref().unwrap_or_default();
                     let exported = lang::export_input(&input)?;
@@ -550,7 +565,7 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                     let mut host = lang::cli_host(data_root);
                     host.args = program_args;
                     host.ffi.enabled = allow_ffi;
-                    lang::run_input_report(&input, shots, seed, &mut host)
+                    lang::run_input_report_with(&input, shots, seed, limits, &mut host)
                         .map(|r| (r.text, r.simulated, r.exit_code))
                 }
             };

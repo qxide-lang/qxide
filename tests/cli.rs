@@ -1062,6 +1062,27 @@ fn extern_functions_need_allow_ffi() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "1.0 2\n");
 }
 
+// D7: `--trusted` is a flag of `run` and `qasm` only; `check` and `build` reject it (a bundle
+// never carries raised limits).
+#[test]
+fn trusted_flag_is_accepted_by_run_and_qasm_only() {
+    let bell = example("bell.qx");
+    for cmd in ["run", "qasm"] {
+        let out = qxide(&[cmd, &bell, "--trusted"]);
+        assert!(
+            out.status.success(),
+            "{cmd}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    for cmd in ["check", "build"] {
+        let out = qxide(&[cmd, &bell, "--trusted"]);
+        assert_eq!(out.status.code(), Some(2), "{cmd}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("unexpected argument `--trusted`"), "{err}");
+    }
+}
+
 // Deprecated snake_case names still run: the warning goes to stderr, stdout and the exit code
 // are those of the canonical name.
 #[test]
