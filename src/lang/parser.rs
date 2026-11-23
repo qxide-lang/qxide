@@ -1445,8 +1445,8 @@ pub fn parse_format(s: &str) -> Option<Vec<FmtPiece>> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::lexer::lex;
     use super::*;
-    use crate::lang::lexer::lex;
 
     fn parse_src(src: &str) -> PResult<Program> {
         parse(lex(src)?)

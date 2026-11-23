@@ -495,7 +495,7 @@ mod tests {
             Span::new(y, y + 1),
             "m\u{1b}]0;t\u{7}".into(),
         );
-        let out = map.render(&d, &crate::lang::Limits::CLI);
+        let out = map.render(&d, &super::super::Limits::CLI);
         assert!(
             !out.chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t'),
@@ -510,9 +510,9 @@ mod tests {
     // `max_line_chars` displayed characters and never ends inside a `\u{..}` escape.
     #[test]
     fn long_lines_are_windowed_after_escaping() {
-        let limits = crate::lang::Limits {
+        let limits = super::super::Limits {
             max_line_chars: 20,
-            ..crate::lang::Limits::CLI
+            ..super::super::Limits::CLI
         };
         for gap in 0..12 {
             let src = format!(

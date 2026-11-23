@@ -156,6 +156,46 @@
 #[cfg(feature = "gpu")]
 mod gpu;
 mod groups;
+// The `.qx` front end and interpreters (also built into the `qxide` binary, the playground and
+// the app runtime). Only the items `lang` re-exports are public.
+#[cfg(feature = "unstable-lang")]
+#[allow(dead_code, unused_imports)]
+#[path = "lang/mod.rs"]
+mod lang_impl;
+// `src/lang` names this crate `qxide`, as the binary does.
+#[cfg(feature = "unstable-lang")]
+extern crate self as qxide;
+
+#[cfg(feature = "unstable-lang")]
+pub mod lang {
+    //! Check and run `.qx` programs from Rust using the same front end and interpreters as the
+    //! `qxide` CLI.
+    //!
+    //! Use `check`, `run`, and `run_with` with a file name and source text. For configured runs,
+    //! `check_input` and `run_input` take an `Input` (entry file, optional package `Project`, a
+    //! file reader such as `read_file`, and `Permissions`) and a `Host` that handles
+    //! standard-library calls (`native_host` provides the CLI's host). Use `test_input` to run
+    //! `void testName()` functions like `qxide test`. Errors are returned as `Failure` holding
+    //! rendered diagnostics.
+    //!
+    //! Available with the `unstable-lang` Cargo feature. Unstable until 1.0: any item in this
+    //! module may change in a minor version.
+    pub use crate::lang_impl::stdlib::{
+        Access, Host, HostValue, Permissions, StdError, StdErrorKind, StdResult,
+    };
+    pub use crate::lang_impl::{
+        check, check_input, qasm, read_file, run, run_input, run_with, test_input, Failure, Input,
+        Limits, PackageRoot, Project, ReadFn, TestOutcome,
+    };
+
+    /// Returns the host used by `qxide run`: `std.log` to stderr, `std.time`, `std.io`, `std.env`,
+    /// and `std.fs` for paths inside `data_root`.
+    pub fn native_host(data_root: std::path::PathBuf) -> crate::lang_impl::stdlib::NativeStd {
+        crate::lang_impl::cli_host(data_root)
+    }
+
+    pub use crate::lang_impl::stdlib::NativeStd;
+}
 mod rng;
 mod stabilizer;
 mod statevector;

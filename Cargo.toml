@@ -42,6 +42,9 @@ jit = [
 # `extern` declarations and `--allow ffi`: calls into native C libraries (src/lang/ffi.rs). Native
 # code runs outside qxide's checks and limits, so it is off by default.
 ffi = []
+# `qxide::lang`: check and run `.qx` programs from Rust. Unstable until 1.0: its items may change
+# in any minor version (docs/design/general-purpose-roadmap.md, 4b).
+unstable-lang = []
 
 [dependencies]
 cranelift-codegen = { version = "0.138", optional = true }

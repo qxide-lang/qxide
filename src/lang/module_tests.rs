@@ -85,7 +85,7 @@ fn errs_in(
         src: entry,
         project: Some(&p),
         read: &read,
-        perms: crate::lang::stdlib::Permissions::cli(false),
+        perms: super::stdlib::Permissions::cli(false),
     };
     let (map, result) = front_input(&input, entry_module.is_none());
     match result {
@@ -114,9 +114,9 @@ fn run_files(entry: &str, files: &[(&str, &str)], shots: u64) -> Result<String, 
         src: entry,
         project: Some(&p),
         read: &read,
-        perms: crate::lang::stdlib::Permissions::cli(false),
+        perms: super::stdlib::Permissions::cli(false),
     };
-    run_input(&input, shots, 0, &mut crate::lang::cli_host("data".into())).map_err(|Failure(d)| d)
+    run_input(&input, shots, 0, &mut super::cli_host("data".into())).map_err(|Failure(d)| d)
 }
 
 fn bell_files() -> Vec<(&'static str, &'static str)> {
@@ -166,7 +166,7 @@ void main() {
         src: entry,
         project: Some(&p),
         read: &read,
-        perms: crate::lang::stdlib::Permissions::cli(false),
+        perms: super::stdlib::Permissions::cli(false),
     };
     assert_eq!(
         qasm_input(&input).unwrap_or_else(|Failure(d)| panic!("{d}")),
@@ -210,7 +210,7 @@ fn private_functions_cannot_be_imported() {
         src: entry,
         project: Some(&p),
         read: &read,
-        perms: crate::lang::stdlib::Permissions::cli(false),
+        perms: super::stdlib::Permissions::cli(false),
     };
     let Err(Failure(d)) = check_input(&input) else {
         panic!("expected Q0504")
@@ -253,7 +253,7 @@ void main() {
         src: entry,
         project: Some(&p),
         read: &read,
-        perms: crate::lang::stdlib::Permissions::cli(false),
+        perms: super::stdlib::Permissions::cli(false),
     };
     let qasm = qasm_input(&input).unwrap_or_else(|Failure(d)| panic!("{d}"));
     // `flip` reaches bell_utils' `helper` (x) and `g` reaches other's `helper` (z).
