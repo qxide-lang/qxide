@@ -1,6 +1,6 @@
 // Cranelift JIT for the build-time classical functions of a lowered module (docs/design/qx-jit.md).
 // A function is compiled when it only handles `int`, `double` and `boolean` values and only calls
-// such functions; everything else stays in the IR interpreter. Native code charges the same steps
+// such functions or `std.math`; everything else stays in the IR interpreter. Native code charges the same steps
 // at the same points as the interpreter (a fast inline check, else `Machine::charge_all` through
 // `qx_charge`), checks the call depth like `Machine::enter_call`, and reports the interpreter's
 // diagnostics, so results, errors and budget usage are identical.
@@ -18,6 +18,8 @@ use super::ir::exec::Native;
 use super::ir::{Const, Func, FuncId, Inst, IrTy, Module, Term};
 use super::machine::{coerce, internal, Machine, MAX_CALL_DEPTH, R};
 use super::msg;
+use super::pure;
+use super::stdlib::HostValue;
 
 #[cfg(test)]
 mod tests;
@@ -45,8 +47,19 @@ struct Rt {
     machine: *mut Machine<'static>,
     charges: *const Vec<ChargeSite>,
     fails: *const Vec<Diagnostic>,
+    maths: *const Vec<MathSite>,
     err: Option<Diagnostic>,
 }
+
+// One `std.math` call of native code: the function and the IR types of its arguments.
+struct MathSite {
+    function: String,
+    args: Vec<IrTy>,
+    span: Span,
+}
+
+// Most arguments a `std.math` function takes (`pow`, `atan2`, `minInt`, ...).
+const MATH_ARGS: usize = 2;
 
 // One `charge` of native code: the interpreter's `Machine::charge` calls it stands for.
 struct ChargeSite {
@@ -89,6 +102,48 @@ extern "C" fn qx_fmod(a: f64, b: f64) -> f64 {
     a % b
 }
 
+// A `std.math` call: the interpreters' `pure::math` on the argument words (`i64`, `f64` bits or
+// a `boolean` in the low byte), its result in `ctx.ret`.
+extern "C" fn qx_math(ctx: *mut Ctx, site: u32, a: u64, b: u64) -> u8 {
+    // SAFETY: as in `qx_charge`; `maths` lives as long as the `Jit` that runs this call.
+    let ctx = unsafe { &mut *ctx };
+    let rt = unsafe { &mut *ctx.rt };
+    let s = unsafe { &(&*rt.maths)[site as usize] };
+    let vals: Vec<HostValue> = s
+        .args
+        .iter()
+        .zip([a, b])
+        .map(|(t, w)| match t {
+            IrTy::F64 => HostValue::Double(f64::from_bits(w)),
+            IrTy::Bool => HostValue::Bool(w & 0xff != 0),
+            _ => HostValue::Int(w as i64),
+        })
+        .collect();
+    match pure::math(&s.function, &vals, s.span) {
+        Ok(HostValue::Int(n)) => ctx.ret = n as u64,
+        Ok(HostValue::Double(x)) => ctx.ret = x.to_bits(),
+        Ok(HostValue::Bool(v)) => ctx.ret = u64::from(v),
+        Ok(_) => {
+            rt.err = Some(internal(s.span));
+            return 1;
+        }
+        Err(d) => {
+            rt.err = Some(d);
+            return 1;
+        }
+    }
+    0
+}
+
+// `std.math.sqrt` and the like, with build-time numeric arguments and result.
+fn math_call(f: &Func, name: &str, args: &[(u32, Span)], dst: u32) -> bool {
+    let num = |t: IrTy| matches!(t, IrTy::I64 | IrTy::F64 | IrTy::Bool);
+    name.strip_prefix("std.math.").is_some()
+        && args.len() <= MATH_ARGS
+        && args.iter().all(|(r, _)| num(f.regs[*r as usize]))
+        && num(f.regs[dst as usize])
+}
+
 fn cl_ty(t: IrTy) -> Option<cl::Type> {
     match t {
         IrTy::I64 => Some(types::I64),
@@ -125,6 +180,9 @@ fn supported(f: &Func) -> bool {
                     | Inst::FloatOp { .. }
                     | Inst::BoolOp { .. }
                     | Inst::Call { .. } => true,
+                    Inst::StdCall {
+                        name, args, dst, ..
+                    } => math_call(f, name, args, *dst),
                     Inst::Unary { op, src, .. } => matches!(
                         (op, reg(*src)),
                         (UnOp::Neg | UnOp::BitNot, IrTy::I64)
@@ -209,9 +267,10 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 3],
+    helpers: [ClId; 4],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
+    maths: Vec<MathSite>,
     fctx: FunctionBuilderContext,
     calls: Vec<u32>,
     hot: u32,
@@ -252,6 +311,7 @@ impl<'m> Jit<'m> {
         b.symbol("qx_charge", qx_charge as *const u8);
         b.symbol("qx_fail", qx_fail as *const u8);
         b.symbol("qx_fmod", qx_fmod as *const u8);
+        b.symbol("qx_math", qx_math as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -267,15 +327,27 @@ impl<'m> Jit<'m> {
         let fmod = cl
             .declare_function("qx_fmod", Linkage::Import, &fsig)
             .ok()?;
+        let mut msig = cl.make_signature();
+        msig.params = vec![
+            AbiParam::new(ptr),
+            AbiParam::new(types::I32),
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+        ];
+        msig.returns = vec![AbiParam::new(types::I8)];
+        let math = cl
+            .declare_function("qx_math", Linkage::Import, &msig)
+            .ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
             ok: jitable(ir),
             ids: vec![None; ir.funcs.len()],
             entries: vec![None; ir.funcs.len()],
-            helpers: [charge, fail, fmod],
+            helpers: [charge, fail, fmod, math],
             charges: Vec::new(),
             fails: Vec::new(),
+            maths: Vec::new(),
             fctx: FunctionBuilderContext::new(),
             calls: vec![0; ir.funcs.len()],
             hot: HOT.with(std::cell::Cell::get),
@@ -423,8 +495,10 @@ impl<'m> Jit<'m> {
             charge: helpers[0],
             fail: helpers[1],
             fmod: helpers[2],
+            math: helpers[3],
             charges: &mut self.charges,
             fails: &mut self.fails,
+            maths: &mut self.maths,
             ctx: cl::Value::from_u32(0),
             err: cl::Block::from_u32(0),
             slots: Vec::new(),
@@ -482,6 +556,7 @@ impl Native for Jit<'_> {
             machine: (m as *mut Machine<'_>).cast::<Machine<'static>>(),
             charges: &self.charges,
             fails: &self.fails,
+            maths: &self.maths,
             err: None,
         };
         let mut ctx = Ctx {
@@ -518,8 +593,10 @@ struct Gen<'a, 'b> {
     charge: cl::FuncRef,
     fail: cl::FuncRef,
     fmod: cl::FuncRef,
+    math: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
+    maths: &'a mut Vec<MathSite>,
     ctx: cl::Value,
     // Returns status 1: a helper stored the diagnostic.
     err: cl::Block,
@@ -732,6 +809,12 @@ impl Gen<'_, '_> {
                 args,
                 span,
             } => self.call(*func, *dst, args, *span)?,
+            Inst::StdCall {
+                name,
+                dst,
+                args,
+                span,
+            } => self.math(name, *dst, args, *span)?,
             _ => return Err(format!("unsupported instruction {i:?}")),
         }
         Ok(())
@@ -869,6 +952,54 @@ impl Gen<'_, '_> {
         self.b.switch_to_block(cont);
         if let Some(t) = cl_ty(self.src.regs[dst as usize]) {
             let v = self.b.ins().load(t, flags, ctx, RET);
+            self.set(dst, v)?;
+        }
+        Ok(())
+    }
+
+    // `std.math` through `qx_math`: like `Machine::std_call`, no steps of its own.
+    fn math(
+        &mut self,
+        name: &str,
+        dst: u32,
+        args: &[(u32, Span)],
+        span: Span,
+    ) -> Result<(), String> {
+        let function = name.strip_prefix("std.math.").ok_or("not std.math")?;
+        let mut words = Vec::with_capacity(MATH_ARGS);
+        let mut tys = Vec::with_capacity(args.len());
+        for (r, _) in args {
+            let t = self.src.regs[*r as usize];
+            let v = self.get(*r)?;
+            words.push(match t {
+                IrTy::F64 => self.b.ins().bitcast(types::I64, MemFlagsData::new(), v),
+                IrTy::Bool => self.b.ins().uextend(types::I64, v),
+                _ => v,
+            });
+            tys.push(t);
+        }
+        while words.len() < MATH_ARGS {
+            words.push(self.b.ins().iconst(types::I64, 0));
+        }
+        self.maths.push(MathSite {
+            function: function.to_string(),
+            args: tys,
+            span,
+        });
+        let site = self
+            .b
+            .ins()
+            .iconst(types::I32, (self.maths.len() - 1) as i64);
+        let call = self
+            .b
+            .ins()
+            .call(self.math, &[self.ctx, site, words[0], words[1]]);
+        let st = self.b.inst_results(call)[0];
+        let cont = self.b.create_block();
+        self.b.ins().brif(st, self.err, &[], cont, &[]);
+        self.b.switch_to_block(cont);
+        if let Some(t) = cl_ty(self.src.regs[dst as usize]) {
+            let v = self.b.ins().load(t, MemFlagsData::trusted(), self.ctx, RET);
             self.set(dst, v)?;
         }
         Ok(())

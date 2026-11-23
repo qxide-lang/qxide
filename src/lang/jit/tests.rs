@@ -309,6 +309,61 @@ void main() {
     }
 }
 
+// Stage 3c: `std.math` calls run in native code through `qx_math`, with the interpreters'
+// results (NaN, infinities, `-0.0`), errors (`powInt` overflow) and step positions; functions
+// that call other std modules stay interpreted.
+#[test]
+fn std_math_calls_compile() {
+    let src = "import std.math;
+import std.log;
+double wave(double x) { return math.sin(x) * math.exp(-x) + math.hypot(x, 1.0) + math.pow(x, 0.5); }
+int ipow(int b, int e) { return math.powInt(b, e) + math.absInt(-b) + math.maxInt(b, e); }
+boolean odd(double x) { return math.isNaN(x) || math.isFinite(x) && math.floor(x) != x; }
+double edges(double x) { return math.sqrt(x) + math.log(x) + math.min(x, -0.0) + math.atan2(x, -1); }
+int note(int n) { log.info(\"n\"); return n; }
+void main() {
+    double s = 0.0;
+    for i in 0..20 {
+        s += wave(i * 0.25);
+    }
+    println(\"{} {} {} {}\", math.round(s * 1e9) / 1e9, ipow(3, 5), odd(2.5), odd(0.0 / 0.0));
+    println(\"{} {} {}\", edges(0.0), edges(-1.0), edges(4.0));
+    println(\"{}\", ipow(2, 63) > 0);
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    let id = |n: &str| m.index[n];
+    for f in ["wave", "ipow", "odd", "edges"] {
+        assert!(jit.compiles(id(f)), "{f}");
+    }
+    assert!(!jit.compiles(id("note")));
+    let out = same(src, Limits::CLI);
+    assert!(out.starts_with("error\n"), "{out}");
+    assert!(out.contains("Q0401"), "{out}");
+    let ok = src.replace("println(\"{}\", ipow(2, 63) > 0);", "");
+    let out = same(&ok, Limits::CLI);
+    assert!(out.starts_with("ok\n"), "{out}");
+    // Every step limit stops native code where the interpreters stop.
+    let total = engine::with(Engine::Ast, || {
+        let p = front(&ok).unwrap();
+        let mut host = super::super::stdlib::LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    for max in (0..=total + 1).step_by(5).chain([total - 1, total]) {
+        same(
+            &ok,
+            Limits {
+                max_steps: max,
+                ..Limits::CLI
+            },
+        );
+    }
+}
+
 struct Polls {
     n: Cell<u64>,
 }

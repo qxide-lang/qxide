@@ -1,0 +1,35 @@
+// bench: shots=1
+// Numeric code on `std.math`: a midpoint-rule integral and a fixed-point iteration.
+import std.math;
+
+double integrate(int n) {
+    double h = 1.0 / n;
+    double sum = 0.0;
+    for i in 0..n {
+        double x = (i + 0.5) * h;
+        sum += math.exp(-x * x) * math.cos(3.0 * x) + math.sqrt(1.0 + x);
+    }
+    return sum * h;
+}
+
+double dottie(int rounds) {
+    double x = 1.0;
+    for i in 0..rounds {
+        x = math.cos(x);
+    }
+    return x;
+}
+
+int digits(int n) {
+    int total = 0;
+    for i in 1..n {
+        total += math.absInt(math.powInt(-1, i) * i) % 10;
+    }
+    return total;
+}
+
+void main() {
+    println("{}", math.round(integrate(200000) * 1e9) / 1e9);
+    println("{}", math.round(dottie(200000) * 1e12) / 1e12);
+    println("{}", digits(200000));
+}
