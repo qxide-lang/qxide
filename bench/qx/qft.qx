@@ -37,5 +37,5 @@ void main() {
     qft(r, n, 1.0);
     qft(r, n, -1.0);
     BitReg m = measure(r);
-    println("{}", m.to_binary());
+    println("{}", m.toBinary());
 }

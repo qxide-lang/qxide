@@ -131,8 +131,8 @@ public BitReg measure_bell() {
 
 // Build-time effects: runs once per call, before any shot.
 public String save_result(String text) {
-    String line = time.now_iso() + "  " + text;
-    fs.append_text("results.txt", line + "\n");
+    String line = time.nowIso() + "  " + text;
+    fs.appendString("results.txt", line + "\n");
     log.info("saved " + len(line) + " characters");
     return line;
 }
@@ -141,7 +141,7 @@ public String history() {
     if (!fs.exists("results.txt")) {
         return "";
     }
-    return fs.read_text("results.txt");
+    return fs.readString("results.txt");
 }
 ```
 
@@ -214,7 +214,7 @@ App-level errors use codes `Q0711` through `Q0716`.
 
 ### Threads and cancellation
 
-Each command call runs on one of a fixed pool of worker threads (one per CPU core, at most four; additional calls wait in a queue without a thread of their own), so the window never freezes. A call that fails inside the runtime rejects with `Q0412` instead of leaving its `Promise` pending, and a call id that is still in flight cannot be reused (`Q0712`). Canceling a call through the `signal` option (an `AbortSignal`) sets a flag that the worker checks between shots, inside `std.time.sleep_millis`, and every 4096 interpreter steps; the `Promise` then rejects with `Q0713`. Closing the window cancels all running calls. Every message carries a random token for the page that sent it, so after a reload (F5) a response to a call made by the previous page is ignored.
+Each command call runs on one of a fixed pool of worker threads (one per CPU core, at most four; additional calls wait in a queue without a thread of their own), so the window never freezes. A call that fails inside the runtime rejects with `Q0412` instead of leaving its `Promise` pending, and a call id that is still in flight cannot be reused (`Q0712`). Canceling a call through the `signal` option (an `AbortSignal`) sets a flag that the worker checks between shots, inside `std.time.sleep`, and every 4096 interpreter steps; the `Promise` then rejects with `Q0713`. Closing the window cancels all running calls. Every message carries a random token for the page that sent it, so after a reload (F5) a response to a call made by the previous page is ignored.
 
 ### Determinism and state
 
@@ -234,7 +234,7 @@ Standard-library calls are not allowed inside an `if` branch conditioned on a me
 
 ### Importing standard modules
 
-A standard module can be imported by module path with `import std.fs;` and called in qualified form, such as `fs.write_text("bell.txt", text);`. The existing import forms (`import std.fs.write_text;` and `import std.fs.*;`) also work. Referring to an unknown `std` module or function produces `Q0701`.
+A standard module can be imported by module path with `import std.fs;` and called in qualified form, such as `fs.writeString("bell.txt", text);`. The existing import forms (`import std.fs.writeString;` and `import std.fs.*;`) also work. Referring to an unknown `std` module or function produces `Q0701`.
 
 Module imports (`import pkg.module;` followed by `module.fn(...)`) are limited to `std` in the MVP; support for other packages may follow. `std` is a reserved package name rejected by `qxide new`, `qxide.toml`, and the registry. `std` imports work both inside a project and in a standalone file.
 
@@ -244,20 +244,20 @@ The MVP standard library provides logging, time, confined file access, app windo
 
 ```text
 std.log    info(String msg)  warn(String msg)  error(String msg)
-std.time   int now_millis()               // Unix time in milliseconds
-           String now_iso()               // UTC, "2026-11-21T02:03:04.005Z"
-           sleep_millis(int ms)           // 0..=60000, cancellable
-           int monotonic_millis()         // since a fixed point in the process
-std.io     write(String text)  write_line(String text)    // CLI only: immediate stdout
-           Option<String> read_line()  String read_all()  // CLI only: stdin, 16 MiB cap
+std.time   int currentTimeMillis()       // Unix time in milliseconds
+           String nowIso()               // UTC, "2026-11-21T02:03:04.005Z"
+           sleep(int ms)                 // 0..=60000, cancellable
+           int monotonicMillis()         // since a fixed point in the process
+std.io     write(String text)  writeLine(String text)    // CLI only: immediate stdout
+           Option<String> readLine()  String readAll()  // CLI only: stdin, 16 MiB cap
 std.env    Option<String> get(String name)                // CLI only
-std.fs     String read_text(String path)
-           write_text(String path, String text)
-           append_text(String path, String text)
+std.fs     String readString(String path)
+           writeString(String path, String text)
+           appendString(String path, String text)
            boolean exists(String path)
            remove(String path)            // a file; missing files are not an error
-std.app    set_title(String title)
-           set_size(int width, int height)
+std.app    setTitle(String title)
+           setSize(int width, int height)
            close()
            emit(String event, String payload)   // qxide.on(event, cb) in the page
 std.qxide  String check(String src)       // JSON: diagnostics      (permission "qxide")
@@ -316,7 +316,7 @@ Every standard-library call passes through the `Host` trait supplied by the embe
   - `println("{}", s)` prints a `String`.
   - `String` is supported in function parameters, return types, `final` bindings, and `var` type inference.
   - A string literal used as a value cannot contain `{}` placeholders (`Q0214`, reworded for this case); `{{` and `}}` produce literal braces.
-- **Module imports for `std`**: `import std.<module>;` enables qualified calls such as `fs.write_text(...)`, alongside `import std.<module>.<fn>;` and `import std.<module>.*;`.
+- **Module imports for `std`**: `import std.<module>;` enables qualified calls such as `fs.writeString(...)`, alongside `import std.<module>.<fn>;` and `import std.<module>.*;`.
 - **Reserved names (minor breaking changes)**: comparable to reserving `import` and `public` in 0.7.0, `String` is now a reserved type name (cannot be used as a variable or function name) and `std` is a reserved package name (rejected by `qxide new`, `qxide.toml`, and the registry).
 
 ### Later
@@ -484,7 +484,7 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 | `Q0703` | `std` module not permitted by `[app]` `permissions` or `--allow` | Link / check |
 | `Q0704` | File operation failed (not found, larger than 16 MiB, not UTF-8, or I/O error) | Run time |
 | `Q0705` | Path not allowed (absolute, `..`, drive or UNC prefix, reserved name, or escapes the data folder) | Run time |
-| `Q0706` | `std` argument out of range (for example, `sleep_millis` above `60000`) | Run time |
+| `Q0706` | `std` argument out of range (for example, `sleep` above `60000`) | Run time |
 | `Q0707` | HTTP request failed (network error, status outside 2xx, body over 16 MiB, or not UTF-8) | Run time |
 | `Q0708` | URL not allowed (not `https://`, port other than 443, user info, or host not in `[app]` `http_hosts`) | Run time |
 | `Q0711` | Unknown command (not listed in `[app]` `commands`) | App call |
@@ -500,14 +500,14 @@ The `Q07xx` range is new, and its compile-time codes appear in `qxide explain`.
 
 - `String` type and `std` module imports.
 - `Host` trait with CLI, REPL, `qasm`, playground, and app hosts.
-- Standard-library modules: `std.log`, `std.time` (`now_millis`, `now_iso`, `sleep_millis`), `std.fs` (`read_text`, `write_text`, `append_text`, `exists`, `remove`), and `std.app` (`set_title`, `set_size`, `close`, `emit`).
+- Standard-library modules: `std.log`, `std.time` (`currentTimeMillis`, `nowIso`, `sleep`), `std.fs` (`readString`, `writeString`, `appendString`, `exists`, `remove`), and `std.app` (`setTitle`, `setSize`, `close`, `emit`).
 - `std.http.get` for apps granted `"http"`, restricted to `https://` hosts listed in `[app]` `http_hosts` and executed through the system `curl`.
 - `qxide run --allow fs`.
 - Command engine in `src/lang`.
 - `qxide-app` runtime on `wry` and `tao` for Windows.
 - `qxide app new`, `qxide app dev`, and `qxide app build`.
 - Example app in `examples/apps/bell-app`.
-- Qxide Studio (`apps/studio`, built with `qxide app build`): editor with syntax highlighting, line numbers, and error markers; Run with shots and seed, Stop, Check, Format, QASM view, distribution chart, and Problems list; examples from `examples/qx`, autosave through `std.fs`, and window title through `std.app.set_title`, using system font stacks instead of the website's web fonts.
+- Qxide Studio (`apps/studio`, built with `qxide app build`): editor with syntax highlighting, line numbers, and error markers; Run with shots and seed, Stop, Check, Format, QASM view, distribution chart, and Problems list; examples from `examples/qx`, autosave through `std.fs`, and window title through `std.app.setTitle`, using system font stacks instead of the website's web fonts.
 
 ### Not in the MVP
 

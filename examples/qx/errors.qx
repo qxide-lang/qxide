@@ -2,7 +2,7 @@
 Result<int, String> sum_all(String[] items) {
     int total = 0;
     for i in 0..len(items) {
-        total += items[i].try_parse_int()?;
+        total += items[i].tryParseInt()?;
     }
     return Result.Ok(total);
 }
@@ -48,7 +48,7 @@ void main() {
     show(sum_all(new String[]{"4", "x5", "6"}));
     show_half(half_of_first_even(new int[]{1, 8, 3}));
     show_half(half_of_first_even(new int[]{1, 3, 5}));
-    match "2.5".try_parse_double() {
+    match "2.5".tryParseDouble() {
         Ok(v) => {
             println("{}", v * 2);
         }

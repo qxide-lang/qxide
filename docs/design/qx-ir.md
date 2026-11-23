@@ -160,7 +160,7 @@ IR 인터프리터는 현재 인터프리터와 동일한 방식으로 호출 �
 
 ### 2. 타입 (초안 표 수정)
 
-- 초안 표에 빌드 타임 문자열 `str`(`String`)과 샷 타임 출력 뷰 `bits.int`(`r.as_int()`), `bits.bin`(`r.to_binary()`)를 추가했다. 전체 목록은 `i64`, `f64`, `bool`, `str`, `bit`, `bits`, `bits.int`, `bits.bin`, `qubit`, `qreg`, `unit`이다.
+- 초안 표에 빌드 타임 문자열 `str`(`String`)과 샷 타임 출력 뷰 `bits.int`(`r.asInt()`), `bits.bin`(`r.toBinary()`)를 추가했다. 전체 목록은 `i64`, `f64`, `bool`, `str`, `bit`, `bits`, `bits.int`, `bits.bin`, `qubit`, `qreg`, `unit`이다.
 - 검사기가 타입을 내보내지 않으므로, 하강이 선언, 매개변수, 함수 시그니처(`std` 스텁 포함)로부터 식의 타입을 상향식으로 직접 결정한다.
 - 트리 순회 인터프리터가 형 변환을 수행하는 선언, 대입, 호출 인자, 반환값 위치에 `int`-`double` 확장(`widen` 명령어)을 삽입한다.
 - 매개변수는 첫 번째 스택 슬롯부터 차지하며(매개변수에 재대입할 수 있다), 전달 모드 `copy`, `borrow`, `consume`을 기록한다.

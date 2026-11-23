@@ -7,5 +7,5 @@ void main() {
         cx(r[0], r[i]);
     }
     BitReg m = measure(r);
-    println("{}  {} = {}", m, m.to_binary(), m.as_int());
+    println("{}  {} = {}", m, m.toBinary(), m.asInt());
 }

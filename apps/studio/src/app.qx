@@ -25,14 +25,14 @@ public String load() {
     if (!fs.exists("workspace/main.qx")) {
         return "";
     }
-    return fs.read_text("workspace/main.qx");
+    return fs.readString("workspace/main.qx");
 }
 
 public void save(String source) {
-    fs.write_text("workspace/main.qx", source);
+    fs.writeString("workspace/main.qx", source);
 }
 
 // Shows the open program in the window title.
 public void set_file(String name) {
-    app.set_title(name + " - Qxide Studio");
+    app.setTitle(name + " - Qxide Studio");
 }

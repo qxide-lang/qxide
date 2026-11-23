@@ -8,12 +8,12 @@ double distance(double x, double y) {
 
 void main() {
     String record = "  probe-7: 3.0, 4.0  ".trim();
-    int colon = record.index_of(":");
-    String name = record.substring(0, colon).to_upper();
+    int colon = record.indexOf(":");
+    String name = record.substring(0, colon).toUpperCase();
     String coords = record.substring(colon + 1, record.length());
-    int comma = coords.index_of(",");
-    double x = coords.substring(0, comma).parse_double();
-    double y = coords.substring(comma + 1, coords.length()).parse_double();
+    int comma = coords.indexOf(",");
+    double x = coords.substring(0, comma).parseDouble();
+    double y = coords.substring(comma + 1, coords.length()).parseDouble();
     double d = distance(x, y);
     println("{} is {} away ({} cells)", name, d, (int) math.floor(d / 2));
     Qubit q = qubit();

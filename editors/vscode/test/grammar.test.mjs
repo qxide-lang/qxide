@@ -56,7 +56,7 @@ test("declarations, keywords, types and calls", () => {
     "    for i in 0..n { rx(q, PI / 2.5e1); }",
     "    return measure(q); // done",
     "}",
-    "void main() { boolean b = !true; while (b) {} helper(); m.as_int(); }",
+    "void main() { boolean b = !true; while (b) {} helper(); m.asInt(); }",
   ].join("\n");
   assert.equal(scopeOf(src, "import"), "keyword.control.import.qx");
   assert.equal(scopeOf(src, "bell_utils"), "entity.name.namespace.qx");
@@ -91,9 +91,9 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf("boolean c = a < b;", "<"), scopeOf("boolean c = a > b;", ">"));
   assert.equal(scopeOf("match e { A => {} }", "match"), "keyword.control.qx");
   assert.equal(scopeOf("match e { A => {} }", "=>"), "keyword.operator.arrow.qx");
-  const tried = "Result<int, String> f(String s) { int n = s.try_parse_int()?; return Result.Ok(n); }";
+  const tried = "Result<int, String> f(String s) { int n = s.tryParseInt()?; return Result.Ok(n); }";
   assert.equal(scopeOf(tried, "Result"), "support.type.prelude.qx");
-  assert.equal(scopeOf(tried, "try_parse_int"), "support.function.method.qx");
+  assert.equal(scopeOf(tried, "tryParseInt"), "support.function.method.qx");
   assert.equal(scopeOf(tried, "?"), "keyword.operator.try.qx");
   assert.equal(scopeOf(tried, "Ok"), "support.constant.variant.qx");
   assert.equal(scopeOf("Option<int> o = Option.None;", "None"), "support.constant.variant.qx");
@@ -113,17 +113,17 @@ test("declarations, keywords, types and calls", () => {
   assert.equal(scopeOf(bits, "^"), "keyword.operator.bitwise.qx");
   assert.equal(scopeOf(bits, "~"), "keyword.operator.bitwise.qx");
   assert.equal(scopeOf(bits, ">>"), "keyword.operator.bitwise.shift.qx");
-  const coll = "Map<String, int> m = new Map(); List<int> xs = new List(); Random r = new Random(1); m.put(\"a\", r.next_int(6)); for w in \"a b\".split(\" \") {}";
+  const coll = "Map<String, int> m = new Map(); List<int> xs = new List(); Random r = new Random(1); m.put(\"a\", r.nextInt(6)); for w in \"a b\".split(\" \") {}";
   assert.equal(scopeOf(coll, "Map"), "support.type.builtin.qx");
   assert.equal(scopeOf(coll, "List"), "support.type.builtin.qx");
   assert.equal(scopeOf(coll, "Random"), "support.type.builtin.qx");
   assert.equal(scopeOf(coll, "put"), "support.function.method.qx");
-  assert.equal(scopeOf(coll, "next_int"), "support.function.method.qx");
+  assert.equal(scopeOf(coll, "nextInt"), "support.function.method.qx");
   assert.equal(scopeOf(coll, "split"), "support.function.method.qx");
   // Nested type arguments close with two `>`, not a shift.
   assert.equal(scopeOf("Option<Option<int>> o;", ">"), scopeOf("Option<int> o;", ">"));
   assert.equal(scopeOf(src, "helper"), "entity.name.function.call.qx");
-  assert.equal(scopeOf(src, "as_int"), "support.function.method.qx");
+  assert.equal(scopeOf(src, "asInt"), "support.function.method.qx");
 });
 
 test("strings with escapes and placeholders", () => {

@@ -61,7 +61,7 @@ Result<int, String> parse(String text) {
     if text.length() == 0 {
         return Result.Err("empty input");
     }
-    return Result.Ok(text.parse_int());
+    return Result.Ok(text.parseInt());
 }
 
 int or_else(Option<int> o, int fallback) {

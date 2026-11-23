@@ -13,8 +13,8 @@ public BitReg measure_bell() {
 
 // Appends one line to results.txt in the app's data folder and returns it.
 public String save_result(String text) {
-    String line = time.now_iso() + "  " + text;
-    fs.append_text("results.txt", line + "\n");
+    String line = time.nowIso() + "  " + text;
+    fs.appendString("results.txt", line + "\n");
     log.info("saved " + line);
     return line;
 }
@@ -24,5 +24,5 @@ public String history() {
     if (!fs.exists("results.txt")) {
         return "";
     }
-    return fs.read_text("results.txt");
+    return fs.readString("results.txt");
 }

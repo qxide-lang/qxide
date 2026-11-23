@@ -19,7 +19,7 @@ int main(String[] args) {
                 freq = true;
             }
             _ => {
-                io.write_err_line("wc: unknown option " + arg);
+                io.writeErrLine("wc: unknown option " + arg);
                 return 2;
             }
         }
@@ -30,13 +30,13 @@ int main(String[] args) {
     Map<String, int> counts = new Map();
     boolean more = true;
     while more {
-        match io.read_line() {
+        match io.readLine() {
             Some(text) => {
                 lines += 1;
                 chars += text.length() + 1;
-                for word in text.split_whitespace() {
+                for word in text.splitWhitespace() {
                     words += 1;
-                    counts.put(word, counts.get_or(word, 0) + 1);
+                    counts.put(word, counts.getOrDefault(word, 0) + 1);
                 }
             }
             None => {
@@ -45,24 +45,24 @@ int main(String[] args) {
         }
     }
     if only == "lines" {
-        io.write_line("" + lines);
+        io.writeLine("" + lines);
     } else if only == "words" {
-        io.write_line("" + words);
+        io.writeLine("" + words);
     } else {
-        io.write_line(lines + " " + words + " " + chars);
+        io.writeLine(lines + " " + words + " " + chars);
     }
     if freq {
         // Highest count first; words with the same count keep their first-seen order.
         List<String> order = new List();
         for word in counts.keys() {
             int at = order.size();
-            while at > 0 && counts.get_or(order.get(at - 1), 0) < counts.get_or(word, 0) {
+            while at > 0 && counts.getOrDefault(order.get(at - 1), 0) < counts.getOrDefault(word, 0) {
                 at -= 1;
             }
             order.insert(at, word);
         }
         for word in order {
-            io.write_line(counts.get_or(word, 0) + " " + word);
+            io.writeLine(counts.getOrDefault(word, 0) + " " + word);
         }
     }
     return 0;

@@ -127,7 +127,7 @@ note: qubit consumed here
 - Types: `int` (64-bit), `double`, `boolean`, `Qubit`, `QReg`, `Bit`, `BitReg`, and `final` declarations
 - Gates and operations: `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rx`, `ry`, `rz`, `cx`, `ccx`, `reset`, `measure`, `discard`
 - Control flow: `if` on a measured `Bit` lowers to a classical feed-forward branch in OpenQASM 3
-- Register output: `r.to_binary()` and `r.as_int()`
+- Register output: `r.toBinary()` and `r.asInt()`
 - Qubit functions: parameters borrowed by default or moved with `consume`, `Qubit`/`QReg` return values, and gate-only calls inside `if` on a measured `Bit` (see `examples/qx/functions.qx`, `examples/qx/teleport_fn.qx`)
 - Type inference, casts, and constants: `var` for `int`/`double`/`boolean` locals, Java-style `(int) x` and `(double) n` casts, and `PI` (see `examples/qx/rotation.qx`)
 

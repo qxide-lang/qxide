@@ -90,7 +90,7 @@ enum Light implements Shape {
 Result<int, String> parse_all(String[] texts) {
     int sum = 0;
     for i in 0..len(texts) {
-        sum += texts[i].try_parse_int()?;
+        sum += texts[i].tryParseInt()?;
     }
     return Result.Ok(sum);
 }
@@ -116,6 +116,6 @@ void main() {
 
     String[] good = {"1", "2", "3"};
     String[] bad = {"1", "x"};
-    println("good: {}", parse_all(good).unwrap_or(-1));
-    println("bad: {} ok={}", parse_all(bad).unwrap_or(-1), parse_all(bad).is_ok());
+    println("good: {}", parse_all(good).orElse(-1));
+    println("bad: {} ok={}", parse_all(bad).orElse(-1), parse_all(bad).isOk());
 }

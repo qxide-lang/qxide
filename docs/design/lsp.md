@@ -22,7 +22,7 @@ Status: Implemented on the `lsp` branch (2026-11-21), not merged into `main`, an
 
 The package system (modules, `import`, `qxide.toml`, `src/pkg`) is already on `main` (released in `0.7.0`), so the server supports multi-file projects and imports from the start.
 
-`std` modules (`import std.fs;`, etc.) currently exist only on the unmerged `app-framework` branch. In this MVP, built-in completion covers the built-in functions (`qubit`, `qreg`, gates `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `reset`, `rx`, `ry`, `rz`, `cx`, `ccx`, `measure`, `discard`, `len`, `println`), the constant `PI`, and the `BitReg` methods `as_int` and `to_binary`. Once `app-framework` merges, `std` module functions should be added to completion and hover.
+`std` modules (`import std.fs;`, etc.) currently exist only on the unmerged `app-framework` branch. In this MVP, built-in completion covers the built-in functions (`qubit`, `qreg`, gates `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `reset`, `rx`, `ry`, `rz`, `cx`, `ccx`, `measure`, `discard`, `len`, `println`), the constant `PI`, and the `BitReg` methods `asInt` and `toBinary`. Once `app-framework` merges, `std` module functions should be added to completion and hover.
 
 ## 2. CLI command and transport
 
@@ -115,7 +115,7 @@ Keeping the diagnostic on the open file's `import` lines ensures the problem is 
 ### Completion
 
 - Trigger character: `.`.
-- After `.`, offers the `BitReg` methods (`as_int`, `to_binary`).
+- After `.`, offers the `BitReg` methods (`asInt`, `toBinary`).
 - Otherwise, offers local names in scope at the cursor (innermost first), functions defined in the file, imported functions (single-item imports and `public` functions of wildcard-imported modules), built-in functions with their signatures, `PI`, type names, and keywords.
 - Offers nothing on `import` lines or inside `//` comments.
 - Mid-edit tolerance: because the line currently being typed usually does not parse, the server re-parses the document with the cursor's line blanked out (preserving byte length so offsets stay valid). If that still fails, it scans the token stream for declarations (`Type name`, `var name`, `for name`, and functions at brace depth `0`).

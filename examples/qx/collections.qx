@@ -23,13 +23,13 @@ int popcount(int x) {
 void main() {
     String text = "the quick brown fox jumps over the lazy dog the end";
     Map<String, int> counts = new Map();
-    for word in text.split_whitespace() {
-        counts.put(word, counts.get_or(word, 0) + 1);
+    for word in text.splitWhitespace() {
+        counts.put(word, counts.getOrDefault(word, 0) + 1);
     }
     // Keys come back in the order they were first added.
     for word in counts.keys() {
-        if counts.get_or(word, 0) > 1 {
-            println("{} x{}", word, counts.get_or(word, 0));
+        if counts.getOrDefault(word, 0) > 1 {
+            println("{} x{}", word, counts.getOrDefault(word, 0));
         }
     }
     println("{} distinct words", counts.size());
@@ -40,17 +40,17 @@ void main() {
             long_words.add(word);
         }
     }
-    println("{}", ", ".join(reversed(long_words).to_array()));
+    println("{}", ", ".join(reversed(long_words).toArray()));
 
     // Dice with a fixed seed: the same rolls on every run and every host.
     Random rng = new Random(2024);
     int[] faces = new int[6];
     for i in 0..600 {
-        faces[rng.next_int(6)] += 1;
+        faces[rng.nextInt(6)] += 1;
     }
     int most = 0;
     for f in faces {
-        most = math.max_int(most, f);
+        most = math.maxInt(most, f);
     }
     println("most frequent face: {} rolls", most);
 

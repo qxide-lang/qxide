@@ -32,7 +32,7 @@ void main() {
         cx(r[0], r[i]);
     }
     BitReg m = measure(r);
-    println("{}  {} = {}", m, m.to_binary(), m.as_int());
+    println("{}  {} = {}", m, m.toBinary(), m.asInt());
 }`;
 
 const GHZ_OUT = `$ qxide run examples/qx/ghz.qx --shots 1000 --seed 0
@@ -382,8 +382,8 @@ export function Learn() {
         <CodeBlock label="ghz.qx" lang="qx" code={GHZ} />
         <CodeBlock label="Output" copyable={false} code={GHZ_OUT} />
         <p>
-          Every run is all zeros or all ones, never a mix. <code>m.to_binary()</code> prints the register with the
-          highest bit first and <code>m.as_int()</code> turns it into a number, so all ones reads <code>0b11111</code>{' '}
+          Every run is all zeros or all ones, never a mix. <code>m.toBinary()</code> prints the register with the
+          highest bit first and <code>m.asInt()</code> turns it into a number, so all ones reads <code>0b11111</code>{' '}
           and <code>31</code>.
         </p>
       </section>
