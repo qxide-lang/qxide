@@ -57,10 +57,12 @@ void main() {
     let m = module(src);
     let mut jit = Jit::new(&m).expect("Cranelift supports this machine");
     let id = |n: &str| m.index[n];
-    for f in ["fib", "half", "odd", "nothing", "viaFib"] {
+    for f in [
+        "fib", "half", "odd", "nothing", "viaFib", "name", "usesName",
+    ] {
         assert!(jit.compiles(id(f)), "{f}");
     }
-    for f in ["name", "usesName", "gate", "main"] {
+    for f in ["gate", "main"] {
         assert!(!jit.compiles(id(f)), "{f}");
     }
     // Compiling one function compiles the functions it calls too.
@@ -71,9 +73,9 @@ void main() {
 }
 
 // `while`, `break`, `continue` and compound assignment are plain jumps, so such functions compile.
-// `match` on `int` and `boolean` compiles; functions that touch enum values stay interpreted.
+// `match` on `int`, `boolean` and enum values compiles (enum tags and payloads through `qx_heap`).
 #[test]
-fn int_matches_compile_and_enums_stay_interpreted() {
+fn int_and_enum_matches_compile() {
     let src = "enum E { A, B(int n) }
 int pick(int n) {
     match n {
@@ -105,11 +107,11 @@ void main() {
     let m = module(src);
     let jit = Jit::new(&m).expect("Cranelift supports this machine");
     assert!(jit.compiles(m.index["pick"]));
-    assert!(!jit.compiles(m.index["unwrap"]));
+    assert!(jit.compiles(m.index["unwrap"]));
     assert_eq!(same(src, Limits::CLI), "ok\n10 20 7 3\n");
 }
 
-// Instances of generic functions are ordinary functions: those at `int` or `double` compile.
+// Instances of generic functions are ordinary functions, so they compile like the others.
 #[test]
 fn numeric_instances_of_generic_functions_compile() {
     let src = "<T> T pick(boolean c, T a, T b) {
@@ -127,23 +129,39 @@ void main() {
 ";
     let m = module(src);
     let jit = Jit::new(&m).expect("Cranelift supports this machine");
-    for f in ["pick<int>", "id<int>", "pick<double>"] {
+    for f in [
+        "pick<int>",
+        "id<int>",
+        "pick<double>",
+        "id<String>",
+        "pick<String>",
+    ] {
         assert!(jit.compiles(m.index[f]), "{f}");
     }
-    assert!(!jit.compiles(m.index["id<String>"]));
     assert_eq!(same(src, Limits::CLI), "ok\n3 2.5 s\n");
 }
 
-// Methods take a struct or enum receiver and stay interpreted; numeric helpers they call
-// compile, and dynamic calls run the same in every engine.
+// Methods with a struct or enum receiver compile; functions that call through an interface
+// stay interpreted, and dynamic calls run the same in every engine.
 #[test]
 fn methods_and_interface_calls_run_alongside_native_code() {
     let src = super::super::tests::INTERFACES;
     let m = module(src);
     let jit = Jit::new(&m).expect("Cranelift supports this machine");
-    for f in ["Rect.area", "Light.name", "total<Shape>", "max_of<Money>"] {
-        assert!(!jit.compiles(m.index[f]), "{f}");
-    }
+    let flags: Vec<(&str, bool)> = ["Rect.area", "Light.name", "total<Shape>", "max_of<Money>"]
+        .iter()
+        .map(|f| (*f, jit.compiles(m.index[*f])))
+        .collect();
+    // `max_of<Money>` calls `Money.compare` directly once instantiated.
+    assert_eq!(
+        flags,
+        vec![
+            ("Rect.area", true),
+            ("Light.name", true),
+            ("total<Shape>", false),
+            ("max_of<Money>", true)
+        ]
+    );
     let out = same(src, Limits::CLI);
     assert!(out.contains("all: 27.0"), "{out}");
 }
@@ -518,4 +536,221 @@ void main() {
 ";
     let out = same(bad, Limits::CLI);
     assert!(out.contains("Q0420"), "{out}");
+}
+
+// Roadmap 3c: strings, arrays, structs, enums and `List`/`Map` in native code, against both
+// interpreters (results, errors and every step-limit position).
+#[test]
+fn reference_values_compile() {
+    let src = "struct P {
+    double x;
+    int[] hits;
+}
+enum Shape { Circle(double r), Square(double side), Dot }
+int sieve(int n) {
+    boolean[] c = new boolean[n + 1];
+    int count = 0;
+    for i in 2..n + 1 {
+        if !c[i] {
+            count += 1;
+            int j = i * i;
+            while j <= n {
+                c[j] = true;
+                j += i;
+            }
+        }
+    }
+    return count;
+}
+double area(Shape s) {
+    match s {
+        Circle(r) => {
+            return 3.0 * r * r;
+        }
+        Square(side) => {
+            return side * side;
+        }
+        _ => {
+            return 0.0;
+        }
+    }
+}
+P step(P p, int k) {
+    p.x += 0.5 * k;
+    p.hits[k % len(p.hits)] += 1;
+    return p;
+}
+String label(int n) {
+    String s = \"n\";
+    for i in 0..n {
+        s = s + i % 10;
+    }
+    return s + \"/\" + s.length();
+}
+int grid(int n) {
+    int[][] g = new int[n][n];
+    for i in 0..n {
+        for j in 0..n {
+            g[i][j] = i * j;
+        }
+    }
+    int[] row = g[n - 1];
+    return row[n - 1] + len(g);
+}
+int listed(int n) {
+    List<int> xs = new List<int>();
+    for i in 0..n {
+        xs.add(i * i);
+    }
+    return xs.size() + xs.get(n - 1);
+}
+void main() {
+    P p = new P(0.0, new int[3]);
+    for k in 0..7 {
+        p = step(p, k);
+    }
+    double total = area(Shape.Circle(1.5)) + area(Shape.Square(2.0)) + area(Shape.Dot);
+    println(\"{} {} {} {}\", sieve(500), p.x, p.hits[0] + p.hits[1] * 10 + p.hits[2] * 100, total);
+    println(\"{} {} {}\", label(12), grid(9), listed(20));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in ["sieve", "area", "step", "label", "grid", "listed"] {
+        assert!(jit.compiles(m.index[f]), "{f}");
+    }
+    assert!(!jit.compiles(m.index["main"]));
+    let out = same(src, Limits::CLI);
+    assert_eq!(out, "ok\n95 10.5 223 10.75\nn012345678901/13 73 381\n");
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = super::super::stdlib::LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    for max in (0..=total + 1).step_by(101).chain([total - 1, total]) {
+        same(
+            src,
+            Limits {
+                max_steps: max,
+                ..Limits::CLI
+            },
+        );
+    }
+    // Run-time errors inside native code: an index, overflow in a compound store, a string limit.
+    for (bad, code) in [
+        ("int f(int[] a) { return a[3]; } void main() { println(\"{}\", f(new int[3])); }", "Q0403"),
+        ("void f(int[] a) { a[0] += 9223372036854775807; } void main() { int[] a = {1}; f(a); println(\"{}\", a[0]); }", "Q0401"),
+        ("int f(int n) { int[] a = new int[n]; return len(a); } void main() { println(\"{}\", f(-1)); }", "Q04"),
+        ("String f(String s) { for i in 0..80 { s = s + s; } return s; } void main() { println(\"{}\", f(\"ab\").length()); }", "Q04"),
+    ] {
+        let out = same(bad, Limits::CLI);
+        assert!(out.starts_with("error\n") && out.contains(code), "{bad}\n{out}");
+    }
+}
+
+// Every count native code takes of a reference is given back: on return, on a run-time error,
+// and for values it stored in structs or handed to other native functions.
+#[test]
+fn reference_counts_balance_in_native_code() {
+    use super::super::array::ArrayData;
+    use std::cell::RefCell;
+    let src = "struct Box2 { int[] xs; String s; }
+int[] keep(int[] a, String t, int n) {
+    int[] b = a;
+    Box2 box = new Box2(b, t + n);
+    int[] c = box.xs;
+    if n > 0 {
+        c[0] = n;
+        return keep(c, box.s, n - 1);
+    }
+    return c;
+}
+int fails(int[] a, String t) {
+    Box2 box = new Box2(a, t);
+    int[] b = box.xs;
+    return b[5] + len(t);
+}
+int[] fresh(int n) {
+    int[] a = new int[n];
+    int[] b = a;
+    return b;
+}
+String echo(String s) {
+    return s;
+}
+int[] churn(int[] a, String t, int n) {
+    int[] cur = a;
+    String s = t;
+    for i in 0..n {
+        cur = fresh(1);
+        cur = a;
+        s = s + \"x\";
+        fresh(2);
+        echo(s);
+        if i == 3 {
+            break;
+        }
+    }
+    for i in 0..n {
+        Box2 b = new Box2(cur, s);
+        if i == 2 {
+            return b.xs;
+        }
+    }
+    return a;
+}
+void main() {
+    int[] a = new int[2];
+    println(\"{} {}\", keep(a, \"t\", 3)[0], fresh(2)[0] + fails(a, \"t\") + len(churn(a, \"t\", 9)));
+}
+";
+    let m = module(src);
+    let mut jit = Jit::new(&m).expect("Cranelift supports this machine");
+    let id = |n: &str| m.index[n];
+    for f in ["keep", "fails", "fresh", "churn"] {
+        assert!(jit.has(id(f)), "{f}");
+    }
+    let arr = Rc::new(RefCell::new(ArrayData::Int(vec![0, 0])));
+    let text: Rc<str> = Rc::from("t");
+    let mut host = super::super::stdlib::LogOnly::default();
+    let mut machine = Machine::new(&mut host, &Limits::CLI, m.layouts.clone());
+    let args = || {
+        vec![
+            Value::Array(arr.clone()),
+            Value::Str(text.clone()),
+            Value::Int(3),
+        ]
+    };
+    let back = jit.call(id("keep"), args(), &mut machine).unwrap();
+    let Value::Array(same_arr) = back else {
+        panic!("{back:?}");
+    };
+    assert!(Rc::ptr_eq(&same_arr, &arr));
+    drop(same_arr);
+    assert_eq!(Rc::strong_count(&arr), 1);
+    assert_eq!(Rc::strong_count(&text), 1);
+    let err = jit
+        .call(id("fails"), args()[..2].to_vec(), &mut machine)
+        .unwrap_err();
+    assert_eq!(err.code, Code::IndexOutOfBounds);
+    assert_eq!(Rc::strong_count(&arr), 1);
+    assert_eq!(Rc::strong_count(&text), 1);
+    let Value::Array(made) = jit
+        .call(id("fresh"), vec![Value::Int(4)], &mut machine)
+        .unwrap()
+    else {
+        panic!("not an array");
+    };
+    assert_eq!(Rc::strong_count(&made), 1);
+    assert_eq!(made.borrow().len(), 4);
+    // Reassigned in a loop, left by `break` and by `return` inside a loop, results discarded.
+    let back = jit.call(id("churn"), args(), &mut machine).unwrap();
+    assert!(matches!(&back, Value::Array(r) if Rc::ptr_eq(r, &arr)));
+    drop(back);
+    assert_eq!(Rc::strong_count(&arr), 1);
+    assert_eq!(Rc::strong_count(&text), 1);
+    assert!(same(src, Limits::CLI).contains("Q0403"));
 }

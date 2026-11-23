@@ -180,6 +180,13 @@ impl<'m> Exec<'m, '_, '_> {
     }
 
     fn inst(&mut self, c: &mut Circuit, f: &'m Func, fr: &mut Frame, i: &'m Inst) -> R<()> {
+        let heap = heap_inst(&mut self.m, i, &|r| fr.get(r));
+        if let Some(r) = heap {
+            if let Some((dst, v)) = r? {
+                fr.set(dst, v);
+            }
+            return Ok(());
+        }
         match i {
             Inst::Charge { total, first, len } => {
                 let parts = &f.charges[*first as usize..(*first + *len) as usize];
@@ -193,10 +200,6 @@ impl<'m> Exec<'m, '_, '_> {
                     Const::Bool(b) => Value::Bool(*b),
                 },
             ),
-            Inst::Str { dst, text, span } => {
-                self.m.charge_text(text.len(), *span)?;
-                fr.set(*dst, Value::Str(text.clone()));
-            }
             Inst::Load { dst, slot } => {
                 let v = fr.slots[*slot as usize].clone();
                 fr.set(*dst, v);
@@ -241,16 +244,6 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = machine::binary(*op, fr.get(*a), fr.get(*b), *span)?;
                 fr.set(*dst, v);
             }
-            Inst::StrOp {
-                op,
-                dst,
-                a,
-                b,
-                span,
-            } => {
-                let v = self.m.str_binary(*op, fr.get(*a), fr.get(*b), *span)?;
-                fr.set(*dst, v);
-            }
             Inst::DynOp {
                 op,
                 dst,
@@ -274,16 +267,6 @@ impl<'m> Exec<'m, '_, '_> {
                 let v = machine::cast(*ty, fr.get(*src), *span)?;
                 fr.set(*dst, v);
             }
-            Inst::Index {
-                dst,
-                base,
-                index,
-                span,
-            } => {
-                let i = fr.int(*index, *span)?;
-                let v = machine::index(fr.get(*base), i, *span)?;
-                fr.set(*dst, v);
-            }
             Inst::View {
                 dst,
                 src,
@@ -291,125 +274,6 @@ impl<'m> Exec<'m, '_, '_> {
                 span,
             } => {
                 let v = machine::method(fr.get(*src), name, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::NewArray {
-                dst,
-                ty,
-                dims,
-                span,
-            } => {
-                let mut lens = Vec::with_capacity(dims.len());
-                for d in dims.iter() {
-                    lens.push(fr.int(*d, *span)?);
-                }
-                let v = self.m.new_array(*ty, &lens, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::ArrayLit {
-                dst,
-                ty,
-                elems,
-                span,
-            } => {
-                let vals = elems.iter().map(|a| fr.get(*a)).collect();
-                let v = self.m.array_lit(*ty, vals, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::NewStruct {
-                dst,
-                ty,
-                args,
-                span,
-            } => {
-                let vals = args.iter().map(|a| fr.get(*a)).collect();
-                let v = self.m.new_struct(*ty, vals, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::NewEnum {
-                dst,
-                ty,
-                tag,
-                args,
-                span,
-            } => {
-                let vals = args.iter().map(|a| fr.get(*a)).collect();
-                let v = self.m.new_enum(*ty, *tag, vals, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::EnumTag { dst, src, span } => {
-                let t = super::super::record::enum_tag(&fr.get(*src), *span)?;
-                fr.set(*dst, Value::Int(i64::from(t)));
-            }
-            Inst::EnumField {
-                dst,
-                src,
-                index,
-                span,
-            } => {
-                let v = super::super::record::enum_field(&fr.get(*src), *index as usize, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::GetField {
-                dst,
-                recv,
-                index,
-                span,
-            } => {
-                let v = super::super::record::get_field(&fr.get(*recv), *index as usize, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::SetField {
-                base,
-                index,
-                op,
-                value,
-                span,
-            } => {
-                self.m
-                    .set_field(fr.get(*base), *index as usize, *op, fr.get(*value), *span)?;
-            }
-            Inst::SetIndex {
-                base,
-                index,
-                op,
-                value,
-                span,
-            } => {
-                let i = fr.int(*index, *span)?;
-                self.m
-                    .set_index(fr.get(*base), i, *op, fr.get(*value), *span)?;
-            }
-            Inst::StrMethod {
-                name,
-                dst,
-                recv,
-                args,
-                span,
-            } => {
-                let vals = args.iter().map(|a| fr.get(*a)).collect();
-                let v = self.m.str_method(name, fr.get(*recv), vals, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::NewNative {
-                dst,
-                ty,
-                args,
-                span,
-            } => {
-                let vals = args.iter().map(|a| fr.get(*a)).collect();
-                let v = self.m.new_native(*ty, vals, *span)?;
-                fr.set(*dst, v);
-            }
-            Inst::NativeMethod {
-                name,
-                dst,
-                recv,
-                args,
-                span,
-            } => {
-                let vals = args.iter().map(|a| fr.get(*a)).collect();
-                let v = self.m.native_method(name, fr.get(*recv), vals, *span)?;
                 fr.set(*dst, v);
             }
             Inst::QAlloc { dst, span } => {
@@ -459,10 +323,6 @@ impl<'m> Exec<'m, '_, '_> {
             }
             Inst::Discard { src, span } => {
                 self.m.discard(fr.get(*src), *span)?;
-            }
-            Inst::Len { dst, src, span } => {
-                let v = self.m.len(fr.get(*src), *span)?;
-                fr.set(*dst, v);
             }
             Inst::Print { fmt, args, span } => {
                 let values = args.iter().map(|a| fr.get(*a)).collect();
@@ -526,6 +386,8 @@ impl<'m> Exec<'m, '_, '_> {
                 els,
                 span,
             } => self.if_bit(c, f, fr, *bit, *then, *els, *span)?,
+            // Strings, arrays, records and `List`/`Map`/`Random`: `heap_inst` above.
+            _ => return Err(internal(Span::default())),
         }
         Ok(())
     }
@@ -559,4 +421,158 @@ impl<'m> Exec<'m, '_, '_> {
         }
         Ok(())
     }
+}
+
+fn int_of(v: Value, at: Span) -> R<i64> {
+    match v {
+        Value::Int(n) => Ok(n),
+        _ => Err(internal(at)),
+    }
+}
+
+/// Executes instructions on strings, arrays, structs, enums, and `List`/`Map`/`Random` values,
+/// reading operand registers via `get`. Returns `None` for unhandled instructions,
+/// `Some(Ok(Some((register, value))))` for instructions that define a register, and
+/// `Some(Ok(None))` for stores. Native code invokes these through `qx_heap` (`src/lang/jit/`), so
+/// both engines share steps and diagnostics.
+pub fn heap_inst(
+    m: &mut Machine,
+    i: &Inst,
+    get: &dyn Fn(Reg) -> Value,
+) -> Option<R<Option<(Reg, Value)>>> {
+    let set = |dst: &Reg, v: R<Value>| v.map(|v| Some((*dst, v)));
+    Some(match i {
+        Inst::Str { dst, text, span } => set(
+            dst,
+            m.charge_text(text.len(), *span)
+                .map(|()| Value::Str(text.clone())),
+        ),
+        Inst::StrOp {
+            op,
+            dst,
+            a,
+            b,
+            span,
+        } => set(dst, m.str_binary(*op, get(*a), get(*b), *span)),
+        Inst::Index {
+            dst,
+            base,
+            index,
+            span,
+        } => set(
+            dst,
+            int_of(get(*index), *span).and_then(|i| machine::index(get(*base), i, *span)),
+        ),
+        Inst::NewArray {
+            dst,
+            ty,
+            dims,
+            span,
+        } => set(
+            dst,
+            dims.iter()
+                .map(|d| int_of(get(*d), *span))
+                .collect::<R<Vec<i64>>>()
+                .and_then(|lens| m.new_array(*ty, &lens, *span)),
+        ),
+        Inst::ArrayLit {
+            dst,
+            ty,
+            elems,
+            span,
+        } => {
+            let vals = elems.iter().map(|a| get(*a)).collect();
+            set(dst, m.array_lit(*ty, vals, *span))
+        }
+        Inst::NewStruct {
+            dst,
+            ty,
+            args,
+            span,
+        } => {
+            let vals = args.iter().map(|a| get(*a)).collect();
+            set(dst, m.new_struct(*ty, vals, *span))
+        }
+        Inst::NewEnum {
+            dst,
+            ty,
+            tag,
+            args,
+            span,
+        } => {
+            let vals = args.iter().map(|a| get(*a)).collect();
+            set(dst, m.new_enum(*ty, *tag, vals, *span))
+        }
+        Inst::EnumTag { dst, src, span } => set(
+            dst,
+            super::super::record::enum_tag(&get(*src), *span).map(|t| Value::Int(i64::from(t))),
+        ),
+        Inst::EnumField {
+            dst,
+            src,
+            index,
+            span,
+        } => set(
+            dst,
+            super::super::record::enum_field(&get(*src), *index as usize, *span),
+        ),
+        Inst::GetField {
+            dst,
+            recv,
+            index,
+            span,
+        } => set(
+            dst,
+            super::super::record::get_field(&get(*recv), *index as usize, *span),
+        ),
+        Inst::SetField {
+            base,
+            index,
+            op,
+            value,
+            span,
+        } => m
+            .set_field(get(*base), *index as usize, *op, get(*value), *span)
+            .map(|()| None),
+        Inst::SetIndex {
+            base,
+            index,
+            op,
+            value,
+            span,
+        } => int_of(get(*index), *span)
+            .and_then(|i| m.set_index(get(*base), i, *op, get(*value), *span))
+            .map(|()| None),
+        Inst::StrMethod {
+            name,
+            dst,
+            recv,
+            args,
+            span,
+        } => {
+            let vals = args.iter().map(|a| get(*a)).collect();
+            set(dst, m.str_method(name, get(*recv), vals, *span))
+        }
+        Inst::NewNative {
+            dst,
+            ty,
+            args,
+            span,
+        } => {
+            let vals = args.iter().map(|a| get(*a)).collect();
+            set(dst, m.new_native(*ty, vals, *span))
+        }
+        Inst::NativeMethod {
+            name,
+            dst,
+            recv,
+            args,
+            span,
+        } => {
+            let vals = args.iter().map(|a| get(*a)).collect();
+            set(dst, m.native_method(name, get(*recv), vals, *span))
+        }
+        Inst::Len { dst, src, span } => set(dst, m.len(get(*src), *span)),
+        _ => return None,
+    })
 }

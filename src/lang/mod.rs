@@ -330,7 +330,7 @@ pub fn bench_input(
         .into_iter()
         .map(|name| {
             let result = once(&name, host).and_then(|steps| {
-                let mut times = Vec::with_capacity(iterations);
+                let mut times = Vec::with_capacity(iterations.min(1 << 16));
                 for _ in 0..iterations {
                     let start = std::time::Instant::now();
                     once(&name, host)?;

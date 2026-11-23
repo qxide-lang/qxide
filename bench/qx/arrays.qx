@@ -1,0 +1,72 @@
+// bench: shots=1
+// Arrays, structs and strings: a prime sieve, particles stepped in place, and text building.
+
+int sieve(int n) {
+    boolean[] composite = new boolean[n + 1];
+    int count = 0;
+    for i in 2..n + 1 {
+        if !composite[i] {
+            count += 1;
+            int j = i * i;
+            while j <= n {
+                composite[j] = true;
+                j += i;
+            }
+        }
+    }
+    return count;
+}
+
+struct Particle {
+    double x;
+    double v;
+}
+
+double simulate(int n, int steps) {
+    Particle[] ps = new Particle[n];
+    for i in 0..n {
+        ps[i] = new Particle(i * 0.5, 1.0 - i * 0.01);
+    }
+    for s in 0..steps {
+        for i in 0..n {
+            Particle p = ps[i];
+            p.v = p.v - 0.01 * p.x;
+            p.x = p.x + 0.01 * p.v;
+        }
+    }
+    double total = 0.0;
+    for i in 0..n {
+        total += ps[i].x;
+    }
+    return total;
+}
+
+int words(int n) {
+    int total = 0;
+    for i in 0..n {
+        String w = "w" + i % 97;
+        total += w.length();
+    }
+    return total;
+}
+
+int matrix(int n) {
+    int[][] m = new int[n][n];
+    for i in 0..n {
+        for j in 0..n {
+            m[i][j] = (i * j) % 7;
+        }
+    }
+    int trace = 0;
+    for i in 0..n {
+        trace += m[i][i] + m[i][n - 1 - i];
+    }
+    return trace;
+}
+
+void main() {
+    println("{}", sieve(200000));
+    println("{}", (int) (simulate(200, 300) * 1000));
+    println("{}", words(30000));
+    println("{}", matrix(150));
+}

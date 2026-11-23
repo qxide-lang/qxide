@@ -1,6 +1,8 @@
 // Cranelift JIT for the build-time classical functions of a lowered module (docs/design/qx-jit.md).
-// A function is compiled when it only handles `int`, `double` and `boolean` values and only calls
-// such functions or `std.math`; everything else stays in the IR interpreter. Native code charges the same steps
+// A function is compiled when it only handles `int`, `double`, `boolean`, `String`, array, struct,
+// enum and `List`/`Map`/`Random` values and only calls such functions or `std.math`; everything
+// else stays in the IR interpreter. Reference values are owned `Rc<Value>` pointers whose
+// operations run the IR interpreter's own code (`exec::heap_inst`) through `qx_heap`. Native code charges the same steps
 // at the same points as the interpreter (a fast inline check, else `Machine::charge_all` through
 // `qx_charge`), checks the call depth like `Machine::enter_call`, and reports the interpreter's
 // diagnostics, so results, errors and budget usage are identical.
@@ -14,8 +16,10 @@ use cranelift_module::{default_libcall_names, FuncId as ClId, Linkage, Module as
 use super::ast::{BinOp, Ty, UnOp};
 use super::diag::{Code, Diagnostic, Span};
 use super::interp::Value;
-use super::ir::exec::Native;
-use super::ir::{Const, Func, FuncId, Inst, IrTy, Module, Term};
+use std::rc::Rc;
+
+use super::ir::exec::{heap_inst, Native};
+use super::ir::{Const, Func, FuncId, Inst, IrTy, Module, Reg, Term};
 use super::machine::{coerce, internal, Machine, MAX_CALL_DEPTH, R};
 use super::msg;
 use super::pure;
@@ -48,7 +52,17 @@ struct Rt {
     charges: *const Vec<ChargeSite>,
     fails: *const Vec<Diagnostic>,
     maths: *const Vec<MathSite>,
+    heaps: *const Vec<HeapSite>,
     err: Option<Diagnostic>,
+}
+
+// One instruction on reference values run by `qx_heap`: its operand registers (and their
+// types), in the order native code stores their words, and the register it defines.
+struct HeapSite {
+    inst: Inst,
+    regs: Vec<(Reg, IrTy)>,
+    dst: Option<(Reg, IrTy)>,
+    span: Span,
 }
 
 // One `std.math` call of native code: the function and the IR types of its arguments.
@@ -135,6 +149,315 @@ extern "C" fn qx_math(ctx: *mut Ctx, site: u32, a: u64, b: u64) -> u8 {
     0
 }
 
+// Strings, arrays, structs, enums and `List`/`Map`/`Random`: a word holding an owned `Rc`
+// pointer (0 before the first store); each variable owns one count of its value. Arrays,
+// structs, enums and natives use their own `Rc` (no allocation to pass one around); a `String`
+// (`Rc<str>`, two words) is boxed as an `Rc<Value>`.
+const BOXED: u8 = 0;
+const ARRAY: u8 = 1;
+const STRUCT: u8 = 2;
+const ENUM: u8 = 3;
+const NATIVE: u8 = 4;
+
+fn ref_kind(t: IrTy) -> Option<u8> {
+    match t {
+        IrTy::Str => Some(BOXED),
+        IrTy::Array(_) => Some(ARRAY),
+        IrTy::Struct(_) => Some(STRUCT),
+        IrTy::Enum(_) => Some(ENUM),
+        IrTy::Native(_) => Some(NATIVE),
+        _ => None,
+    }
+}
+
+fn is_ref(t: IrTy) -> bool {
+    ref_kind(t).is_some()
+}
+
+// `v` as a word of type `t`, a new owned pointer for a reference.
+fn to_word(v: Value, t: IrTy) -> Option<u64> {
+    Some(match (v, ref_kind(t)) {
+        (Value::Array(a), Some(ARRAY)) => Rc::into_raw(a) as u64,
+        (Value::Struct(x), Some(STRUCT)) => Rc::into_raw(x) as u64,
+        (Value::Enum(x), Some(ENUM)) => Rc::into_raw(x) as u64,
+        (Value::Native(x), Some(NATIVE)) => Rc::into_raw(x) as u64,
+        (v @ Value::Str(_), Some(BOXED)) => Rc::into_raw(Rc::new(v)) as u64,
+        (v, None) => match (
+            coerce(v, if t == IrTy::F64 { Ty::Double } else { Ty::Int }),
+            t,
+        ) {
+            (Value::Int(n), IrTy::I64) => n as u64,
+            (Value::Double(x), IrTy::F64) => x.to_bits(),
+            (Value::Bool(b), IrTy::Bool) => u64::from(b),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+// A new count of the `Rc` behind a nonzero word.
+//
+// SAFETY: `w` was made by `to_word` from an `Rc<T>` and a count of it is still owned.
+unsafe fn cloned<T>(w: u64) -> Rc<T> {
+    unsafe {
+        Rc::increment_strong_count(w as *const T);
+        Rc::from_raw(w as *const T)
+    }
+}
+
+// The value of word `w` of type `t`, borrowed from native code (`None` for a null reference).
+//
+// SAFETY: a nonzero reference word was made by `to_word` for type `t` and is still owned.
+unsafe fn from_word(w: u64, t: IrTy) -> Option<Value> {
+    let kind = ref_kind(t);
+    if kind.is_some() && w == 0 {
+        return None;
+    }
+    Some(unsafe {
+        match (kind, t) {
+            (Some(ARRAY), _) => Value::Array(cloned(w)),
+            (Some(STRUCT), _) => Value::Struct(cloned(w)),
+            (Some(ENUM), _) => Value::Enum(cloned(w)),
+            (Some(NATIVE), _) => Value::Native(cloned(w)),
+            (Some(_), _) => (*(w as *const Value)).clone(),
+            (None, IrTy::I64) => Value::Int(w as i64),
+            (None, IrTy::F64) => Value::Double(f64::from_bits(w)),
+            (None, IrTy::Bool) => Value::Bool(w & 0xff != 0),
+            (None, _) => return None,
+        }
+    })
+}
+
+// Takes back the value of an owned reference word of type `t`.
+//
+// SAFETY: `w` is a nonzero word made by `to_word` for `t` whose count the caller owns.
+unsafe fn take_word(w: u64, t: IrTy) -> Option<Value> {
+    Some(unsafe {
+        match ref_kind(t)? {
+            ARRAY => Value::Array(Rc::from_raw(w as *const _)),
+            STRUCT => Value::Struct(Rc::from_raw(w as *const _)),
+            ENUM => Value::Enum(Rc::from_raw(w as *const _)),
+            NATIVE => Value::Native(Rc::from_raw(w as *const _)),
+            _ => {
+                let rc = Rc::from_raw(w as *const Value);
+                Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
+            }
+        }
+    })
+}
+
+// Another count (`up`) or one count less of the reference word `w` of kind `kind` (none for 0).
+//
+// SAFETY: `w` was made by `to_word` for `kind`; giving one up, the caller owns it.
+unsafe fn count(w: u64, kind: u8, up: bool) {
+    use super::array::ArrayData;
+    use super::native::NativeVal;
+    use super::record::{EnumVal, StructVal};
+    use std::cell::RefCell;
+    unsafe fn step<T>(w: u64, up: bool) {
+        unsafe {
+            if up {
+                Rc::increment_strong_count(w as *const T);
+            } else {
+                Rc::decrement_strong_count(w as *const T);
+            }
+        }
+    }
+    if w == 0 {
+        return;
+    }
+    unsafe {
+        match kind {
+            ARRAY => step::<RefCell<ArrayData>>(w, up),
+            STRUCT => step::<StructVal>(w, up),
+            ENUM => step::<EnumVal>(w, up),
+            NATIVE => step::<NativeVal>(w, up),
+            _ => step::<Value>(w, up),
+        }
+    }
+}
+
+extern "C" fn qx_retain(w: u64, kind: u8) {
+    // SAFETY: native code passes only words of `kind` that it owns a count of.
+    unsafe { count(w, kind, true) }
+}
+
+extern "C" fn qx_release(w: u64, kind: u8) {
+    // SAFETY: as in `qx_retain`; the count given up is the caller's own.
+    unsafe { count(w, kind, false) }
+}
+
+// An instruction on reference values: `exec::heap_inst` on the operand words at `ops`, the
+// defined register's word (an owned pointer for a reference) in `ctx.ret`.
+extern "C" fn qx_heap(ctx: *mut Ctx, site: u32, ops: *const u64) -> u8 {
+    // SAFETY: as in `qx_charge`; native code stores one word per operand register at `ops`.
+    let ctx = unsafe { &mut *ctx };
+    let rt = unsafe { &mut *ctx.rt };
+    let m = unsafe { &mut *rt.machine };
+    let s = unsafe { &(&*rt.heaps)[site as usize] };
+    let words = unsafe { std::slice::from_raw_parts(ops, s.regs.len()) };
+    if words
+        .iter()
+        .zip(&s.regs)
+        .any(|(w, (_, t))| is_ref(*t) && *w == 0)
+    {
+        rt.err = Some(internal(s.span));
+        return 1;
+    }
+    // SAFETY: the words are this function's live registers of the listed types.
+    if let Some(r) = unsafe { heap_fast(&s.inst, words, &s.regs, s.dst.map(|(_, t)| t)) } {
+        return match r {
+            Ok(w) => {
+                ctx.ret = w;
+                0
+            }
+            Err(d) => {
+                rt.err = Some(d);
+                1
+            }
+        };
+    }
+    let get = |r: Reg| {
+        s.regs
+            .iter()
+            .position(|(x, _)| *x == r)
+            // SAFETY: as above; null references were refused.
+            .and_then(|k| unsafe { from_word(words[k], s.regs[k].1) })
+            .unwrap_or(Value::Unit)
+    };
+    m.set_budget(ctx.steps, ctx.next_poll);
+    let r = heap_inst(m, &s.inst, &get).unwrap_or_else(|| Err(internal(s.span)));
+    let (steps, next_poll, _) = m.budget();
+    ctx.steps = steps;
+    ctx.next_poll = next_poll;
+    match (r, s.dst) {
+        (Ok(Some((_, v))), Some((_, t))) if cl_ty(t).is_some() => match to_word(v, t) {
+            Some(w) => ctx.ret = w,
+            None => {
+                rt.err = Some(internal(s.span));
+                return 1;
+            }
+        },
+        (Ok(_), _) => {}
+        (Err(d), _) => {
+            rt.err = Some(d);
+            return 1;
+        }
+    }
+    0
+}
+
+// Reads that need neither the machine nor a new allocation: an array element, a struct field,
+// an array length. The same results and diagnostics as `heap_inst`, which runs everything else
+// (`None`).
+//
+// SAFETY: `words` are live registers of the types in `regs`, references nonzero.
+unsafe fn heap_fast(
+    i: &Inst,
+    words: &[u64],
+    regs: &[(Reg, IrTy)],
+    dst: Option<IrTy>,
+) -> Option<R<u64>> {
+    use super::array::ArrayData;
+    use super::record::StructVal;
+    use std::cell::RefCell;
+    let dst = dst?;
+    // A `String` result would need a new box: the general path is as fast.
+    if ref_kind(dst) == Some(BOXED) {
+        return None;
+    }
+    match i {
+        Inst::Index { span, .. } if ref_kind(regs[0].1) == Some(ARRAY) => {
+            // SAFETY: an `ARRAY` word points at a live `RefCell<ArrayData>`.
+            let a = unsafe { &*(words[0] as *const RefCell<ArrayData>) }.borrow();
+            let k = match super::machine::checked_index(words[1] as i64, a.len(), *span) {
+                Ok(k) => k,
+                Err(d) => return Some(Err(d)),
+            };
+            to_word(a.get(k), dst).map(Ok)
+        }
+        Inst::Len { .. } if ref_kind(regs[0].1) == Some(ARRAY) => {
+            // SAFETY: as above.
+            let a = unsafe { &*(words[0] as *const RefCell<ArrayData>) }.borrow();
+            to_word(Value::Int(a.len() as i64), dst).map(Ok)
+        }
+        Inst::GetField { index, .. } if ref_kind(regs[0].1) == Some(STRUCT) => {
+            // SAFETY: a `STRUCT` word points at a live `StructVal`.
+            let st = unsafe { &*(words[0] as *const StructVal) };
+            let v = st.fields.borrow().get(*index as usize)?.clone();
+            to_word(v, dst).map(Ok)
+        }
+        _ => None,
+    }
+}
+
+// The operand registers and the defined register of an instruction `qx_heap` runs.
+fn heap_operands(i: &Inst) -> Option<(Vec<Reg>, Option<Reg>, Span)> {
+    let list = |x: &[Reg]| x.to_vec();
+    Some(match i {
+        Inst::Str { dst, span, .. } => (vec![], Some(*dst), *span),
+        Inst::StrOp {
+            dst, a, b, span, ..
+        } => (vec![*a, *b], Some(*dst), *span),
+        Inst::Index {
+            dst,
+            base,
+            index,
+            span,
+        } => (vec![*base, *index], Some(*dst), *span),
+        Inst::NewArray {
+            dst, dims, span, ..
+        } => (list(dims), Some(*dst), *span),
+        Inst::ArrayLit {
+            dst, elems, span, ..
+        } => (list(elems), Some(*dst), *span),
+        Inst::NewStruct {
+            dst, args, span, ..
+        }
+        | Inst::NewEnum {
+            dst, args, span, ..
+        }
+        | Inst::NewNative {
+            dst, args, span, ..
+        } => (list(args), Some(*dst), *span),
+        Inst::EnumTag { dst, src, span }
+        | Inst::EnumField { dst, src, span, .. }
+        | Inst::Len { dst, src, span } => (vec![*src], Some(*dst), *span),
+        Inst::GetField {
+            dst, recv, span, ..
+        } => (vec![*recv], Some(*dst), *span),
+        Inst::SetField {
+            base, value, span, ..
+        } => (vec![*base, *value], None, *span),
+        Inst::SetIndex {
+            base,
+            index,
+            value,
+            span,
+            ..
+        } => (vec![*base, *index, *value], None, *span),
+        Inst::StrMethod {
+            dst,
+            recv,
+            args,
+            span,
+            ..
+        }
+        | Inst::NativeMethod {
+            dst,
+            recv,
+            args,
+            span,
+            ..
+        } => {
+            let mut regs = vec![*recv];
+            regs.extend_from_slice(args);
+            (regs, Some(*dst), *span)
+        }
+        _ => return None,
+    })
+}
+
 // `std.math.sqrt` and the like, with build-time numeric arguments and result.
 fn math_call(f: &Func, name: &str, args: &[(u32, Span)], dst: u32) -> bool {
     let num = |t: IrTy| matches!(t, IrTy::I64 | IrTy::F64 | IrTy::Bool);
@@ -149,6 +472,7 @@ fn cl_ty(t: IrTy) -> Option<cl::Type> {
         IrTy::I64 => Some(types::I64),
         IrTy::F64 => Some(types::F64),
         IrTy::Bool => Some(types::I8),
+        t if is_ref(t) => Some(types::I64),
         _ => None,
     }
 }
@@ -180,6 +504,7 @@ fn supported(f: &Func) -> bool {
                     | Inst::FloatOp { .. }
                     | Inst::BoolOp { .. }
                     | Inst::Call { .. } => true,
+                    i if heap_operands(i).is_some() => true,
                     Inst::StdCall {
                         name, args, dst, ..
                     } => math_call(f, name, args, *dst),
@@ -267,10 +592,11 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 4],
+    helpers: [ClId; 7],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     maths: Vec<MathSite>,
+    heaps: Vec<HeapSite>,
     fctx: FunctionBuilderContext,
     calls: Vec<u32>,
     hot: u32,
@@ -312,6 +638,9 @@ impl<'m> Jit<'m> {
         b.symbol("qx_fail", qx_fail as *const u8);
         b.symbol("qx_fmod", qx_fmod as *const u8);
         b.symbol("qx_math", qx_math as *const u8);
+        b.symbol("qx_heap", qx_heap as *const u8);
+        b.symbol("qx_retain", qx_retain as *const u8);
+        b.symbol("qx_release", qx_release as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -338,16 +667,35 @@ impl<'m> Jit<'m> {
         let math = cl
             .declare_function("qx_math", Linkage::Import, &msig)
             .ok()?;
+        let mut hsig = cl.make_signature();
+        hsig.params = vec![
+            AbiParam::new(ptr),
+            AbiParam::new(types::I32),
+            AbiParam::new(ptr),
+        ];
+        hsig.returns = vec![AbiParam::new(types::I8)];
+        let heap = cl
+            .declare_function("qx_heap", Linkage::Import, &hsig)
+            .ok()?;
+        let mut rsig = cl.make_signature();
+        rsig.params = vec![AbiParam::new(types::I64), AbiParam::new(types::I8)];
+        let retain = cl
+            .declare_function("qx_retain", Linkage::Import, &rsig)
+            .ok()?;
+        let release = cl
+            .declare_function("qx_release", Linkage::Import, &rsig)
+            .ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
             ok: jitable(ir),
             ids: vec![None; ir.funcs.len()],
             entries: vec![None; ir.funcs.len()],
-            helpers: [charge, fail, fmod, math],
+            helpers: [charge, fail, fmod, math, heap, retain, release],
             charges: Vec::new(),
             fails: Vec::new(),
             maths: Vec::new(),
+            heaps: Vec::new(),
             fctx: FunctionBuilderContext::new(),
             calls: vec![0; ir.funcs.len()],
             hot: HOT.with(std::cell::Cell::get),
@@ -496,13 +844,18 @@ impl<'m> Jit<'m> {
             fail: helpers[1],
             fmod: helpers[2],
             math: helpers[3],
+            heap: helpers[4],
+            retain: helpers[5],
+            release: helpers[6],
             charges: &mut self.charges,
             fails: &mut self.fails,
             maths: &mut self.maths,
+            heaps: &mut self.heaps,
             ctx: cl::Value::from_u32(0),
             err: cl::Block::from_u32(0),
             slots: Vec::new(),
             regs: Vec::new(),
+            owned: Vec::new(),
         };
         g.function()
     }
@@ -538,18 +891,23 @@ impl Native for Jit<'_> {
     fn call(&mut self, id: FuncId, args: Vec<Value>, m: &mut Machine) -> R<Value> {
         let f = &self.ir.funcs[id as usize];
         let entry = self.entries[id as usize].ok_or_else(|| internal(f.span))?;
-        let raw: Vec<u64> = args
-            .into_iter()
-            .zip(&f.param_tys)
-            .map(|(v, ty)| match coerce(v, *ty) {
-                Value::Int(n) => n as u64,
-                Value::Double(x) => x.to_bits(),
-                Value::Bool(b) => u64::from(b),
-                _ => 0,
-            })
-            .collect();
-        if raw.len() != f.params.len() {
+        if args.len() != f.params.len() {
             return Err(internal(f.span));
+        }
+        // The callee owns the reference words it receives.
+        let mut raw: Vec<u64> = Vec::with_capacity(args.len());
+        for ((v, ty), p) in args.into_iter().zip(&f.param_tys).zip(&f.params) {
+            match to_word(coerce(v, *ty), p.ty) {
+                Some(w) => raw.push(w),
+                None => {
+                    for (w, p) in raw.iter().zip(&f.params) {
+                        if let Some(kind) = ref_kind(p.ty) {
+                            qx_release(*w, kind);
+                        }
+                    }
+                    return Err(internal(f.span));
+                }
+            }
         }
         let (steps, next_poll, max_steps) = m.budget();
         let mut rt = Rt {
@@ -557,6 +915,7 @@ impl Native for Jit<'_> {
             charges: &self.charges,
             fails: &self.fails,
             maths: &self.maths,
+            heaps: &self.heaps,
             err: None,
         };
         let mut ctx = Ctx {
@@ -579,6 +938,11 @@ impl Native for Jit<'_> {
             IrTy::I64 => Value::Int(ctx.ret as i64),
             IrTy::F64 => Value::Double(f64::from_bits(ctx.ret)),
             IrTy::Bool => Value::Bool(ctx.ret & 0xff != 0),
+            // SAFETY: a nonzero reference result is an owned word the callee handed over.
+            t if is_ref(t) && ctx.ret != 0 => {
+                unsafe { take_word(ctx.ret, t) }.ok_or_else(|| internal(f.span))?
+            }
+            t if is_ref(t) => return Err(internal(f.span)),
             _ => Value::Unit,
         })
     }
@@ -594,14 +958,21 @@ struct Gen<'a, 'b> {
     fail: cl::FuncRef,
     fmod: cl::FuncRef,
     math: cl::FuncRef,
+    heap: cl::FuncRef,
+    retain: cl::FuncRef,
+    release: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
     maths: &'a mut Vec<MathSite>,
+    heaps: &'a mut Vec<HeapSite>,
     ctx: cl::Value,
     // Returns status 1: a helper stored the diagnostic.
     err: cl::Block,
     slots: Vec<Variable>,
     regs: Vec<Option<Variable>>,
+    // Slots and registers holding reference words: each owns one count of its value, given up
+    // when it is overwritten and when the function returns or fails.
+    owned: Vec<(Variable, u8)>,
 }
 
 impl Gen<'_, '_> {
@@ -619,9 +990,18 @@ impl Gen<'_, '_> {
             let zero = self.zero(t);
             self.b.def_var(v, zero);
             self.slots.push(v);
+            if let Some(kind) = ref_kind(s.ty) {
+                self.owned.push((v, kind));
+            }
         }
         for r in &src.regs {
-            self.regs.push(cl_ty(*r).map(|t| self.b.declare_var(t)));
+            let var = cl_ty(*r).map(|t| self.b.declare_var(t));
+            if let (Some(v), Some(kind)) = (var, ref_kind(*r)) {
+                let zero = self.b.ins().iconst(types::I64, 0);
+                self.b.def_var(v, zero);
+                self.owned.push((v, kind));
+            }
+            self.regs.push(var);
         }
         for i in 0..src.params.len() {
             let p = self.b.block_params(entry)[i + 1];
@@ -636,6 +1016,7 @@ impl Gen<'_, '_> {
             self.term(&blk.term, &blocks)?;
         }
         self.b.switch_to_block(self.err);
+        self.release_all();
         let one = self.b.ins().iconst(types::I8, 1);
         self.b.ins().return_(&[one]);
         self.b.seal_all_blocks();
@@ -656,10 +1037,33 @@ impl Gen<'_, '_> {
         Ok(self.b.use_var(v))
     }
 
+    // Defines register `r`; a reference `v` must be owned (it is given to the register).
     fn set(&mut self, r: u32, v: cl::Value) -> Result<(), String> {
         let var = self.regs[r as usize].ok_or("unit register defined")?;
-        self.b.def_var(var, v);
+        if let Some(kind) = ref_kind(self.src.regs[r as usize]) {
+            let old = self.b.use_var(var);
+            self.b.def_var(var, v);
+            self.count(old, kind, false);
+        } else {
+            self.b.def_var(var, v);
+        }
         Ok(())
+    }
+
+    // `qx_retain` (`up`) or `qx_release` of a reference word.
+    fn count(&mut self, v: cl::Value, kind: u8, up: bool) {
+        let k = self.b.ins().iconst(types::I8, i64::from(kind));
+        let f = if up { self.retain } else { self.release };
+        self.b.ins().call(f, &[v, k]);
+    }
+
+    // Gives up the counts of every reference variable (when the function returns or fails).
+    fn release_all(&mut self) {
+        for k in 0..self.owned.len() {
+            let (var, kind) = self.owned[k];
+            let v = self.b.use_var(var);
+            self.count(v, kind, false);
+        }
     }
 
     // Continues in a fresh block when `cond` is zero; otherwise reports `d`.
@@ -733,11 +1137,22 @@ impl Gen<'_, '_> {
             }
             Inst::Load { dst, slot } => {
                 let v = self.b.use_var(self.slots[*slot as usize]);
+                if let Some(kind) = ref_kind(src.slots[*slot as usize].ty) {
+                    self.count(v, kind, true);
+                }
                 self.set(*dst, v)?;
             }
             Inst::Store { slot, src: r } => {
                 let v = self.get(*r)?;
-                self.b.def_var(self.slots[*slot as usize], v);
+                let var = self.slots[*slot as usize];
+                if let Some(kind) = ref_kind(src.slots[*slot as usize].ty) {
+                    self.count(v, kind, true);
+                    let old = self.b.use_var(var);
+                    self.b.def_var(var, v);
+                    self.count(old, kind, false);
+                } else {
+                    self.b.def_var(var, v);
+                }
             }
             Inst::Widen { dst, src: r } => {
                 let x = self.get(*r)?;
@@ -815,7 +1230,10 @@ impl Gen<'_, '_> {
                 args,
                 span,
             } => self.math(name, *dst, args, *span)?,
-            _ => return Err(format!("unsupported instruction {i:?}")),
+            i => match heap_operands(i) {
+                Some((regs, dst, span)) => self.heap(i, regs, dst, span)?,
+                None => return Err(format!("unsupported instruction {i:?}")),
+            },
         }
         Ok(())
     }
@@ -939,7 +1357,12 @@ impl Gen<'_, '_> {
         self.b.ins().store(flags, deeper, ctx, DEPTH);
         let mut vals = vec![ctx];
         for a in args {
-            vals.push(self.get(*a)?);
+            let v = self.get(*a)?;
+            // The callee owns its reference arguments.
+            if let Some(kind) = ref_kind(self.src.regs[*a as usize]) {
+                self.count(v, kind, true);
+            }
+            vals.push(v);
         }
         let callee = *self.callees.get(&func).ok_or("callee not declared")?;
         let call = self.b.ins().call(callee, &vals);
@@ -1005,6 +1428,63 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    // An instruction on reference values through `qx_heap`: the operand words in a stack slot,
+    // the defined register (owned) from `ctx.ret`.
+    fn heap(
+        &mut self,
+        i: &Inst,
+        regs: Vec<Reg>,
+        dst: Option<Reg>,
+        span: Span,
+    ) -> Result<(), String> {
+        let slot = self.b.create_sized_stack_slot(cl::StackSlotData::new(
+            cl::StackSlotKind::ExplicitSlot,
+            8 * regs.len().max(1) as u32,
+            3,
+        ));
+        let mut tys = Vec::with_capacity(regs.len());
+        for (k, r) in regs.iter().enumerate() {
+            let t = self.src.regs[*r as usize];
+            let v = self.get(*r)?;
+            let w = match t {
+                IrTy::F64 => self.b.ins().bitcast(types::I64, MemFlagsData::new(), v),
+                IrTy::Bool => self.b.ins().uextend(types::I64, v),
+                _ => v,
+            };
+            let ptr = self.config.pointer_type();
+            self.b.ins().stack_store(ptr, w, slot, 8 * k as i32);
+            tys.push((*r, t));
+        }
+        let dst = dst.map(|d| (d, self.src.regs[d as usize]));
+        self.heaps.push(HeapSite {
+            inst: i.clone(),
+            regs: tys,
+            dst,
+            span,
+        });
+        let site = self
+            .b
+            .ins()
+            .iconst(types::I32, (self.heaps.len() - 1) as i64);
+        let ptr = self.config.pointer_type();
+        let addr = self.b.ins().stack_addr(ptr, slot, 0);
+        let call = self.b.ins().call(self.heap, &[self.ctx, site, addr]);
+        let st = self.b.inst_results(call)[0];
+        let cont = self.b.create_block();
+        self.b.ins().brif(st, self.err, &[], cont, &[]);
+        self.b.switch_to_block(cont);
+        if let Some((d, t)) = dst {
+            if let Some(ct) = cl_ty(t) {
+                let v = self
+                    .b
+                    .ins()
+                    .load(ct, MemFlagsData::trusted(), self.ctx, RET);
+                self.set(d, v)?;
+            }
+        }
+        Ok(())
+    }
+
     fn term(&mut self, t: &Term, blocks: &[cl::Block]) -> Result<(), String> {
         match t {
             Term::Jump(b) => {
@@ -1019,10 +1499,15 @@ impl Gen<'_, '_> {
             Term::Ret(r) => {
                 if let Some(r) = r {
                     let v = self.get(*r)?;
+                    // The caller gets its own count of a returned reference.
+                    if let Some(kind) = ref_kind(self.src.regs[*r as usize]) {
+                        self.count(v, kind, true);
+                    }
                     self.b
                         .ins()
                         .store(MemFlagsData::trusted(), v, self.ctx, RET);
                 }
+                self.release_all();
                 let zero = self.b.ins().iconst(types::I8, 0);
                 self.b.ins().return_(&[zero]);
             }
