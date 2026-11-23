@@ -17,7 +17,7 @@ qxide build [FILE] [-o OUT] [--engine ast|ir|jit] [--shots N] [--seed S] [--allo
 - Windows에서는 출력 이름에 확장자가 없으면 `.exe`를 자동으로 붙인다.
 
 ```text
-$ qxide build examples/cli/wc.qx -o wc.exe
+$ qxide build examples/cli/wc.qx --allow fs -o wc.exe
 $ wc.exe -f < notes.txt
 ```
 
