@@ -248,10 +248,10 @@
 | 2b | 완료 (커밋 `17143a1`, 설계 문서 `qx-language.md` 19.10절) |
 | 2c | 완료 (커밋 `b5f3b37`, 설계 문서 `qx-language.md` 19.14절, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
 | 3a | 완료 (커밋 `7cd7891`, 설계 문서 `qx-build.md`, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
-| 3b~3c | 3b 보류·3c 완료 (3b AOT 2026-11-23 결정으로 보류·릴리스 빌드에 JIT 포함, 커밋 `7ecf3de`; 3c 1부 `std.math` 네이티브 호출 커밋 `4281898`, 2부 데스크톱 앱 명령 호출 캐시 커밋 `COMMIT3C`, 3부 문자열·배열·구조체·열거형·`List`/`Map`/`Random` 네이티브 코드 커밋 `COMMIT3CN`, 설계 문서 `qx-jit.md`; 미결: 헬퍼 호출 없는 인라인 배열 접근·인터페이스 값; Windows만 검증 완료) |
+| 3b~3c | 3b 보류·3c 완료 (3b AOT 2026-11-23 결정으로 보류·릴리스 빌드에 JIT 포함, 커밋 `7ecf3de`; 3c 1부 `std.math` 네이티브 호출 커밋 `4281898`, 2부 데스크톱 앱 명령 호출 캐시 커밋 `44f1211`, 3부 문자열·배열·구조체·열거형·`List`/`Map`/`Random` 네이티브 코드 커밋 `9c7e7a1`, 설계 문서 `qx-jit.md`; 미결: 헬퍼 호출 없는 인라인 배열 접근·인터페이스 값; Windows만 검증 완료) |
 | 4a | 완료 (커밋 `bd2b0c2`, 설계 문서 `qx-language.md` 19.11절, Windows x86-64 로컬 검증·Linux/macOS CI 미실행) |
-| 4b~4c | 완료 (4b 커밋 `1f1ffe9`·`unstable-lang` 기능·`qxide::lang`, 4c 커밋 `COMMIT4C`·순수 Python 서브프로세스 모듈, 설계 문서 `qx-language.md` 19.16절, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
-| Stage 5 | 진행 중 — `qxide test`·`std.test` 완료(커밋 `37c6c66`, 19.15절), `///` 주석 기반 `qxide doc` 완료(커밋 `COMMITDOC`, 19.17절), `qxide bench` 완료(커밋 `COMMITBENCH`, 19.18절, 모두 Windows 로컬 검증), DAP 미착수 |
+| 4b~4c | 완료 (4b 커밋 `1f1ffe9`·`unstable-lang` 기능·`qxide::lang`, 4c 커밋 `dd201f8`·순수 Python 서브프로세스 모듈, 설계 문서 `qx-language.md` 19.16절, Windows 로컬 검증 완료·Linux/macOS CI 미실행) |
+| Stage 5 | 진행 중 — `qxide test`·`std.test` 완료(커밋 `37c6c66`, 19.15절), `///` 주석 기반 `qxide doc` 완료(커밋 `4ca7663`, 19.17절), `qxide bench` 완료(커밋 `1d2d041`, 19.18절, 모두 Windows 로컬 검증), DAP 미착수 |
 | Stage 6 | 미착수 |
 
 ## 7. 사용자 결정 항목 (결정됨 2026-11-23)
