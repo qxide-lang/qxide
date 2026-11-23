@@ -277,14 +277,14 @@ unsafe fn count(w: u64, kind: u8, up: bool) {
     }
 }
 
-extern "C" fn qx_retain(w: u64, kind: u8) {
+extern "C" fn qx_retain(w: u64, kind: u32) {
     // SAFETY: native code passes only words of `kind` that it owns a count of.
-    unsafe { count(w, kind, true) }
+    unsafe { count(w, kind as u8, true) }
 }
 
-extern "C" fn qx_release(w: u64, kind: u8) {
+extern "C" fn qx_release(w: u64, kind: u32) {
     // SAFETY: as in `qx_retain`; the count given up is the caller's own.
-    unsafe { count(w, kind, false) }
+    unsafe { count(w, kind as u8, false) }
 }
 
 // An instruction on reference values: `exec::heap_inst` on the operand words at `ops`, the
@@ -678,7 +678,8 @@ impl<'m> Jit<'m> {
             .declare_function("qx_heap", Linkage::Import, &hsig)
             .ok()?;
         let mut rsig = cl.make_signature();
-        rsig.params = vec![AbiParam::new(types::I64), AbiParam::new(types::I8)];
+        // A full 32-bit kind: Cranelift does not extend narrow arguments for Rust callees.
+        rsig.params = vec![AbiParam::new(types::I64), AbiParam::new(types::I32)];
         let retain = cl
             .declare_function("qx_retain", Linkage::Import, &rsig)
             .ok()?;
@@ -902,7 +903,7 @@ impl Native for Jit<'_> {
                 None => {
                     for (w, p) in raw.iter().zip(&f.params) {
                         if let Some(kind) = ref_kind(p.ty) {
-                            qx_release(*w, kind);
+                            qx_release(*w, u32::from(kind));
                         }
                     }
                     return Err(internal(f.span));
@@ -1052,7 +1053,7 @@ impl Gen<'_, '_> {
 
     // `qx_retain` (`up`) or `qx_release` of a reference word.
     fn count(&mut self, v: cl::Value, kind: u8, up: bool) {
-        let k = self.b.ins().iconst(types::I8, i64::from(kind));
+        let k = self.b.ins().iconst(types::I32, i64::from(kind));
         let f = if up { self.retain } else { self.release };
         self.b.ins().call(f, &[v, k]);
     }
