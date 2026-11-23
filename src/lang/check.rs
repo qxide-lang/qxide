@@ -393,6 +393,8 @@ struct Checker {
 }
 
 /// `require_main: false` checks a library module, which has no `main`.
+// Only the debug-build re-check of the monomorphized program calls it.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn check_with(p: &Program, require_main: bool) -> Vec<Diagnostic> {
     check_infer(p, require_main).0
 }
