@@ -2,6 +2,29 @@
 
 Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` language) are listed here by version; older releases (0.5.0 and earlier) are documented on [GitHub Releases](https://github.com/qxide-lang/qxide/releases) and in `docs/release-notes/`.
 
+## [Unreleased]
+
+### Breaking changes
+
+- **Disallow adjacent unary minus (`--x`)**: Writing two minus signs together as `--x` is now error `Q0113` instead of double negation (which previously caused `--i;` to silently do nothing); write `-(-x)` or `- -x` instead. `qxide fmt` now keeps `- -a` apart rather than joining it into `--a`.
+
+### Added
+
+- **Java/C syntax diagnostics (`Q0113`)**: Added error `Q0113` with a help line showing the Qxide form for parenthesized `for` headers (`for (int i = 0; i < n; i++)`, `for (int x : xs)`), `i++`/`++i`/`i--`/`--i`, unbraced `while`/`if`/`for` bodies, and `do { } while (c);`. Braced `while (cond) { }` remains valid.
+- **String escapes `\r` and `\uXXXX`**: Added carriage-return (`\r`) and Java-style four-hex-digit Unicode (`\uXXXX`) escapes so programs can write ANSI terminal sequences such as `\u001B[2J`. Other escape forms and surrogates report error `Q0103`.
+- **Windows console ANSI processing**: `qxide run` and executables built with `qxide build` now enable ANSI escape processing on Windows consoles.
+- **Progress bar CLI example**: Added `examples/cli/progress.qx`, a progress bar redrawn using `std.io.write` and `std.time.sleep`.
+- **Language server version metadata**: `qxide lsp` now logs its version, language level, and path to stderr at startup and reports `capabilities.experimental.qxideLanguageLevel` (`1`).
+- **VS Code extension 0.2.0 (not yet published)**: Warns when the `qxide` it starts is older than 0.9.0 and reports no language level (for example 0.8.0, which has no `while`), and offers to open the `qxide.path` setting.
+
+### Changed
+
+- **Standard module import hints**: `Q0508` (import outside a project) and unknown-package errors now suggest `import std.<name>;` when the first segment is a standard module name such as `time`. Standard library imports already work without a project.
+
+### Fixed
+
+- **Complete standard module list in `Q0701`**: The help text for `Q0701` (unknown standard module) previously listed only five modules and now lists every standard module of the build.
+
 ## [0.8.0] - 2026-11-22
 
 `qxide v0.8.0` builds on `v0.7.0` by adding a typed IR engine (`--engine ir`), an optional Cranelift JIT (`jit` feature, `--engine jit`), and IBM Quantum submission (`qxide run --backend ibm:<device>`, with `--dry-run`; tested only against a local fake server), while keeping `ast` as the default engine. It also adds the `String` type and `std` standard library, desktop apps and Qxide Studio, and editor support through the `qxide lsp` language server and a VS Code extension. Runtime and registry changes introduce a random default seed, execution budgets (`Q0413`–`Q0418`), registry package owners, and security hardening of the package client and registry template. For Rust library users, the public library API is unchanged since `0.7.0`; `lsp-server` joins the default `cli` feature's dependencies and the new optional `jit` feature pulls in Cranelift 0.138, so `default-features = false` still builds the library with no dependencies.
