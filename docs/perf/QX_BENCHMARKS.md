@@ -22,6 +22,7 @@ The suite is an ignored Rust test in `src/lang/bench.rs` inside the `qxide` bina
 | `circuit_build` | 400 layers over a 512-qubit register through a helper function (about 300 000 gates); too large for a state vector, so it builds the circuit and prints its OpenQASM 3 text. | build |
 | `check_flat_8000` | Generated file with 8000 functions (each allocates a qubit, applies `h`, measures, and prints) called from `main`: the public `flat_functions` family of `scripts/perf/checker_large_files.py`, generated in the harness. | check (front end: lexing, parsing, linking, type and ownership checks) |
 | `run_flat_8000` | The same generated file as `check_flat_8000`. | run, 1 shot |
+| `shapes` | Calls through interface values: areas of 300 structs and enums in a `List<Shape>` summed 400 times, and 20000 `scaled` calls that each return a new interface value | run, 1 shot |
 
 ## How to run
 
@@ -178,3 +179,20 @@ Environment: branch `feat/cranelift-jit` at commit `e9b872d`, `rustc 1.99.1`, re
 - `pure_calls_4000`: no function reaches 16 calls, so nothing is compiled and `jit` matches `ir`. In an earlier version that compiled every function on its first call, this case took about 1.5 s of elaboration (1504 ms minimum) because each compilation and code finalization costs a few hundred microseconds.
 - `qft` and `ghz_stabilizer` stay dominated by simulation; `check_flat_8000` does not elaborate; `run_flat_8000` and `many_loops_4000` compile nothing.
 - The machine was busy during this run (about 49 % CPU load); compare engines within this table.
+
+## Interface values in native code (2026-11-24)
+
+Measured on Windows x86-64 with `QXIDE_BENCH_ENGINES=ast,ir,jit QXIDE_BENCH_REPEAT=7 cargo test --release --features jit --bin qxide bench_suite -- --ignored --nocapture`.
+
+| Case | Engine | elaborate ms (min / median) |
+| --- | --- | --- |
+| `shapes` | `ast` | 217.4 / 224.7 |
+| `shapes` | `ir` | 90.0 / 99.6 |
+| `shapes` | `jit` | 49.3 / 51.1 |
+| `shapes` | `jit`, interface support disabled | 105.4 / 115.4 |
+
+### Reading
+
+- `shapes` is a new benchmark (`bench/qx/shapes.qx`) that sums areas through interface values over a `List<Shape>` of structs and enums and runs repeated `scaled` calls that return interface values.
+- Before this change, functions that call through interfaces remained in the IR interpreter, so the disabled-support row reflects the previous JIT behavior (measured on the same build with the two interface classification rules turned off; `ir` measured 101.3 ms in that run).
+- The machine was busy with another session's work during these runs, so other cases also measured slower than in the 2026-11-23 tables (for example, `arrays` `jit` 98.3 ms against 43.8 ms); compare engines within a single table only.

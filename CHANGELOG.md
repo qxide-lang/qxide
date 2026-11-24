@@ -14,6 +14,7 @@ Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` languag
 - **String escapes `\r` and `\uXXXX`**: Added carriage-return (`\r`) and Java-style four-hex-digit Unicode (`\uXXXX`) escapes so programs can write ANSI terminal sequences such as `\u001B[2J`. Other escape forms and surrogates report error `Q0103`.
 - **Windows console ANSI processing**: `qxide run` and executables built with `qxide build` now enable ANSI escape processing on Windows consoles.
 - **Progress bar CLI example**: Added `examples/cli/progress.qx`, a progress bar redrawn using `std.io.write` and `std.time.sleep`.
+- **JIT compilation for interface values**: Functions that use interface values (interface-typed parameters, locals, results, elements, and fields, as well as calls through an interface) now compile to native code under `--engine jit`, matching `ast` and `ir` in results, diagnostics, and step counts. On the new `bench/qx/shapes.qx` benchmark, `jit` runs in 49.3 ms compared to 105.4 ms before (Windows, release build, minimum of 7 runs).
 - **Language server version metadata**: `qxide lsp` now logs its version, language level, and path to stderr at startup and reports `capabilities.experimental.qxideLanguageLevel` (`1`).
 - **VS Code extension 0.2.0 (not yet published)**: Warns when the `qxide` it starts is older than 0.9.0 and reports no language level (for example 0.8.0, which has no `while`), and offers to open the `qxide.path` setting.
 
