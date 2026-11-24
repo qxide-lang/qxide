@@ -20,7 +20,7 @@ The headline metric is **Rust %** = `(Rust kernel time / Qxide kernel time) × 1
 ```sh
 cargo build --release --features jit
 cargo build --release --manifest-path bench/compare/rust/Cargo.toml
-python scripts/perf/rust_compare.py --reps 5 --ir-reps 3
+python scripts/perf/rust_compare.py --reps 5 --ir-reps 3 [--values]
 ```
 
 - The benchmark sources are `bench/compare/qx/*.qx` and `bench/compare/rust/src/bin/*.rs`. Each program times only its kernel (`std.time.monotonicMillis` at 1 ms resolution in Qxide; `Instant` in Rust) and prints `result=... ms=...`. Timing and printing stay in `main`, which the JIT leaves to the interpreter, so the kernel functions are the ones compiled (the `ir / jit` column confirms they are, at about 1.4–3.7x).
@@ -59,3 +59,47 @@ No tuning was done to remove these differences; they are part of what later stag
 - The gap is largest in the kernels dominated by array and struct field access (`matmul`, `nbody`), where Qxide goes through helper calls and reference counting. The baseline measures the gap only, not how much each cause contributes; the hypothesis (not yet measured) is that this is a main cost, and it is what the memory-model proposal (`docs/design/memory-model.md`, H1–H2) and the open 3c item "inline array access" aim at.
 - `binarytrees` and `strings` are allocation-bound on both sides, so the gap is smaller.
 - Reaching 95 % is expected to need changes such as the memory model, removing the step budget from compiled code, and better code generation (possibly an LLVM backend; that Cranelift generates slower code than LLVM is the user's premise, not measured here); which of these matter most has not been measured.
+
+## Measured changes (2026-11-24, branch `worktree-mm`)
+
+**Measured on the same shared Windows PC while other jobs were running.** Spreads reach about ±46 % (`binarytrees`), so differences under about 20 % are not meaningful. Re-measure on a quiet machine before relying on them. Each row is one run of `python scripts/perf/rust_compare.py --reps 5 --values` (5 interleaved rounds, medians); "values" runs `bench/compare/qx-values` with `--experimental value-semantics`.
+
+Rust % on the `jit` engine (Rust time / Qxide time × 100):
+
+| Commit | What changed | `nbody` | `binarytrees` | `matmul` | `strings` |
+| --- | --- | --- | --- | --- | --- |
+| `87b7a77` | baseline (table above) | 0.27 % | 14.75 % | 0.14 % | 4.98 % |
+| `cb2c00b` | value semantics behind a flag (M0, M1, M3, M4); flag off | 0.26 % | 15.04 % | 0.15 % | 5.79 % |
+| `cb2c00b` | same, flag on | 0.20 % | 14.44 % | 0.16 % | 5.56 % |
+| `69ad055` | JIT: scalar stores without the interpreter, borrowed loads; flag off | 0.39 % | 13.44 % | 0.30 % | 5.72 % |
+| `69ad055` | same, flag on | 0.26 % | 13.83 % | 0.30 % | 5.56 % |
+
+Kernel times behind the `69ad055` rows (ms, median of 5): Rust `nbody` 28.2, `binarytrees` 210.0, `matmul` 11.9, `strings` 21.7; Qxide jit 7316 / 1563 / 3979 / 380 with the flag off and 11007 / 1519 / 3912 / 391 with it on. Against `cb2c00b` (12539 / 1928 / 8488 / 416 ms) the JIT change made `matmul` 2.1x and `nbody` 1.7x faster; `binarytrees` and `strings` moved within the noise.
+
+What these rows say:
+
+- Value semantics as implemented now does not make anything faster, and it was not expected to: it runs on the same shared-reference representation and adds copies and write-back cells (`docs/design/memory-model.md` §12). The flag-on `nbody` is slower (0.26 % against 0.39 %). A likely reason, not measured: the value-semantics version reads `bs[i].x` through the array on every access instead of through a local `Body` reference, so it makes more helper calls.
+- The JIT change is independent of the memory model and is the larger effect so far.
+
+## Where the time goes (profile, 2026-11-24)
+
+`scripts/perf/sample_profile.py` on a release build with debug symbols (`69ad055`), 1 ms sampling, `--engine jit --trusted`, Windows only. `matmul` at n = 300 and `nbody` at 200,000 steps.
+
+| | `matmul` | `nbody` |
+| --- | --- | --- |
+| Worker samples in helper functions (`qx_heap` and what it calls) | 440 | 300 |
+| Worker samples whose innermost frame is native JIT code | 44 | 31 |
+| Share in helpers | about 91 % | about 91 % |
+
+Samples of other threads (the main thread waits for the worker) are left out. A sample counts only if the profiler could tell where it was, so these shares are approximate.
+
+Inside the helpers, `matmul`: `machine::binary` (the `+=` of `c[i * n + j] += ...`) 37 %, `store_fast` 24 %, `to_word` (turning a read element into a native word) 12 %, `ArrayData::set`/`get` 10 %, `qx_heap` dispatch 4 %, `checked_index` (bounds check) 2 %. `nbody` adds allocator time (`RtlSizeHeap`, `RtlFreeHeap`, about 8 %) from reference counts of `Body` values read out of the array.
+
+What this answers:
+
+- **Native code against interpreter code**: the kernels (`multiply`, `advance`, `energy`) are compiled (they have loops, so they compile on their first call); `main` stays in the IR interpreter but only times the kernel. Every array element and struct field access still calls a helper written in Rust, and those calls are about nine tenths of the kernel time. The native code itself, arithmetic and step checks included, is about one tenth.
+- **Step charging**: the inline check (three loads, an add, two compares, a branch and a store per charge site) belongs to the native tenth, so it costs at most about 9 % here. The slow path (`qx_charge`) did not appear in the samples. Removing the budget from compiled code therefore cannot close the gap by itself; it becomes worth doing once element access is inline.
+- **Bounds checks**: about 2 % of the helper time.
+- **Boxing**: numbers are passed as raw words, so there is no boxing in native code. Inside the helpers, each read builds a `Value` and converts it (`to_word`, `from_word`, drops), about 15 %. Struct elements (`nbody`) also touch reference counts and the allocator.
+
+What would close most of the gap is reading and writing elements and fields from native code without a call. That needs a memory layout native code may rely on: a `repr(C)` header with a pointer and a length for `int`/`double`/`boolean` arrays (H2 of the memory-model proposal, which does not need value semantics) and inline struct fields (which value semantics makes much easier). It is planned as M5 and was not done here. These are profile shares on one machine; the speed-up such a change gives has not been measured.
