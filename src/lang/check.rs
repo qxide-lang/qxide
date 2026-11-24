@@ -1960,18 +1960,21 @@ impl Checker {
                 match op {
                     UnOp::Neg => {
                         // `--x` written together: double negation, likely meant as a decrement.
-                        // In `-(-x)` the inner span starts at `(`, two bytes before its operand.
+                        // Parentheses widen an expression's span to the `(`: in `-(-x)` the inner
+                        // `-` is not next to its operand; `(--x)` is widened at both ends.
                         let joined = match &expr.kind {
                             ExprKind::Unary {
                                 op: UnOp::Neg,
                                 expr: inner,
                             } => {
-                                expr.span.start == e.span.start + 1
-                                    && inner.span.start == expr.span.start + 1
+                                inner.span.start == expr.span.start + 1
+                                    && (expr.span.start == e.span.start + 1
+                                        || (expr.span.start == e.span.start + 2
+                                            && e.span.end == expr.span.end + 1))
                             }
                             _ => false,
                         };
-                        let at = Span::new(e.span.start, e.span.start + 2);
+                        let at = Span::new(expr.span.start - 1, expr.span.start + 1);
                         if joined && !self.inferred.warnings.iter().any(|w| w.span == at) {
                             let target = match &expr.kind {
                                 ExprKind::Unary { expr: inner, .. } => match &inner.kind {

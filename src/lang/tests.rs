@@ -2837,6 +2837,7 @@ fn joined_double_minus_warns() {
         "<T> T id(T x) {\n    return x;\n}\n\n<T> int neg(T x, int n) {\n    return --n;\n}\n\nvoid main() {\n    println(\"{} {}\", neg(1, 2), neg(\"a\", 3));\n}\n",
         "struct P {\n    int n;\n\n    int flip() {\n        return --this.n;\n    }\n}\n\nvoid main() {\n    P p = new P(4);\n    println(\"{} {}\", p.flip(), p.flip());\n}\n",
         "void main() {\n    int n = 2;\n    int[] a = {--n, 1};\n    println(\"{}\", a[0]);\n}\n",
+        "void main() {\n    int n = 2;\n    int m = (--n) + -(- -n);\n    println(\"{}\", m);\n}\n",
     ] {
         if let Err(Failure(d)) = check("t.qx", src) {
             panic!("{d}");
