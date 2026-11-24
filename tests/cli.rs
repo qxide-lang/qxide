@@ -1448,8 +1448,21 @@ fn progress_example_redraws_a_line() {
 // The Rust comparison programs (bench/compare/qx) at small sizes: every engine prints the result
 // the Rust versions (bench/compare/rust) print for the same input.
 #[test]
+fn experimental_flags_are_named_and_kept_from_bundles() {
+    let unknown = qxide_io(&["run", "--experimental", "nope", "x.qx"], &[], "");
+    assert_eq!(unknown.status.code(), Some(2));
+    let err = String::from_utf8(unknown.stderr).unwrap();
+    assert!(err.contains("unknown experimental feature `nope`"), "{err}");
+    let file = format!("{}/bench/compare/qx/matmul.qx", env!("CARGO_MANIFEST_DIR"));
+    let build = qxide_io(&["build", &file, "--experimental", "value-semantics"], &[], "");
+    assert_eq!(build.status.code(), Some(2));
+    let err = String::from_utf8(build.stderr).unwrap();
+    assert!(err.contains("does not support"), "{err}");
+}
+
+#[test]
 fn rust_comparison_programs_match_the_rust_results() {
-    let dir = format!("{}/bench/compare/qx", env!("CARGO_MANIFEST_DIR"));
+    let root = env!("CARGO_MANIFEST_DIR");
     let cases = [
         ("nbody", "200", "-0.16902690858133132"),
         ("binarytrees", "6", "4398"),
@@ -1460,17 +1473,27 @@ fn rust_comparison_programs_match_the_rust_results() {
     if cfg!(feature = "jit") {
         engines.push("jit");
     }
-    for (name, n, want) in cases {
-        let file = format!("{dir}/{name}.qx");
-        for engine in &engines {
-            let out = qxide_io(&["run", &file, "--engine", engine, "--", n], &[], "");
-            assert_eq!(out.status.code(), Some(0), "{name} {engine}: {out:?}");
-            let text = String::from_utf8(out.stdout).unwrap();
-            let result = text
-                .strip_prefix("result=")
-                .and_then(|r| r.split(' ').next())
-                .unwrap_or_default();
-            assert_eq!(result, want, "{name} {engine}: {text}");
+    // `qx-values` holds the same programs for `--experimental value-semantics`.
+    for (dir, flags) in [
+        ("qx", &[][..]),
+        ("qx-values", &["--experimental", "value-semantics"][..]),
+    ] {
+        for (name, n, want) in cases {
+            let file = format!("{root}/bench/compare/{dir}/{name}.qx");
+            for engine in &engines {
+                let mut args = vec!["run", &file, "--engine", engine];
+                args.extend_from_slice(flags);
+                args.extend(["--", n]);
+                let out = qxide_io(&args, &[], "");
+                assert_eq!(out.status.code(), Some(0), "{dir}/{name} {engine}: {out:?}");
+                assert!(out.stderr.is_empty(), "{dir}/{name} {engine}: {out:?}");
+                let text = String::from_utf8(out.stdout).unwrap();
+                let result = text
+                    .strip_prefix("result=")
+                    .and_then(|r| r.split(' ').next())
+                    .unwrap_or_default();
+                assert_eq!(result, want, "{dir}/{name} {engine}: {text}");
+            }
         }
     }
 }

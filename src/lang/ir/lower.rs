@@ -959,6 +959,8 @@ impl<'p, 'a> FnLower<'p, 'a> {
                 dst
             }
             ExprKind::Try { expr, .. } => self.try_expr(expr, e.span),
+            // `values::lower` removes `inout` markers; an argument is its place.
+            ExprKind::Inout { expr } => self.expr(expr),
             ExprKind::ArrayLit { ty, elems } => {
                 let elems: Box<[Reg]> = elems.iter().map(|x| self.expr(x)).collect();
                 let Some(ty) = *ty else {

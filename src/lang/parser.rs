@@ -4,7 +4,7 @@ use super::ast::*;
 use super::diag::{Code, Diagnostic, Span};
 use super::lexer::{Tok, Token};
 use super::msg;
-use super::{ffi, native};
+use super::{features, ffi, native};
 
 use std::collections::HashSet;
 
@@ -13,6 +13,12 @@ pub const MAX_DEPTH: usize = 128;
 
 /// Types of the prelude (`std/prelude.qx`), usable in every file without an import.
 pub const PRELUDE_TYPES: &[&str] = &["Result", "Option"];
+
+/// The prelude struct of `--experimental value-semantics`, if it is on: the explicit sharing
+/// handle `Shared<T>` (docs/design/memory-model.md §2 rule 5).
+pub fn values_prelude_struct() -> Option<&'static str> {
+    features::value_semantics().then_some(super::values::SHARED)
+}
 
 pub struct Parser {
     toks: Vec<Token>,
@@ -70,6 +76,14 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
     for name in PRELUDE_TYPES {
         if !structs.contains(*name) && !enums.contains(*name) && !ifaces.contains(*name) {
             enums.insert(name.to_string());
+            generics.insert(name.to_string());
+        }
+    }
+    // `Shared<T>` of `--experimental value-semantics` likewise (`link::add_prelude`).
+    let shared = values_prelude_struct();
+    if let Some(name) = shared {
+        if !structs.contains(name) && !enums.contains(name) && !ifaces.contains(name) {
+            structs.insert(name.to_string());
             generics.insert(name.to_string());
         }
     }
@@ -132,6 +146,8 @@ pub fn parse(toks: Vec<Token>) -> PResult<Program> {
 
 // Contextual keywords: ordinary identifiers everywhere else, so existing names keep working.
 const INTERFACE: &str = "interface";
+// A contextual word (`docs/design/memory-model.md`), not a keyword.
+const INOUT: &str = "inout";
 // `extern "lib" ...` at the top level: an identifier followed by a string is no other item.
 const EXTERN: &str = "extern";
 const IMPLEMENTS: &str = "implements";
@@ -523,6 +539,7 @@ impl Parser {
                 close: semi,
             },
             method: None,
+            mutating: None,
         };
         let wrapper = FnDecl {
             public: None,
@@ -537,6 +554,7 @@ impl Parser {
                 close: semi,
             },
             method: None,
+            mutating: None,
         };
         Ok((wrapper, stub))
     }
@@ -551,10 +569,12 @@ impl Parser {
             } else {
                 None
             };
+            let inout = self.inout_word();
             let (ty, ty_span) = self.ty()?;
             let pname = self.name()?;
             params.push(Param {
                 consume,
+                inout,
                 name: pname,
                 ty,
                 ty_span,
@@ -569,7 +589,13 @@ impl Parser {
 
     // A method of a struct or enum, after its return type and name: `(params) { ... }`. The
     // type parameters of the declaring type stay in scope.
-    fn method(&mut self, ret: Ty, ret_span: Span, name: Ident) -> PResult<FnDecl> {
+    fn method(
+        &mut self,
+        mutating: Option<Span>,
+        ret: Ty,
+        ret_span: Span,
+        name: Ident,
+    ) -> PResult<FnDecl> {
         let params = self.params()?;
         let body = self.block()?;
         Ok(FnDecl {
@@ -582,7 +608,26 @@ impl Parser {
             ret_span,
             body,
             method: None,
+            mutating,
         })
+    }
+
+    // `inout` before a parameter's type or a method's return type, with
+    // `--experimental value-semantics` (docs/design/memory-model.md). It is a contextual word:
+    // `inout` followed by a name and then `,`, `)` or `(` is a type named `inout`, and without
+    // the feature `inout` is always an ordinary name. The one place that decides this syntax.
+    fn inout_word(&mut self) -> Option<Span> {
+        let word = matches!(self.peek(), Tok::Ident(n) if n == INOUT)
+            && matches!(self.peek_at(1), Tok::Ident(_));
+        let typed = !matches!(
+            self.peek_at(2),
+            Tok::Comma | Tok::RParen | Tok::LParen | Tok::Semi | Tok::Eq
+        );
+        if word && typed && features::value_semantics() {
+            Some(self.bump().span)
+        } else {
+            None
+        }
     }
 
     // `new int[n][m]`, `new int[n][]` or `new int[]{1, 2}`, after the `new`.
@@ -717,10 +762,11 @@ impl Parser {
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while self.peek() != &Tok::RBrace {
+            let mutating = self.inout_word();
             let (ty, ty_span) = self.ty()?;
             let name = self.name()?;
-            if self.peek() == &Tok::LParen {
-                methods.push(self.method(ty, ty_span, name)?);
+            if self.peek() == &Tok::LParen || mutating.is_some() {
+                methods.push(self.method(mutating, ty, ty_span, name)?);
                 continue;
             }
             self.expect(Tok::Semi)?;
@@ -734,6 +780,7 @@ impl Parser {
             implements,
             fields,
             methods,
+            prelude: false,
         })
     }
 
@@ -776,9 +823,10 @@ impl Parser {
         let mut methods = Vec::new();
         if self.eat(&Tok::Semi) {
             while self.peek() != &Tok::RBrace {
+                let mutating = self.inout_word();
                 let (ty, ty_span) = self.ty()?;
                 let name = self.name()?;
-                methods.push(self.method(ty, ty_span, name)?);
+                methods.push(self.method(mutating, ty, ty_span, name)?);
             }
         }
         self.expect(Tok::RBrace)?;
@@ -915,6 +963,7 @@ impl Parser {
             ret_span,
             body,
             method: None,
+            mutating: None,
         })
     }
 
@@ -1492,7 +1541,24 @@ impl Parser {
     fn call_args(&mut self) -> PResult<(Vec<Expr>, Span)> {
         let mut args = Vec::new();
         while self.peek() != &Tok::RParen {
-            args.push(self.expr()?);
+            // `f(inout x)`: the argument of an `inout` parameter (`--experimental
+            // value-semantics`). `inout` before a name or `this` marks it; `f(inout)` and
+            // `f(inout + 1)` read a variable named `inout`.
+            let marked = matches!(self.peek(), Tok::Ident(n) if n == INOUT)
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && features::value_semantics();
+            if marked {
+                let start = self.bump().span;
+                let expr = self.expr()?;
+                args.push(Expr {
+                    span: start.to(expr.span),
+                    kind: ExprKind::Inout {
+                        expr: Box::new(expr),
+                    },
+                });
+            } else {
+                args.push(self.expr()?);
+            }
             if !self.eat(&Tok::Comma) {
                 break;
             }

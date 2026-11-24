@@ -77,7 +77,7 @@ pub fn main(stack: usize) -> ExitCode {
 }
 
 pub fn capabilities() -> Value {
-    json!({
+    let mut caps = json!({
         "positionEncoding": "utf-16",
         "textDocumentSync": { "openClose": true, "change": 1, "save": false },
         "hoverProvider": true,
@@ -86,7 +86,13 @@ pub fn capabilities() -> Value {
         "documentFormattingProvider": true,
         "completionProvider": { "triggerCharacters": ["."] },
         "experimental": { "qxideLanguageLevel": LANGUAGE_LEVEL },
-    })
+    });
+    // Quick fixes come with the diagnostics of `--experimental value-semantics` (and
+    // `QXIDE_EXPERIMENTAL`); without it the server is unchanged.
+    if lang::features::value_semantics() {
+        caps["codeActionProvider"] = json!({ "codeActionKinds": ["quickfix"] });
+    }
+    caps
 }
 
 /// The protocol loop: handshake, then requests and notifications until `shutdown` and `exit`.
@@ -130,6 +136,19 @@ pub fn serve(conn: &Connection) -> Result<(), String> {
 fn range(r: Range) -> Value {
     let pos = |p: Pos| json!({ "line": p.line, "character": p.character });
     json!({ "start": pos(r.start), "end": pos(r.end) })
+}
+
+fn range_of(v: &Value) -> Option<Range> {
+    let pos = |p: &Value| {
+        Some(Pos {
+            line: u32::try_from(p.get("line")?.as_u64()?).ok()?,
+            character: u32::try_from(p.get("character")?.as_u64()?).ok()?,
+        })
+    };
+    Some(Range {
+        start: pos(v.get("start")?)?,
+        end: pos(v.get("end")?)?,
+    })
 }
 
 fn param_str<'a>(params: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -401,7 +420,7 @@ impl Server {
                 | "textDocument/documentSymbol"
                 | "textDocument/completion"
                 | "textDocument/formatting"
-        );
+        ) || (method == "textDocument/codeAction" && lang::features::value_semantics());
         if !known {
             return Err((
                 ErrorCode::MethodNotFound,
@@ -430,6 +449,38 @@ impl Server {
                 // Sources that do not parse are not formatted; their diagnostics say why.
                 Err(_) => Value::Null,
             });
+        }
+        if method == "textDocument/codeAction" {
+            let want = params.get("range").and_then(range_of).ok_or_else(invalid)?;
+            let a = &self.analyzed(&uri).ok_or_else(invalid)?.analysis;
+            let mut actions = Vec::new();
+            for d in a.diagnostics() {
+                let at = (d.range.start.line, d.range.start.character);
+                let end = (d.range.end.line, d.range.end.character);
+                let (from, to) = (
+                    (want.start.line, want.start.character),
+                    (want.end.line, want.end.character),
+                );
+                if end < from || at > to {
+                    continue;
+                }
+                let shown = self.diagnostic(&uri, &doc_name, &d);
+                for (i, f) in d.fixes.iter().enumerate() {
+                    let edits: Vec<Value> = f
+                        .edits
+                        .iter()
+                        .map(|(r, t)| json!({ "range": range(*r), "newText": t }))
+                        .collect();
+                    actions.push(json!({
+                        "title": f.title,
+                        "kind": "quickfix",
+                        "diagnostics": [shown.clone()],
+                        "isPreferred": i == 0,
+                        "edit": { "changes": { uri.clone(): edits } },
+                    }));
+                }
+            }
+            return Ok(Value::Array(actions));
         }
         if method == "textDocument/documentSymbol" {
             let symbols = self

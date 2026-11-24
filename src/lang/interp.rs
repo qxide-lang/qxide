@@ -484,6 +484,8 @@ impl<'p> Interp<'p, '_> {
             ExprKind::Variant { ty, name, args } => self.variant(c, f, *ty, name, args, e.span),
             ExprKind::Field { recv, name } => self.field(c, f, recv, name, e.span),
             ExprKind::Try { expr, .. } => self.try_expr(c, f, expr, e.span),
+            // `values::lower` removes `inout` markers; an argument is its place.
+            ExprKind::Inout { expr } => self.expr(c, f, expr),
         }
     }
 

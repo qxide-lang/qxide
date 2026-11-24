@@ -101,6 +101,14 @@ codes! {
     BorrowedConsume => "Q0313",
     ConditionalCall => "Q0314",
     ShortCircuitConsume => "Q0315",
+    // `--experimental value-semantics` (docs/design/memory-model.md, src/lang/values.rs).
+    BorrowedWrite => "Q0320",
+    UseAfterMove => "Q0321",
+    CopyRequired => "Q0322",
+    OverlappingInout => "Q0323",
+    MovedInLoop => "Q0324",
+    InoutArgument => "Q0325",
+    ValueCopy => "Q0326",
     Overflow => "Q0401",
     DivByZero => "Q0402",
     IndexOutOfBounds => "Q0403",
@@ -149,12 +157,17 @@ codes! {
     Ffi => "Q0717",
     Deprecated => "Q0801",
     DoubleNegation => "Q0802",
+    // `--experimental value-semantics` only: a change to a copy that used to be shared.
+    CopyChanged => "Q0803",
 }
 
 impl Code {
     /// Warnings (`Q08xx`) never stop a program; every other code is an error.
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::Deprecated | Code::DoubleNegation)
+        matches!(
+            self,
+            Code::Deprecated | Code::DoubleNegation | Code::CopyChanged
+        )
     }
 }
 
@@ -162,6 +175,24 @@ impl Code {
 pub struct Note {
     pub span: Option<Span>,
     pub message: String,
+}
+
+/// A quick fix: text edits that resolve a diagnostic, offered by the language server as a code
+/// action. Edits replace non-overlapping spans of the same file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    pub title: String,
+    pub edits: Vec<(Span, String)>,
+}
+
+impl Fix {
+    /// One edit: replace `span` with `text` (an empty span inserts).
+    pub fn new(title: String, span: Span, text: &str) -> Self {
+        Self {
+            title,
+            edits: vec![(span, text.to_string())],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +204,8 @@ pub struct Diagnostic {
     pub help: Option<String>,
     // Errors about a file as a whole (for example a missing module) have no source line to show.
     pub no_snippet: bool,
+    // Quick fixes for the language server; never rendered on the command line.
+    pub fixes: Vec<Fix>,
 }
 
 impl Diagnostic {
@@ -184,6 +217,7 @@ impl Diagnostic {
             notes: Vec::new(),
             help: super::msg::help(code),
             no_snippet: false,
+            fixes: Vec::new(),
         }
     }
 

@@ -48,6 +48,7 @@ Commands:
 Options:
   --engine ast|ir|jit                {}
   --trusted                          {}
+  --experimental value-semantics     {}
   -V, --version                      Print version
   -h, --help                         Print help
 ",
@@ -61,9 +62,13 @@ Options:
         pkg::cli::usage(),
         app::usage(),
         ENGINE_HELP,
-        TRUSTED_HELP
+        TRUSTED_HELP,
+        EXPERIMENTAL_HELP
     )
 }
+
+const EXPERIMENTAL_HELP: &str =
+    "Turn on value semantics (unstable, docs/design/memory-model.md; also QXIDE_EXPERIMENTAL)";
 
 const BACKEND_HELP: &str =
     "Run a .qx program on an IBM quantum computer (prompts before submitting; uses QPU time)";
@@ -1212,7 +1217,24 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = match lang::features::take_cli_flags(std::env::args().skip(1).collect()) {
+        Ok(a) => a,
+        Err(name) => {
+            let known = lang::features::ALL.join(", ");
+            eprintln!("qxide: unknown experimental feature `{name}` (known: {known})");
+            return ExitCode::from(2);
+        }
+    };
+    // A bundle or an app runs later without the feature, so it would run another program.
+    if let Some(cmd @ ("build" | "app")) = args.first().map(String::as_str) {
+        if lang::features::value_semantics() {
+            eprintln!(
+                "qxide: `{cmd}` does not support `--experimental {}` yet",
+                lang::features::VALUE_SEMANTICS
+            );
+            return ExitCode::from(2);
+        }
+    }
     match args.first().map(String::as_str) {
         Some(flag @ ("--version" | "-V" | "--help" | "-h")) if args.len() > 1 => {
             eprintln!("qxide: unexpected argument `{}` for `{flag}`", args[1]);

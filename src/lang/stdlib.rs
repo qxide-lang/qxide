@@ -154,6 +154,13 @@ public String format(String source) { return \"\"; }
 pub const PACKAGE: &str = "std";
 
 /// The prelude: generic enums every file may use without an import (`parser::PRELUDE_TYPES`).
+/// `Shared<T>` of `--experimental value-semantics` (docs/design/memory-model.md): copying a
+/// handle shares its `value`, which anyone holding a handle may change.
+pub const SHARED_PRELUDE: &str = "struct Shared<T> {
+    T value;
+}
+";
+
 pub const PRELUDE: &str = "enum Result<T, E> {
     Ok(T value),
     Err(E error);

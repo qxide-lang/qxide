@@ -1567,6 +1567,220 @@ void main() {
 }
 ```
 
+## Q0320: borrowed value changed
+
+Experimental: reported only with `--experimental value-semantics` (see `docs/design/memory-model.md`). With value semantics a parameter is a read-only borrow of the caller's value unless it is declared `inout` (the function changes the caller's value) or `consume` (the function gets its own value). Q0320 occurs when a function assigns to such a parameter, to one of its fields or elements, or calls a method that changes it, such as `add` on a `List`. A method that changes `this` must be declared `inout`, and the variable of `for x in xs` and the names a `match` pattern binds are read-only views as well.
+
+Erroneous code example:
+
+```qx
+struct Counter {
+    int n;
+}
+
+void bump(Counter c) {
+    c.n += 1;  // error[Q0320]
+}
+
+void main() {
+    Counter c = new Counter(0);
+    bump(c);
+    println("{}", c.n);
+}
+```
+
+To fix this error, declare the parameter `inout` and mark the argument with `inout` too, or take a copy with `consume` if the caller should not see the change:
+
+```qx
+struct Counter {
+    int n;
+}
+
+void bump(inout Counter c) {
+    c.n += 1;
+}
+
+void main() {
+    Counter c = new Counter(0);
+    bump(inout c);
+    println("{}", c.n);
+}
+```
+
+## Q0321: use of moved value
+
+Experimental: reported only with `--experimental value-semantics`. Arrays, strings, collections and structs that hold them are large values: assigning one, storing it, returning it or passing it to a `consume` parameter moves it, and the variable it came from no longer has a value. Q0321 occurs when such a variable is used after the move. Small values (numbers, `boolean`, enums and structs of such values) are copied instead and stay usable. Assigning a new value to the variable makes it usable again.
+
+Erroneous code example:
+
+```qx
+void main() {
+    int[] a = {1, 2};
+    int[] b = a;
+    println("{}", a[0]);  // error[Q0321]
+}
+```
+
+To fix this error, copy the value where it moves, so both variables keep one:
+
+```qx
+void main() {
+    int[] a = {1, 2};
+    int[] b = a.copy();
+    println("{} {}", a[0], b[0]);
+}
+```
+
+## Q0322: keeping this value needs a copy
+
+Experimental: reported only with `--experimental value-semantics`. Only a variable the function owns can give its large value away. Q0322 occurs when a large value would be kept (assigned, stored, returned or passed to `consume`) from somewhere that keeps it too: a borrowed parameter, a field, an array element, an element or entry read from a `List` or `Map`, or the payload of one.
+
+Erroneous code example:
+
+```qx
+int[] firstRow(int[][] grid) {
+    return grid[0];  // error[Q0322]
+}
+
+void main() {
+    int[][] grid = new int[2][3];
+    println("{}", len(firstRow(grid)));
+}
+```
+
+To fix this error, keep a copy with `.copy()`, or take the parameter with `consume` when the caller can give its value away:
+
+```qx
+int[] firstRow(int[][] grid) {
+    return grid[0].copy();
+}
+
+void main() {
+    int[][] grid = new int[2][3];
+    println("{}", len(firstRow(grid)));
+}
+```
+
+## Q0323: overlapping `inout` arguments
+
+Experimental: reported only with `--experimental value-semantics`. While a function changes a value through an `inout` parameter, nothing else in the same call may refer to that value. Q0323 occurs when one call passes the same variable, or two parts of it that may be the same (such as `xs[i]` and `xs[j]`), to an `inout` parameter and to another parameter. Two different fields, or elements at two different literal indices, do not overlap.
+
+Erroneous code example:
+
+```qx
+void swap(inout int a, inout int b) {
+    int t = a;
+    a = b;
+    b = t;
+}
+
+void main() {
+    int[] xs = {1, 2};
+    int i = 0;
+    swap(inout xs[i], inout xs[1]);  // error[Q0323]
+}
+```
+
+To fix this error, pass places that cannot be the same, or change them in separate steps:
+
+```qx
+void swap(inout int a, inout int b) {
+    int t = a;
+    a = b;
+    b = t;
+}
+
+void main() {
+    int[] xs = {1, 2};
+    swap(inout xs[0], inout xs[1]);
+    println("{} {}", xs[0], xs[1]);
+}
+```
+
+## Q0324: value moved inside a loop
+
+Experimental: reported only with `--experimental value-semantics`. Q0324 occurs when a loop body moves a large value out of a variable declared before the loop and does not give the variable a new value before the next iteration, which would then find it empty. It is the value counterpart of Q0305 for qubits. A move just before `break` is fine.
+
+Erroneous code example:
+
+```qx
+void main() {
+    int[] row = {1, 2};
+    for i in 0..3 {
+        int[] mine = row;  // error[Q0324]
+        mine[0] = i;
+    }
+}
+```
+
+To fix this error, copy the value inside the loop:
+
+```qx
+void main() {
+    int[] row = {1, 2};
+    for i in 0..3 {
+        int[] mine = row.copy();
+        mine[0] = i;
+    }
+    println("{}", row[0]);
+}
+```
+
+## Q0325: misplaced `inout`
+
+Experimental: reported only with `--experimental value-semantics`. The argument of an `inout` parameter is written with `inout` at the call too, so a change to the caller's variable is visible where it happens. Q0325 occurs when that word is missing, when it marks the argument of a parameter that is not `inout`, when the argument is not a variable, field or element, or where `inout` is not supported: on qubit parameters (gates already change the caller's qubits), together with `consume`, on interface method parameters, and on methods that implement an interface method.
+
+Erroneous code example:
+
+```qx
+void inc(inout int n) {
+    n += 1;
+}
+
+void main() {
+    int x = 1;
+    inc(x);  // error[Q0325]
+    println("{}", x);
+}
+```
+
+To fix this error, write `inout` before the argument:
+
+```qx
+void inc(inout int n) {
+    n += 1;
+}
+
+void main() {
+    int x = 1;
+    inc(inout x);
+    println("{}", x);
+}
+```
+
+## Q0326: value cannot be copied
+
+Experimental: reported only with `--experimental value-semantics`. `.copy()` makes a value that shares nothing with the original. It cannot copy everything yet: interface values, `Random` generators, values of a type parameter, and enums whose payloads can change are not supported. Q0326 occurs when `.copy()` meets one of them.
+
+Erroneous code example:
+
+```qx
+void main() {
+    Random r = new Random(1);
+    Random s = r.copy();  // error[Q0326]
+}
+```
+
+To fix this error, make a new value instead, or copy the parts you need yourself:
+
+```qx
+void main() {
+    Random r = new Random(1);
+    Random s = new Random(1);
+    println("{}", r.nextInt(10) == s.nextInt(10));
+}
+```
+
 ## Q0401: integer arithmetic overflow on `int`
 
 This error occurs when an arithmetic operation produces a result outside the representable range of `int`, which is a 64-bit signed integer (`i64`). Instead of silently wrapping around to an unintended value, `.qx` reports an overflow error when a calculation exceeds the type's bounds.
@@ -2874,5 +3088,38 @@ void main() {
     int i = 3;
     i -= 1;
     println("{}", i);
+}
+```
+
+## Q0803: change to a copy that used to be shared
+
+Experimental: reported only with `--experimental value-semantics`. Without the feature, `Particle p = ps[0];` makes `p` another name for the struct in `ps[0]`, so changing `p` changes the array. With value semantics a small struct is copied there, so the same code now changes only the copy. Q0803 warns at the first change to such a copy, because the program still runs but its result may be different. It is a transition warning for programs written before value semantics.
+
+Erroneous code example:
+
+```qx
+struct Particle {
+    double x;
+}
+
+void main() {
+    Particle[] ps = new Particle[2];
+    Particle p = ps[0];
+    p.x = 1.0;  // warning[Q0803]
+    println("{}", ps[0].x);
+}
+```
+
+To fix this warning, change the element directly, or write the copy back when you are done with it:
+
+```qx
+struct Particle {
+    double x;
+}
+
+void main() {
+    Particle[] ps = new Particle[2];
+    ps[0].x = 1.0;
+    println("{}", ps[0].x);
 }
 ```

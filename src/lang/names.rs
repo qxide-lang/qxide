@@ -199,7 +199,9 @@ fn expr(e: &mut Expr, r: &HashMap<(usize, usize), String>) {
                 expr(a, r);
             }
         }
-        ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => expr(recv, r),
+        ExprKind::Field { recv, .. }
+        | ExprKind::Try { expr: recv, .. }
+        | ExprKind::Inout { expr: recv } => expr(recv, r),
         ExprKind::Int(_)
         | ExprKind::Double(_)
         | ExprKind::Bool(_)

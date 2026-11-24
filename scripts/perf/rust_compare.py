@@ -4,7 +4,10 @@ Build first (one heavy job at a time):
     cargo build --release --features jit
     cargo build --release --manifest-path bench/compare/rust/Cargo.toml
 Then:
-    python scripts/perf/rust_compare.py [--reps 5] [--ir-reps 3] [--only nbody,matmul]
+    python scripts/perf/rust_compare.py [--reps 5] [--ir-reps 3] [--only nbody,matmul] [--values]
+
+`--values` adds a column for the programs of bench/compare/qx-values run with
+`--experimental value-semantics` on the jit engine (docs/design/memory-model.md).
 
 Each program times its own kernel (Qxide: `std.time.monotonicMillis`, 1 ms resolution; Rust:
 `Instant`) and prints `result=R ms=T`. Runs are interleaved (Rust, Qxide jit, Qxide ir per
@@ -70,6 +73,7 @@ def main():
     ap.add_argument('--reps', type=int, default=5)
     ap.add_argument('--ir-reps', type=int, default=3)
     ap.add_argument('--only', default='')
+    ap.add_argument('--values', action='store_true')
     args = ap.parse_args()
     only = set(filter(None, args.only.split(',')))
     cases = [c for c in CASES if not only or c[0] in only]
@@ -78,10 +82,15 @@ def main():
         qx = os.path.join(ROOT, 'bench', 'compare', 'qx', name + '.qx')
         rust_cmd = [os.path.join(RUST, name + EXE), n]
         qx_cmd = lambda e: [QXIDE, 'run', qx, '--engine', e, '--trusted', '--', n]
-        times = {'rust': [], 'jit': [], 'ir': []}
+        qxv = os.path.join(ROOT, 'bench', 'compare', 'qx-values', name + '.qx')
+        values_cmd = [QXIDE, 'run', qxv, '--experimental', 'value-semantics', '--engine', 'jit',
+                      '--trusted', '--', n]
+        times = {'rust': [], 'jit': [], 'ir': [], 'values': []}
         results = set()
         for r in range(args.reps):
             for col, cmd in [('rust', rust_cmd), ('jit', qx_cmd('jit'))] + (
+                [('values', values_cmd)] if args.values else []
+            ) + (
                 [('ir', qx_cmd('ir'))] if r < args.ir_reps else []
             ):
                 res, ms = run(cmd)
@@ -93,8 +102,11 @@ def main():
         jit_med = statistics.median(times['jit'])
         ir_med = statistics.median(times['ir']) if times['ir'] else None
         pct = rust_med / jit_med * 100 if jit_med else float('inf')
+        values_med = statistics.median(times['values']) if times['values'] else None
+        values_pct = rust_med / values_med * 100 if values_med else None
         rows.append((name, n, fmt(times['rust']), fmt(times['jit']), fmt(times['ir']), pct,
-                     ir_med / jit_med if ir_med and jit_med else None, match))
+                     ir_med / jit_med if ir_med and jit_med else None, match,
+                     fmt(times['values']), values_pct))
         print(f'{name}: done', file=sys.stderr)
     rustc = subprocess.run(['rustc', '--version'], capture_output=True, text=True).stdout.strip()
     commit = subprocess.run(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'],
@@ -105,12 +117,15 @@ def main():
           f'{args.reps} interleaved rounds (ir: {args.ir_reps}); times are the kernel only, ms: '
           f'median (min-max, ± half the range as % of the median)')
     print()
-    print('| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | jit / Rust | ir / jit | Same result |')
-    print('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
-    for name, n, rust, jit, ir, pct, ratio, match in rows:
+    extra = ' Qxide jit, values ms | Rust % (values) |' if args.values else ''
+    print('| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | jit / Rust | ir / jit |'
+          + extra + ' Same result |')
+    print('| --- ' * (9 + (2 if args.values else 0)) + '|')
+    for name, n, rust, jit, ir, pct, ratio, match, values, values_pct in rows:
         r = f'{ratio:.2f}' if ratio else '-'
         slow = f'{100 / pct:.1f}x' if pct else '-'
-        print(f'| `{name}` | {n} | {rust} | {jit} | {ir} | {pct:.2f} % | {slow} | {r} | {"yes" if match else "NO"} |')
+        v = f' {values} | {values_pct:.2f} % |' if args.values else ''
+        print(f'| `{name}` | {n} | {rust} | {jit} | {ir} | {pct:.2f} % | {slow} | {r} |{v} {"yes" if match else "NO"} |')
 
 
 if __name__ == '__main__':

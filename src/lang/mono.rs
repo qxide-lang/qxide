@@ -505,6 +505,7 @@ impl Mono<'_> {
                 }
                 self.exprs(elems, map)
             }
+            ExprKind::Inout { expr } => self.expr(expr, map),
         }
     }
 }

@@ -465,6 +465,55 @@ void main() {
     }
 }
 
+// `--experimental value-semantics`: the copies and write-back cells `values::lower` adds charge
+// the same steps at the same places in every engine.
+#[test]
+fn value_semantics_agrees_at_every_step_limit() {
+    crate::lang::features::set_value_semantics(true);
+    let src = "struct P {
+    int x;
+}
+
+void inc(inout int n) {
+    n += 1;
+}
+
+void main() {
+    P[] ps = new P[2];
+    P a = ps[0];
+    a.x = 5;
+    int k = 1;
+    inc(inout k);
+    inc(inout ps[1].x);
+    int[] xs = {1, 2};
+    int[] ys = xs.copy();
+    ys[0] = 9;
+    Shared<P> s = new Shared<P>(a);
+    Shared<P> t = s;
+    t.value.x += 1;
+    println(\"{} {} {} {} {} {}\", ps[0].x, a.x, k, ps[1].x, xs[0], s.value.x);
+}
+";
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 20, "{total}");
+    for max in 0..=total + 1 {
+        let limits = Limits {
+            max_steps: max,
+            ..Limits::CLI
+        };
+        same_outputs(src, 1, 3, limits);
+    }
+    let out = engine::with(Engine::Ast, || run_with("t.qx", src, 1, 0, Limits::CLI));
+    assert_eq!(out.map_err(|f| f.0).unwrap(), "0 5 2 1 1 6\n");
+}
+
 // Arrays: same results, errors and step-budget positions in every engine.
 #[test]
 fn arrays_agree_at_every_step_limit() {

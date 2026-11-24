@@ -578,6 +578,11 @@ pub fn help(code: Code) -> Option<String> {
         Code::BadExtern => "declare native functions with `int` and `double` parameters only, such as `extern \"m\" double pow(double x, double y);`".into(),
         Code::Ffi => "check the library name and that it exports the function; a bare name is searched only in the system directories, so give a path for any other library".into(),
         Code::Deprecated => "rename the call to the camelCase name above; run `qxide explain Q0801` to list all renamed names".into(),
+        Code::UseAfterMove => "arrays, strings, collections and structs holding them move when they are assigned, stored, returned or passed to `consume`; write `.copy()` where the value moved to keep using it".into(),
+        Code::CopyRequired => "write `.copy()` to keep a separate copy; a parameter can also take the caller's value with `consume`".into(),
+        Code::OverlappingInout => "pass a copy (`x.copy()`) to the other parameter, or change the value in two separate calls".into(),
+        Code::MovedInLoop => "keep a copy with `.copy()` inside the loop, or give the variable a new value before the next iteration".into(),
+        Code::ValueCopy => "copy the parts you need yourself, or share the value through a `Shared<T>` handle".into(),
         _ => return None,
     })
 }
@@ -1078,4 +1083,135 @@ pub fn no_default(ty: &str) -> String {
 
 pub fn help_no_default() -> String {
     "list the elements in an array initializer with braces instead".into()
+}
+
+// ---- `--experimental value-semantics` (src/lang/values.rs, docs/design/memory-model.md) ----
+
+pub fn vs_borrowed_write(name: &str) -> String {
+    format!("cannot change borrowed parameter `{name}`")
+}
+
+pub fn vs_help_borrowed_write(name: &str) -> String {
+    format!("a parameter is read-only unless it is `inout` (the change reaches the caller) or `consume` (`{name}` becomes the function's own value)")
+}
+
+pub fn vs_help_mutating() -> String {
+    "a method reads `this` unless it is declared `inout`, as in `inout void reset() { ... }`".into()
+}
+
+pub fn vs_fix_mutating() -> String {
+    "declare the method `inout`".into()
+}
+
+pub fn vs_view_write(name: &str) -> String {
+    format!("cannot change `{name}`, a read-only view of a value kept elsewhere")
+}
+
+pub fn vs_help_foreach_write() -> String {
+    "the variable of `for x in xs` reads each element; to change elements, loop over the indices: `for i in 0..len(xs) { xs[i] = ...; }`".into()
+}
+
+pub fn vs_help_bound_write() -> String {
+    "a `match` binding reads the payload; copy it into a variable with `.copy()` to change it"
+        .into()
+}
+
+pub fn vs_fix_param(word: &str, name: &str) -> String {
+    format!("declare `{name}` with `{word}`")
+}
+
+pub fn vs_use_after_move(name: &str) -> String {
+    format!("use of moved value `{name}`")
+}
+
+pub fn vs_note_moved_here() -> String {
+    "value moved here".into()
+}
+
+pub fn vs_fix_copy(what: &str) -> String {
+    format!("pass a copy: `{what}.copy()`")
+}
+
+pub fn vs_move_borrowed(name: &str) -> String {
+    format!("cannot move `{name}`: it is borrowed, not owned by this function")
+}
+
+pub fn vs_copy_required(ty: &str) -> String {
+    format!("keeping this `{ty}` needs `.copy()`: the value stays where it is")
+}
+
+pub fn vs_help_param_copy(ty: &str) -> String {
+    format!("a value of type parameter `{ty}` cannot be copied; take it as a `consume` parameter and move it")
+}
+
+pub fn vs_moved_in_loop(name: &str) -> String {
+    format!("`{name}` is moved inside a loop, so the next iteration would find it gone")
+}
+
+pub fn vs_overlapping_inout(name: &str) -> String {
+    format!("`{name}` is passed to an `inout` parameter and again in the same call")
+}
+
+pub fn vs_inout_unmarked() -> String {
+    "this argument is passed to an `inout` parameter: write `inout` before it".into()
+}
+
+pub fn vs_fix_add_inout() -> String {
+    "add `inout`".into()
+}
+
+pub fn vs_inout_extra() -> String {
+    "`inout` here, but the parameter is not `inout`".into()
+}
+
+pub fn vs_fix_remove(word: &str) -> String {
+    format!("remove `{word}`")
+}
+
+pub fn vs_inout_place() -> String {
+    "an `inout` argument must be a variable, a field or an element".into()
+}
+
+pub fn vs_inout_not_argument() -> String {
+    "`inout` marks only the argument of an `inout` parameter".into()
+}
+
+pub fn vs_inout_qubit(ty: &str) -> String {
+    format!("a `{ty}` parameter does not need `inout`: gates already change the caller's qubits")
+}
+
+pub fn vs_inout_qubit_arg() -> String {
+    "qubit arguments are never marked `inout`".into()
+}
+
+pub fn vs_inout_consume() -> String {
+    "a parameter is either `inout` or `consume`, not both".into()
+}
+
+pub fn vs_iface_inout() -> String {
+    "interface methods cannot have `inout` parameters yet".into()
+}
+
+pub fn vs_iface_mutating(method: &str, iface: &str) -> String {
+    format!("an `inout` method cannot implement `{method}` of interface `{iface}` yet")
+}
+
+pub fn vs_cannot_copy(ty: &str, inner: &str) -> String {
+    if ty == inner {
+        format!("`.copy()` cannot copy a `{ty}` yet")
+    } else {
+        format!("`.copy()` cannot copy a `{ty}` yet: it holds a `{inner}`")
+    }
+}
+
+pub fn vs_copy_changed(name: &str, src: &str) -> String {
+    format!("`{name}` is a copy of `{src}`, so this change does not reach `{src}`")
+}
+
+pub fn vs_note_copied_here() -> String {
+    "copied here".into()
+}
+
+pub fn vs_help_copy_changed(name: &str, src: &str) -> String {
+    format!("with value semantics a small struct is copied; change `{src}` directly, or write the copy back with `{src} = {name};`")
 }

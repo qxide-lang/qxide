@@ -339,6 +339,7 @@ impl Program {
                     0,
                     Param {
                         consume: None,
+                        inout: f.mutating,
                         name: Ident {
                             name: "this".to_string(),
                             span: f.name.span,
@@ -406,6 +407,8 @@ pub struct StructDecl {
     pub fields: Vec<Field>,
     // Methods declared after the fields (`Program::lift_methods` moves them to `fns`).
     pub methods: Vec<FnDecl>,
+    // The prelude's `Shared<T>` (`--experimental value-semantics`), not a program's own struct.
+    pub prelude: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -441,12 +444,19 @@ pub struct FnDecl {
     // For a method moved out of its type (`Vec2.len`): the method's own name (`len`). Its first
     // parameter is `this`, of the type that declares it.
     pub method: Option<String>,
+    // Span of `inout` before a method's return type (`--experimental value-semantics` only): the
+    // method may change `this`, whose parameter then has `inout`.
+    pub mutating: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Param {
-    // Span of the `consume` keyword: the function takes ownership of the qubit(s).
+    // Span of the `consume` keyword: the function takes ownership of the qubit(s) (with
+    // `--experimental value-semantics`, of any value).
     pub consume: Option<Span>,
+    // Span of the `inout` word (`--experimental value-semantics` only): the function may change
+    // the caller's value.
+    pub inout: Option<Span>,
     pub name: Ident,
     pub ty: Ty,
     pub ty_span: Span,
@@ -683,5 +693,10 @@ pub enum ExprKind {
     ArrayLit {
         ty: Option<Ty>,
         elems: Vec<Expr>,
+    },
+    // `inout x` as a call argument (`--experimental value-semantics` only): the argument of an
+    // `inout` parameter. `values::lower` removes it before any engine runs.
+    Inout {
+        expr: Box<Expr>,
     },
 }

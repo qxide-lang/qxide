@@ -13,6 +13,7 @@ mod diag;
 pub mod doc;
 mod engine;
 mod explain;
+pub mod features;
 mod ffi;
 mod fmt;
 pub mod ide;
@@ -37,6 +38,7 @@ pub mod stdlib;
 // Used by the desktop runtime for Qxide Studio (`std.qxide`).
 #[allow(dead_code)]
 pub mod studio;
+mod values;
 
 #[cfg(test)]
 mod bench;
@@ -64,6 +66,8 @@ mod names_tests;
 
 #[cfg(test)]
 mod data_tests;
+#[cfg(test)]
+mod values_tests;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -159,9 +163,31 @@ fn front_input(
             let again = check::check_with(&program, require_main);
             debug_assert!(again.is_empty(), "monomorphized program: {again:?}");
         }
-        Ok(program)
+        Ok(values_lowered(program, require_main))
     });
     (map, checked)
+}
+
+// `--experimental value-semantics`: the program the engines run (src/lang/values/lower.rs).
+// Without the feature the program is returned as it is.
+fn values_lowered(mut program: ast::Program, require_main: bool) -> ast::Program {
+    if !features::value_semantics() {
+        return program;
+    }
+    // The concrete program's types, recorded by checking it again.
+    let (_, inferred) = check::check_infer(&program, require_main);
+    if let Some(types) = inferred.values {
+        values::lower::lower(&mut program, &types);
+    }
+    // The lowered program is an ordinary one: it checks cleanly without the feature.
+    #[cfg(debug_assertions)]
+    {
+        features::set_value_semantics(false);
+        let again = check::check_with(&program, require_main);
+        features::set_value_semantics(true);
+        debug_assert!(again.is_empty(), "lowered program: {again:?}");
+    }
+    program
 }
 
 thread_local! {

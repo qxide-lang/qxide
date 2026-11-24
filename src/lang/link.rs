@@ -241,6 +241,17 @@ fn add_prelude(map: &mut SourceMap, p: &mut Program) {
                 || (*n == "Option" && (map.mentions("List") || map.mentions("Map")))
         })
         .collect();
+    // `Shared<T>` with `--experimental value-semantics`: a handle that shares one value.
+    if let Some(name) = parser::values_prelude_struct() {
+        if !declared(p, name) && map.mentions(name) {
+            let base = map.add("std/shared.qx", stdlib::SHARED_PRELUDE);
+            if let Ok(shared) = parse_at(stdlib::SHARED_PRELUDE, base) {
+                let structs = shared.structs.into_iter();
+                p.structs
+                    .extend(structs.map(|s| StructDecl { prelude: true, ..s }));
+            }
+        }
+    }
     if wanted.is_empty() {
         return;
     }
@@ -265,6 +276,11 @@ fn shift_diag(mut d: Diagnostic, base: usize) -> Diagnostic {
     d.span = shift(d.span, base);
     for n in &mut d.notes {
         n.span = n.span.map(|s| shift(s, base));
+    }
+    for f in &mut d.fixes {
+        for (s, _) in &mut f.edits {
+            *s = shift(*s, base);
+        }
     }
     d
 }
@@ -852,9 +868,9 @@ impl Linker<'_> {
                     self.rewrite_expr(scope, a);
                 }
             }
-            ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => {
-                self.rewrite_expr(scope, recv)
-            }
+            ExprKind::Field { recv, .. }
+            | ExprKind::Try { expr: recv, .. }
+            | ExprKind::Inout { expr: recv } => self.rewrite_expr(scope, recv),
             ExprKind::Int(_)
             | ExprKind::Double(_)
             | ExprKind::Bool(_)

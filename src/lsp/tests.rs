@@ -21,10 +21,18 @@ struct Client {
 
 impl Client {
     fn start() -> Self {
+        Self::start_with(false)
+    }
+
+    // `value_semantics`: the server runs with `--experimental value-semantics`.
+    fn start_with(value_semantics: bool) -> Self {
         let (server, conn) = Connection::memory();
         let handle = std::thread::Builder::new()
             .stack_size(64 << 20)
-            .spawn(move || serve(&server))
+            .spawn(move || {
+                lang::features::set_value_semantics(value_semantics);
+                serve(&server)
+            })
             .unwrap();
         let mut c = Client {
             conn,
@@ -584,6 +592,47 @@ fn formatting_replaces_the_whole_document_with_fmt_output() {
         json!({ "textDocument": { "uri": URI }, "options": {} }),
     );
     assert!(broken.is_null());
+    c.shutdown();
+}
+
+#[test]
+fn quick_fixes_come_with_value_semantics_only() {
+    let src = "struct C {\n    int n;\n}\n\nvoid bump(C c) {\n    c.n += 1;\n}\n\nvoid main() {\n    C c = new C(0);\n    bump(c);\n}\n";
+    let whole =
+        json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 12, "character": 0 } });
+    let ask =
+        json!({ "textDocument": { "uri": URI }, "range": whole, "context": { "diagnostics": [] } });
+    // Without the feature the server neither offers nor answers code actions.
+    let mut c = Client::start();
+    assert!(super::capabilities().get("codeActionProvider").is_none());
+    c.open(URI, src);
+    let r = c.raw_request("textDocument/codeAction", ask.clone());
+    assert!(r.response_result.is_err());
+    c.shutdown();
+
+    let mut c = Client::start_with(true);
+    let diags = c.open(URI, src);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0]["code"], "Q0320");
+    let actions = c.request("textDocument/codeAction", ask);
+    let titles: Vec<&str> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        ["declare `c` with `inout`", "declare `c` with `consume`"]
+    );
+    let edit = &actions[0]["edit"]["changes"][URI][0];
+    assert_eq!(edit["newText"], "inout ");
+    assert_eq!(
+        edit["range"]["start"],
+        json!({ "line": 4, "character": 10 })
+    );
+    assert_eq!(actions[0]["kind"], "quickfix");
+    assert_eq!(actions[0]["isPreferred"], true);
     c.shutdown();
 }
 

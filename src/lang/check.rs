@@ -9,6 +9,7 @@ use super::msg;
 use super::names;
 use super::native;
 use super::pure;
+use super::{features, values};
 
 pub const BUILTINS: &[&str] = &[
     "qubit", "qreg", "h", "x", "z", "s", "sdg", "t", "tdg", "reset", "rx", "ry", "rz", "cx", "ccx",
@@ -107,6 +108,9 @@ pub struct Inferred {
     pub renames: HashMap<(usize, usize), String>,
     /// `Q0801` warnings for those aliases, one per call site.
     pub warnings: Vec<Diagnostic>,
+    /// With `--experimental value-semantics`: the type of every checked expression (by span)
+    /// and of every declared variable (by the span of its name), for `values::check`.
+    pub values: Option<values::Types>,
 }
 
 fn key(s: Span) -> (usize, usize) {
@@ -326,7 +330,9 @@ fn scan_expr(e: &Expr, out: &mut Scan) {
                 scan_expr(a, out);
             }
         }
-        ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => scan_expr(recv, out),
+        ExprKind::Field { recv, .. }
+        | ExprKind::Try { expr: recv, .. }
+        | ExprKind::Inout { expr: recv } => scan_expr(recv, out),
         ExprKind::Int(_)
         | ExprKind::Double(_)
         | ExprKind::Bool(_)
@@ -412,6 +418,9 @@ pub fn type_cycles(p: &Program) -> Vec<Diagnostic> {
 /// Checks the program and returns what inference chose for its generic code.
 pub fn check_infer(p: &Program, require_main: bool) -> (Vec<Diagnostic>, Inferred) {
     let mut c = Checker::new();
+    if features::value_semantics() {
+        c.inferred.values = Some(values::Types::default());
+    }
     c.prelude = p
         .enums
         .iter()
@@ -422,8 +431,19 @@ pub fn check_infer(p: &Program, require_main: bool) -> (Vec<Diagnostic>, Inferre
     c.signatures(p, require_main);
     c.conformance(p);
     c.conditional_safety(p);
-    for f in &p.fns {
+    for (i, f) in p.fns.iter().enumerate() {
+        if let Some(v) = &mut c.inferred.values {
+            v.current = i;
+        }
         c.function(f);
+    }
+    // The ownership rules of value semantics need a well-typed program.
+    if let Some(types) = &c.inferred.values {
+        if c.errors.is_empty() {
+            let (errors, warnings) = values::check(p, types);
+            c.errors = errors;
+            c.inferred.warnings.extend(warnings);
+        }
     }
     c.errors.sort_by_key(|d| (d.span.start, d.code.as_str()));
     (c.errors, c.inferred)
@@ -647,7 +667,7 @@ impl Checker {
                         self.array_ty_ok(q.ty, q.ty_span);
                     }
                     if let Some(at) = q.consume {
-                        if !q.ty.is_quantum() {
+                        if !q.ty.is_quantum() && !features::value_semantics() {
                             self.err(
                                 Code::ConsumeNonQuantum,
                                 at,
@@ -1035,7 +1055,7 @@ impl Checker {
             }
             for p in &f.params {
                 if let Some(at) = p.consume {
-                    if !p.ty.is_quantum() {
+                    if !p.ty.is_quantum() && !features::value_semantics() {
                         self.err(
                             Code::ConsumeNonQuantum,
                             at,
@@ -1231,6 +1251,10 @@ impl Checker {
                 msg::constant_redefined(&name.name),
             )
             .help = Some(msg::help_constant_redefined());
+        }
+        if let Some(v) = &mut self.inferred.values {
+            v.vars
+                .insert((v.current, name.span.start, name.span.end), ty);
         }
         self.vars.push(Var {
             name: name.name.clone(),
@@ -1782,6 +1806,88 @@ impl Checker {
         t
     }
 
+    // `x.copy()` with `--experimental value-semantics`: a copy of a classical value that shares
+    // nothing with `x` (docs/design/memory-model.md). A struct or enum's own `copy` method comes
+    // first; `None` leaves the call to the ordinary method rules.
+    fn copy_method(&mut self, t: Ty, name: &Ident, args: &[Expr]) -> Option<Ty> {
+        if name.name != "copy" || !args.is_empty() || !features::value_semantics() {
+            return None;
+        }
+        if matches!(t, Ty::Struct(_) | Ty::Enum(_)) {
+            let base = t.generic_args().map_or(t, |(b, _)| b);
+            if self.fns.contains_key(&format!("{}.copy", base.name())) {
+                return None;
+            }
+        }
+        if t == Ty::Error {
+            return Some(t);
+        }
+        match self.uncopyable(t, &mut Vec::new()) {
+            None => Some(t),
+            Some(inner) => {
+                self.err(
+                    Code::ValueCopy,
+                    name.span,
+                    msg::vs_cannot_copy(t.name(), inner.name()),
+                );
+                Some(Ty::Error)
+            }
+        }
+    }
+
+    // The first type inside `t` that `.copy()` cannot copy yet (`values::lower` writes the
+    // copy): qubits, type parameters, interfaces, `Random`, and enums holding values that can
+    // change. `None` if all of `t` can be copied.
+    fn uncopyable(&self, t: Ty, seen: &mut Vec<Ty>) -> Option<Ty> {
+        if seen.contains(&t) {
+            return None;
+        }
+        seen.push(t);
+        let found = match t {
+            Ty::Int | Ty::Double | Ty::Boolean | Ty::String => None,
+            Ty::Array(_) => t.elem().and_then(|e| self.uncopyable(e, seen)),
+            Ty::Struct(_) => self
+                .field_types(t)
+                .unwrap_or_default()
+                .into_iter()
+                .find_map(|f| self.uncopyable(f, seen)),
+            Ty::Enum(_) => (!self.frozen_enum(t, &mut Vec::new())).then_some(t),
+            Ty::Native(_) => match native::kind(t) {
+                Some(("List" | "Map", args)) => {
+                    args.into_iter().find_map(|a| self.uncopyable(a, seen))
+                }
+                Some(("Json", _)) => None,
+                _ => Some(t),
+            },
+            _ => Some(t),
+        };
+        seen.pop();
+        found
+    }
+
+    // An enum whose payloads never change (numbers, `boolean`, `String`, `Json` and enums of
+    // such values): `.copy()` shares it (`values::Decls::frozen` agrees).
+    fn frozen_enum(&self, t: Ty, seen: &mut Vec<Ty>) -> bool {
+        if seen.contains(&t) {
+            return true;
+        }
+        seen.push(t);
+        let payload: Vec<Ty> = self
+            .variants_of(t)
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|(_, tys)| tys)
+            .collect();
+        let ok = payload.into_iter().all(|p| match p {
+            Ty::Int | Ty::Double | Ty::Boolean | Ty::String => true,
+            Ty::Enum(_) => self.frozen_enum(p, seen),
+            Ty::Native(_) => native::kind(p).is_some_and(|(k, _)| k == "Json"),
+            _ => false,
+        });
+        seen.pop();
+        ok
+    }
+
     // A value of a type parameter can only be moved; any other operation is `Q0230`.
     fn param_op(&mut self, at: Span, tys: &[Ty]) -> bool {
         let Some(p) = tys.iter().find(|t| matches!(t, Ty::Param(_))) else {
@@ -1792,8 +1898,21 @@ impl Checker {
     }
 
     fn expr(&mut self, e: &Expr) -> Ty {
+        let t = self.expr_kind(e);
+        if let Some(v) = &mut self.inferred.values {
+            v.exprs.insert((v.current, e.span.start, e.span.end), t);
+        }
+        t
+    }
+
+    fn expr_kind(&mut self, e: &Expr) -> Ty {
         let hint = self.hint.take();
         match &e.kind {
+            // `f(inout x)` (`--experimental value-semantics`): `values::check` checks the place.
+            ExprKind::Inout { expr } => {
+                self.hint = hint;
+                self.expr(expr)
+            }
             ExprKind::Int(_) => Ty::Int,
             ExprKind::Double(_) => Ty::Double,
             ExprKind::Bool(_) => Ty::Boolean,
@@ -1873,6 +1992,9 @@ impl Checker {
             ExprKind::Try { expr, op } => self.try_expr(expr, *op),
             ExprKind::Method { recv, name, args } => {
                 let t = self.expr(recv);
+                if let Some(copied) = self.copy_method(t, name, args) {
+                    return copied;
+                }
                 match t {
                     Ty::Native(_) => return self.native_method(t, name, args, e.span),
                     Ty::Struct(_) | Ty::Enum(_) => {

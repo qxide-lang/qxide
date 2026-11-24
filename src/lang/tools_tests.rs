@@ -321,6 +321,10 @@ fn explain_examples_trigger_their_code_and_fixes_run() {
     ];
     for (code, entry) in explain::entries() {
         let blocks = qx_blocks(&entry);
+        // `Q0320`-`Q0326` belong to `--experimental value-semantics`.
+        features::set_value_semantics(
+            ("Q0320".."Q0330").contains(&code.as_str()) || code == "Q0803",
+        );
         // Package-manager errors come from commands, not from a `.qx` program.
         if code.starts_with("Q06") {
             assert!(blocks.is_empty(), "{code}");

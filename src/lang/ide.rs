@@ -43,6 +43,15 @@ pub struct Diag {
     /// The message, then `note:` lines without a location and the `help:` line, as `check` prints them.
     pub message: String,
     pub related: Vec<Related>,
+    /// Quick fixes (code actions) that resolve it, as edits of the analysed document.
+    pub fixes: Vec<QuickFix>,
+}
+
+/// A quick fix: its title and the text edits of the analysed document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickFix {
+    pub title: String,
+    pub edits: Vec<(Range, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,7 +440,9 @@ impl Scopes {
                     self.expr(a);
                 }
             }
-            ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => self.expr(recv),
+            ExprKind::Field { recv, .. }
+            | ExprKind::Try { expr: recv, .. }
+            | ExprKind::Inout { expr: recv } => self.expr(recv),
             ExprKind::Int(_) | ExprKind::Double(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
         }
     }
@@ -636,12 +647,27 @@ impl Analysis {
                     message.push_str("\nhelp: ");
                     message.push_str(h);
                 }
+                // Only edits of this document; a fix inside an imported module is not offered.
+                let fixes = d
+                    .fixes
+                    .iter()
+                    .filter(|f| f.edits.iter().all(|(s, _)| self.in_entry(*s)))
+                    .map(|f| QuickFix {
+                        title: f.title.clone(),
+                        edits: f
+                            .edits
+                            .iter()
+                            .map(|(s, t)| (self.entry_range(s.start, s.end), t.clone()))
+                            .collect(),
+                    })
+                    .collect();
                 Diag {
                     code: d.code.as_str(),
                     warning: d.code.is_warning(),
                     range,
                     message,
                     related,
+                    fixes,
                 }
             })
             .collect()
