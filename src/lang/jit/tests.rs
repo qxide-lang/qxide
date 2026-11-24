@@ -657,6 +657,89 @@ void main() {
 
 // Every count native code takes of a reference is given back: on return, on a run-time error,
 // and for values it stored in structs or handed to other native functions.
+// `int`, `double` and `boolean` array elements and struct fields are loaded and stored by native
+// code (`qx_elem`, `qx_field`), with the interpreters' results, errors and step positions;
+// out-of-bounds indexes, overflow, other value types and a step limit in reach take `qx_heap`.
+#[test]
+fn primitive_array_elements_run_in_native_code() {
+    let src = "struct P { int n; double x; boolean on; String s; }
+double fields(int k) {
+    P p = new P(1, 0.5, false, \"a\");
+    for i in 0..k {
+        p.n += i; p.n *= 2; p.n ^= 3; p.n -= 1; p.x += p.n; p.x /= 3.0; p.x %= 5.0;
+        p.on = !p.on; p.s += \"b\"; p.x *= p.x; p.x -= 0.5;
+    }
+    if p.on { p.x = 2; }
+    return p.x + p.n + len(p.s);
+}
+int ints(int n) {
+    int[] a = new int[n];
+    for i in 0..n { a[i] = i * 3; }
+    for i in 0..n {
+        a[i] += 2; a[i] -= 1; a[i] *= 2; a[i] &= 1023; a[i] |= 4; a[i] ^= 1; a[i] /= 3; a[i] %= 7;
+        a[i] <<= 1;
+    }
+    int s = 0;
+    for i in 0..n { s += a[i]; }
+    return s;
+}
+double doubles(int n) {
+    double[] d = new double[n];
+    for i in 0..n { d[i] = i * 0.5; d[i] += 1; d[i] /= 2.0; d[i] %= 3.0; d[i] -= 0.25; d[i] *= 1.5; }
+    double s = 0.0;
+    for i in 0..n { s += d[i]; }
+    return s;
+}
+int bools(int n) {
+    boolean[] b = new boolean[n];
+    for i in 0..n { b[i] = i % 3 == 0; }
+    int k = 0;
+    for i in 0..n { if b[i] { k += 1; } }
+    return k;
+}
+void main() {
+    println(\"{} {} {} {}\", ints(3), doubles(3), bools(4), fields(3));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in ["ints", "doubles", "bools", "fields"] {
+        assert!(jit.compiles(m.index[f]), "{f}");
+    }
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = super::super::stdlib::LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 300, "{total}");
+    for max in 0..=total + 1 {
+        same(
+            src,
+            Limits {
+                max_steps: max,
+                ..Limits::CLI
+            },
+        );
+    }
+    let fail = |body: &str| {
+        let src = format!(
+            "struct Q {{ int n; }}\nint f(int n) {{ {body} }}\nvoid main() {{ println(\"{{}}\", f(1)); }}"
+        );
+        let out = same(&src, Limits::CLI);
+        assert!(out.starts_with("error"), "{out}");
+    };
+    fail("int[] a = new int[2]; a[0] = 4611686018427387904; a[0] += a[0]; return a[0];");
+    fail("int[] a = new int[2]; a[1] = -4611686018427387904; a[1] *= 3; return a[1];");
+    fail("int[] a = new int[2]; return a[n + 1];");
+    fail("double[] d = new double[2]; d[n - 2] = 1.0; return 0;");
+    fail("boolean[] b = new boolean[n]; b[n] = true; return 0;");
+    fail("int[] a = new int[0]; a[0] += 1; return 0;");
+    fail("Q q = new Q(4611686018427387904); q.n *= 2; return q.n;");
+}
+
 #[test]
 fn reference_counts_balance_in_native_code() {
     use super::super::array::ArrayData;

@@ -457,6 +457,71 @@ extern "C" fn qx_heap(ctx: *mut Ctx, site: u32, ops: *const u64) -> u8 {
     0
 }
 
+// The address of element `i` of an `int` (`kind` 0), `double` (1) or `boolean` (2) array, for
+// native code to load or store the element itself; 0 when the index is out of bounds, the array
+// holds another element type or is borrowed, and native code takes `qx_heap`, which reports the
+// error or does the conversion.
+extern "C" fn qx_elem(w: u64, i: i64, kind: u32) -> u64 {
+    use super::array::ArrayData;
+    use std::cell::RefCell;
+    if w == 0 {
+        return 0;
+    }
+    // SAFETY: an `ARRAY` word points at a live `RefCell<ArrayData>` that the caller keeps alive.
+    let cell = unsafe { &*(w as *const RefCell<ArrayData>) };
+    if cell.try_borrow_mut().is_err() {
+        return 0;
+    }
+    // SAFETY: nothing else borrows the array (checked above), and native code uses the address
+    // before it calls anything that could reach the array; an array never changes its length, so the buffer does not move.
+    let a = unsafe { &mut *cell.as_ptr() };
+    let Ok(k) = usize::try_from(i) else {
+        return 0;
+    };
+    match (a, kind) {
+        (ArrayData::Int(v), 0) if k < v.len() => v[k..].as_mut_ptr() as u64,
+        (ArrayData::Double(v), 1) if k < v.len() => v[k..].as_mut_ptr() as u64,
+        (ArrayData::Bool(v), 2) if k < v.len() => v[k..].as_mut_ptr() as u64,
+        _ => 0,
+    }
+}
+
+// The address of the number or `boolean` held by field `index` of a struct, as `qx_elem`; 0 when
+// the field holds another type (a `String`, an array, ...) or the struct is borrowed. The field
+// keeps its variant: native code writes only a value of the same type.
+extern "C" fn qx_field(w: u64, index: i64, kind: u32) -> u64 {
+    use super::record::StructVal;
+    if w == 0 {
+        return 0;
+    }
+    // SAFETY: a `STRUCT` word points at a live `StructVal` that the caller keeps alive.
+    let st = unsafe { &*(w as *const StructVal) };
+    if st.fields.try_borrow_mut().is_err() {
+        return 0;
+    }
+    // SAFETY: as in `qx_elem`; a struct never changes its number of fields.
+    let fields = unsafe { &mut *st.fields.as_ptr() };
+    let Some(v) = usize::try_from(index).ok().and_then(|k| fields.get_mut(k)) else {
+        return 0;
+    };
+    match (v, kind) {
+        (Value::Int(n), 0) => n as *mut i64 as u64,
+        (Value::Double(x), 1) => x as *mut f64 as u64,
+        (Value::Bool(b), 2) => b as *mut bool as u64,
+        _ => 0,
+    }
+}
+
+// The `qx_elem` and `qx_field` kind of a register type.
+fn elem_kind(t: IrTy) -> Option<u32> {
+    match t {
+        IrTy::I64 => Some(0),
+        IrTy::F64 => Some(1),
+        IrTy::Bool => Some(2),
+        _ => None,
+    }
+}
+
 // Reads that need neither the machine nor a new allocation: an array element, a struct field,
 // an array length. The same results and diagnostics as `heap_inst`, which runs everything else
 // (`None`).
@@ -954,7 +1019,7 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 10],
+    helpers: [ClId; 12],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     maths: Vec<MathSite>,
@@ -1007,6 +1072,8 @@ impl<'m> Jit<'m> {
         b.symbol("qx_upcast", qx_upcast as *const u8);
         b.symbol("qx_unbox", qx_unbox as *const u8);
         b.symbol("qx_dyn", qx_dyn as *const u8);
+        b.symbol("qx_elem", qx_elem as *const u8);
+        b.symbol("qx_field", qx_field as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -1069,6 +1136,19 @@ impl<'m> Jit<'m> {
         ];
         dsig.returns = vec![AbiParam::new(types::I32)];
         let dynf = cl.declare_function("qx_dyn", Linkage::Import, &dsig).ok()?;
+        let mut esig = cl.make_signature();
+        esig.params = vec![
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I32),
+        ];
+        esig.returns = vec![AbiParam::new(types::I64)];
+        let elem = cl
+            .declare_function("qx_elem", Linkage::Import, &esig)
+            .ok()?;
+        let field = cl
+            .declare_function("qx_field", Linkage::Import, &esig)
+            .ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
@@ -1076,7 +1156,7 @@ impl<'m> Jit<'m> {
             ids: vec![None; ir.funcs.len()],
             entries: vec![None; ir.funcs.len()],
             helpers: [
-                charge, fail, fmod, math, heap, retain, release, upcast, unbox, dynf,
+                charge, fail, fmod, math, heap, retain, release, upcast, unbox, dynf, elem, field,
             ],
             charges: Vec::new(),
             fails: Vec::new(),
@@ -1236,6 +1316,8 @@ impl<'m> Jit<'m> {
             upcast: helpers[7],
             unbox: helpers[8],
             dynf: helpers[9],
+            elem: helpers[10],
+            field: helpers[11],
             charges: &mut self.charges,
             fails: &mut self.fails,
             maths: &mut self.maths,
@@ -1357,6 +1439,8 @@ struct Gen<'a, 'b> {
     upcast: cl::FuncRef,
     unbox: cl::FuncRef,
     dynf: cl::FuncRef,
+    elem: cl::FuncRef,
+    field: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
     maths: &'a mut Vec<MathSite>,
@@ -1658,6 +1742,7 @@ impl Gen<'_, '_> {
                 args,
                 span,
             } => self.math(name, *dst, args, *span)?,
+            i if self.elem(i)? => {}
             i => match heap_operands(i) {
                 Some((regs, dst, span)) => self.heap(i, regs, dst, span)?,
                 None => return Err(format!("unsupported instruction {i:?}")),
@@ -1914,6 +1999,141 @@ impl Gen<'_, '_> {
             self.set(dst, v)?;
         }
         Ok(())
+    }
+
+    // `a[i]`, `a[i] = v`, `a[i] op= v` on an `int`, `double` or `boolean` array and `p.f`,
+    // `p.f = v`, `p.f op= v` on a field of those types in native code: `qx_elem` or `qx_field`
+    // gives the element's address, and a store charges its steps inline like `charge`. Whenever
+    // that is not possible (no address, a step limit or poll in reach, an `int` overflow) the
+    // instruction goes to `qx_heap` from the start, which nothing here has changed yet. `false`
+    // for any other instruction.
+    fn elem(&mut self, i: &Inst) -> Result<bool, String> {
+        let src = self.src;
+        let is = |r: Reg, k: u8| ref_kind(src.regs[r as usize]) == Some(k);
+        // The base register, the index register or field number, the value register, the store.
+        let (base, at, value, op) = match i {
+            Inst::Index {
+                dst, base, index, ..
+            } if is(*base, ARRAY) => (*base, Ok(*index), *dst, None),
+            Inst::SetIndex {
+                base,
+                index,
+                op,
+                value,
+                ..
+            } if is(*base, ARRAY) => (*base, Ok(*index), *value, Some(*op)),
+            Inst::GetField {
+                dst, recv, index, ..
+            } if is(*recv, STRUCT) => (*recv, Err(*index), *dst, None),
+            Inst::SetField {
+                base,
+                index,
+                op,
+                value,
+                ..
+            } if is(*base, STRUCT) => (*base, Err(*index), *value, Some(*op)),
+            _ => return Ok(false),
+        };
+        let t = src.regs[value as usize];
+        let (Some(kind), Some(ct)) = (elem_kind(t), cl_ty(t)) else {
+            return Ok(false);
+        };
+        let int_ops = [
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::Mul,
+            BinOp::BitAnd,
+            BinOp::BitOr,
+            BinOp::BitXor,
+        ];
+        let float_ops = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Rem];
+        match op {
+            Some(Some(o)) if t == IrTy::I64 && !int_ops.contains(&o) => return Ok(false),
+            Some(Some(o)) if t == IrTy::F64 && !float_ops.contains(&o) => return Ok(false),
+            Some(Some(_)) if t == IrTy::Bool => return Ok(false),
+            _ => {}
+        }
+        let Some((regs, dst, span)) = heap_operands(i) else {
+            return Ok(false);
+        };
+        let a = self.get(base)?;
+        let (helper, k) = match at {
+            Ok(index) => (self.elem, self.get(index)?),
+            Err(field) => (
+                self.field,
+                self.b.ins().iconst(types::I64, i64::from(field)),
+            ),
+        };
+        let kind = self.b.ins().iconst(types::I32, i64::from(kind));
+        let call = self.b.ins().call(helper, &[a, k, kind]);
+        let ptr = self.b.inst_results(call)[0];
+        let (fast, slow, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().brif(ptr, fast, &[], slow, &[]);
+        self.b.switch_to_block(fast);
+        let flags = MemFlagsData::trusted();
+        match op {
+            None => {
+                let v = self.b.ins().load(ct, flags, ptr, 0);
+                self.set(value, v)?;
+            }
+            Some(op) => {
+                // `set_index` (src/lang/array.rs) and `set_field` (src/lang/record.rs): one step
+                // for the store, one for the operation.
+                let ctx = self.ctx;
+                let steps = self.b.ins().load(types::I64, flags, ctx, STEPS);
+                let poll = self.b.ins().load(types::I64, flags, ctx, NEXT_POLL);
+                let max = self.b.ins().load(types::I64, flags, ctx, MAX_STEPS);
+                let after = self.b.ins().iadd_imm_s(steps, 1 + i64::from(op.is_some()));
+                let below_poll = self.b.ins().icmp(IntCC::UnsignedLessThan, after, poll);
+                let within = self
+                    .b
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThanOrEqual, after, max);
+                let ok = self.b.ins().band(below_poll, within);
+                let store = self.b.create_block();
+                self.b.ins().brif(ok, store, &[], slow, &[]);
+                self.b.switch_to_block(store);
+                let v = self.get(value)?;
+                let new = match op {
+                    None => v,
+                    Some(o) if t == IrTy::F64 => {
+                        let old = self.b.ins().load(ct, flags, ptr, 0);
+                        self.float_op(o, old, v)?
+                    }
+                    Some(o) => {
+                        let old = self.b.ins().load(ct, flags, ptr, 0);
+                        match o {
+                            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                                let (n, of) = match o {
+                                    BinOp::Add => self.b.ins().sadd_overflow(old, v),
+                                    BinOp::Sub => self.b.ins().ssub_overflow(old, v),
+                                    _ => self.b.ins().smul_overflow(old, v),
+                                };
+                                let no = self.b.create_block();
+                                self.b.ins().brif(of, slow, &[], no, &[]);
+                                self.b.switch_to_block(no);
+                                n
+                            }
+                            BinOp::BitAnd => self.b.ins().band(old, v),
+                            BinOp::BitOr => self.b.ins().bor(old, v),
+                            _ => self.b.ins().bxor(old, v),
+                        }
+                    }
+                };
+                self.b.ins().store(flags, new, ptr, 0);
+                self.b.ins().store(flags, after, ctx, STEPS);
+            }
+        }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(slow);
+        self.heap(i, regs, dst, span)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok(true)
     }
 
     // An instruction on reference values through `qx_heap`: the operand words in a stack slot,
