@@ -1,0 +1,45 @@
+// Rust comparison: build a text of pseudo-random words, split it, count the words in a map and
+// sum count * length (same algorithm as rust/src/bin/strings.rs; Qxide's `Map` keeps insertion
+// order, Rust's `HashMap` does not, and the sum does not depend on it).
+// Usage: qxide run strings.qx --engine jit --trusted -- WORDS
+import std.time;
+
+int process(int words) {
+    final String letters = "abcdefghijklmnop";
+    List<String> parts = new List<String>();
+    int seed = 12345;
+    for w in 0..words {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        int size = 1 + seed % 6;
+        String word = "";
+        for k in 0..size {
+            seed = (seed * 1103515245 + 12345) % 2147483648;
+            int c = seed % 16;
+            word = word + letters.substring(c, c + 1);
+        }
+        parts.add(word);
+    }
+    String text = "";
+    String[] all = new String[parts.size()];
+    for i in 0..parts.size() {
+        all[i] = parts.get(i);
+    }
+    text = " ".join(all);
+    Map<String, int> counts = new Map<String, int>();
+    for word in text.split(" ") {
+        counts.put(word, counts.getOrDefault(word, 0) + 1);
+    }
+    int sum = 0;
+    for key in counts.keys() {
+        sum += counts.getOrDefault(key, 0) * key.length() + 1;
+    }
+    return sum;
+}
+
+void main(String[] args) {
+    int words = args[0].parseInt();
+    int t0 = time.monotonicMillis();
+    int sum = process(words);
+    int t1 = time.monotonicMillis();
+    println("result={} ms={}", sum, t1 - t0);
+}

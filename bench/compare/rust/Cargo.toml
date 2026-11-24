@@ -1,0 +1,12 @@
+# Rust versions of the Qxide comparison benchmarks (bench/compare/qx): same algorithms, std only.
+# A workspace of its own, so it is not part of the qxide build.
+[package]
+name = "qxide-compare"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,49 @@
+// Rust comparison: allocate and walk complete binary trees (same algorithm as
+// rust/src/bin/binarytrees.rs). Usage: qxide run binarytrees.qx --engine jit --trusted -- DEPTH
+import std.time;
+
+enum Tree {
+    Leaf,
+    Node(Tree left, Tree right)
+}
+
+Tree make(int depth) {
+    if depth == 0 {
+        return Tree.Node(Tree.Leaf, Tree.Leaf);
+    }
+    return Tree.Node(make(depth - 1), make(depth - 1));
+}
+
+int check(Tree t) {
+    match t {
+        Leaf => {
+            return 0;
+        }
+        Node(l, r) => {
+            return 1 + check(l) + check(r);
+        }
+    }
+}
+
+int run(int maxDepth) {
+    final int minDepth = 4;
+    int total = check(make(maxDepth + 1));
+    Tree longLived = make(maxDepth);
+    int d = minDepth;
+    while d <= maxDepth {
+        int iterations = 1 << (maxDepth - d + minDepth);
+        for i in 0..iterations {
+            total += check(make(d));
+        }
+        d += 2;
+    }
+    return total + check(longLived);
+}
+
+void main(String[] args) {
+    int depth = args[0].parseInt();
+    int t0 = time.monotonicMillis();
+    int total = run(depth);
+    int t1 = time.monotonicMillis();
+    println("result={} ms={}", total, t1 - t0);
+}

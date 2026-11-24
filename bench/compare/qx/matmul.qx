@@ -1,0 +1,36 @@
+// Rust comparison: dense matrix multiply on flat `double[]` arrays, i-k-j loop order (same
+// algorithm as rust/src/bin/matmul.rs). Usage: qxide run matmul.qx --engine jit --trusted -- N
+import std.time;
+
+double multiply(int n) {
+    double[] a = new double[n * n];
+    double[] b = new double[n * n];
+    double[] c = new double[n * n];
+    for i in 0..n {
+        for j in 0..n {
+            a[i * n + j] = (i - j) * 0.5;
+            b[i * n + j] = (i + j) * 0.25;
+        }
+    }
+    for i in 0..n {
+        for k in 0..n {
+            double aik = a[i * n + k];
+            for j in 0..n {
+                c[i * n + j] += aik * b[k * n + j];
+            }
+        }
+    }
+    double sum = 0.0;
+    for i in 0..n * n {
+        sum += c[i];
+    }
+    return sum;
+}
+
+void main(String[] args) {
+    int n = args[0].parseInt();
+    int t0 = time.monotonicMillis();
+    double sum = multiply(n);
+    int t1 = time.monotonicMillis();
+    println("result={} ms={}", sum, t1 - t0);
+}

@@ -5,3 +5,4 @@ __pycache__/
 examples/apps/*/target/
 crates/qxide-app-runtime/target/
 apps/*/target/
+bench/compare/rust/target/

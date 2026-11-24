@@ -1444,3 +1444,33 @@ fn progress_example_redraws_a_line() {
         .unwrap()
         .contains("progress.qx"));
 }
+
+// The Rust comparison programs (bench/compare/qx) at small sizes: every engine prints the result
+// the Rust versions (bench/compare/rust) print for the same input.
+#[test]
+fn rust_comparison_programs_match_the_rust_results() {
+    let dir = format!("{}/bench/compare/qx", env!("CARGO_MANIFEST_DIR"));
+    let cases = [
+        ("nbody", "200", "-0.16902690858133132"),
+        ("binarytrees", "6", "4398"),
+        ("matmul", "20", "-33250.0"),
+        ("strings", "300", "940"),
+    ];
+    let mut engines = vec!["ast", "ir"];
+    if cfg!(feature = "jit") {
+        engines.push("jit");
+    }
+    for (name, n, want) in cases {
+        let file = format!("{dir}/{name}.qx");
+        for engine in &engines {
+            let out = qxide_io(&["run", &file, "--engine", engine, "--", n], &[], "");
+            assert_eq!(out.status.code(), Some(0), "{name} {engine}: {out:?}");
+            let text = String::from_utf8(out.stdout).unwrap();
+            let result = text
+                .strip_prefix("result=")
+                .and_then(|r| r.split(' ').next())
+                .unwrap_or_default();
+            assert_eq!(result, want, "{name} {engine}: {text}");
+        }
+    }
+}
