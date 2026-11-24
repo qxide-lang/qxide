@@ -40,8 +40,21 @@ pub struct Server {
     cache: HashMap<String, Analyzed>,
 }
 
+/// The `.qx` language this server checks, for editors that need more than the version: 1 is the
+/// general-purpose language after 0.8.0 (`while`, arrays, structs, ...). Raise it whenever an
+/// editor extension must tell a server without some syntax apart from one with it.
+pub const LANGUAGE_LEVEL: u32 = 1;
+
 /// Runs the server on stdin/stdout until the client sends `exit`.
 pub fn main(stack: usize) -> ExitCode {
+    // Editors show the server's stderr in their log: say which binary answered.
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    eprintln!(
+        "qxide lsp {} (language level {LANGUAGE_LEVEL}) {exe}",
+        env!("CARGO_PKG_VERSION")
+    );
     let (conn, io) = Connection::stdio();
     let worker = std::thread::Builder::new()
         .stack_size(stack)
@@ -72,6 +85,7 @@ pub fn capabilities() -> Value {
         "documentSymbolProvider": true,
         "documentFormattingProvider": true,
         "completionProvider": { "triggerCharacters": ["."] },
+        "experimental": { "qxideLanguageLevel": LANGUAGE_LEVEL },
     })
 }
 

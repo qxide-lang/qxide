@@ -1,6 +1,6 @@
 // `qxide lsp` as an editor starts it: a child process speaking Content-Length framed JSON-RPC.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
 fn frame(body: &str) -> String {
@@ -58,8 +58,18 @@ fn stdio_session_publishes_check_diagnostics_and_exits_cleanly() {
         messages.push(m);
     }
     drop(stdin);
+    let mut log = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut log)
+        .unwrap();
     let status = child.wait().unwrap();
     assert!(status.success(), "exit status {status:?}");
+    // The editor's log names the server version (roadmap A4).
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(log.starts_with(&format!("qxide lsp {version} ")), "{log}");
 
     let messages: Vec<serde_json::Value> = messages
         .iter()
@@ -67,6 +77,11 @@ fn stdio_session_publishes_check_diagnostics_and_exits_cleanly() {
         .collect();
     assert_eq!(messages[0]["id"], 1);
     assert_eq!(messages[0]["result"]["serverInfo"]["name"], "qxide");
+    assert_eq!(messages[0]["result"]["serverInfo"]["version"], version);
+    assert_eq!(
+        messages[0]["result"]["capabilities"]["experimental"]["qxideLanguageLevel"],
+        1
+    );
     let diag = messages
         .iter()
         .find(|m| m["method"] == "textDocument/publishDiagnostics")

@@ -17,7 +17,7 @@ Qxide is a programming language for classical and quantum computers with Java/C-
 ## Requirements
 
 - **Visual Studio Code**: Version 1.91 or newer.
-- **Qxide CLI**: `qxide` version 0.8.0 or newer, which provides `qxide lsp`.
+- **Qxide CLI**: `qxide` version 0.9.0 or newer (or a development build that reports language level 1), which provides `qxide lsp`. With an older `qxide`, the extension shows a warning because older servers report errors on syntax added after 0.8.0 such as `while`.
 
 Install `qxide` using one of the following methods:
 

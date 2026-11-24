@@ -7,6 +7,7 @@ import {
   LanguageClientOptions,
   ServerOptions,
 } from "vscode-languageclient/node";
+import { isTooOld, MIN_VERSION } from "./version";
 
 let client: LanguageClient | undefined;
 
@@ -37,10 +38,32 @@ function createClient(): LanguageClient {
   return new LanguageClient("qxide", "Qxide", serverOptions, clientOptions);
 }
 
+// Logs which server answered and warns once per start when it predates the documented syntax:
+// an old `qxide` on PATH otherwise shows errors on correct code.
+function reportServer(c: LanguageClient): void {
+  const init = c.initializeResult;
+  const version = init?.serverInfo?.version;
+  const experimental = init?.capabilities.experimental as { qxideLanguageLevel?: unknown } | undefined;
+  const languageLevel = experimental?.qxideLanguageLevel;
+  c.outputChannel.appendLine(`qxide lsp ${version ?? "?"} (language level ${String(languageLevel ?? "none")})`);
+  if (!isTooOld({ version, languageLevel })) {
+    return;
+  }
+  const message = "Found Qxide {version}, but this extension requires {min} or newer. Update Qxide or point the qxide.path setting to a newer binary.";
+  const open = "Open Settings";
+  const text = message.replace("{version}", version ?? "?").replace("{min}", MIN_VERSION);
+  void vscode.window.showWarningMessage(text, open).then((choice) => {
+    if (choice === open) {
+      void vscode.commands.executeCommand("workbench.action.openSettings", "qxide.path");
+    }
+  });
+}
+
 async function start(): Promise<void> {
   client = createClient();
   try {
     await client.start();
+    reportServer(client);
   } catch (err) {
     const command = vscode.workspace.getConfiguration("qxide").get<string>("path") ?? "qxide";
     const detail = err instanceof Error ? err.message : String(err);

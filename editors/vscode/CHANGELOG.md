@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - Unreleased
+
+- **Server version check**: After the language server starts, the extension logs the `qxide lsp` version and language level to the Qxide output channel and shows a warning with a button that opens the `qxide.path` setting when the server is older than 0.9.0 and reports no `qxideLanguageLevel` (for example `qxide` 0.8.0, which has no `while`, causing valid code to show errors).
+- **String escape highlighting**: Added syntax highlighting for the new `\r` and `\uXXXX` string escape sequences.
+- **Requirements**: Requires `qxide` 0.9.0 or newer (or a development build that reports language level 1) and VS Code 1.91 or newer.
+
 ## 0.1.0 - 2026-11-22
 
 - **Syntax highlighting**: Added language ID `qx` for `*.qx` files with a TextMate grammar covering comments, strings with escapes and `{}` placeholders, imports, functions, keywords such as `final`, `var`, `consume`, and `public`, classical and quantum types, `true`, `false`, `PI`, numbers, built-in functions, and `BitReg` methods.

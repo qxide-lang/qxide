@@ -2,7 +2,7 @@
   "name": "qxide",
   "displayName": "Qxide",
   "description": "Syntax highlighting and language server support for Qxide (.qx): diagnostics, formatting, and completion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "publisher": "qxide-lang",
   "license": "MIT OR Apache-2.0",
