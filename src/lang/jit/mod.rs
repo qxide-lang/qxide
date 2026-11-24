@@ -405,6 +405,16 @@ extern "C" fn qx_heap(ctx: *mut Ctx, site: u32, ops: *const u64) -> u8 {
         return 1;
     }
     // SAFETY: the words are this function's live registers of the listed types.
+    if let Some(r) = unsafe { store_fast(ctx, &s.inst, words, &s.regs) } {
+        return match r {
+            Ok(()) => 0,
+            Err(d) => {
+                rt.err = Some(d);
+                1
+            }
+        };
+    }
+    // SAFETY: as above.
     if let Some(r) = unsafe { heap_fast(&s.inst, words, &s.regs, s.dst.map(|(_, t)| t)) } {
         return match r {
             Ok(w) => {
@@ -488,6 +498,254 @@ unsafe fn heap_fast(
             to_word(v, dst).map(Ok)
         }
         _ => None,
+    }
+}
+
+// Stores of a number or `boolean` into an element of a number or `boolean` array, or into a
+// struct field: `exec::heap_inst` without the machine (`set_index` and `set_field`), with the
+// same results, diagnostics and steps. Their one or two charges are added here when no step
+// limit or cancellation poll is due (as `Machine::charge_all` does); otherwise, and for any
+// other store, `None` leaves the instruction to `heap_inst`.
+//
+// SAFETY: as `heap_fast`.
+unsafe fn store_fast(
+    ctx: &mut Ctx,
+    i: &Inst,
+    words: &[u64],
+    regs: &[(Reg, IrTy)],
+) -> Option<R<()>> {
+    use super::array::ArrayData;
+    use super::record::StructVal;
+    use std::cell::RefCell;
+    let scalar = |t: IrTy| matches!(t, IrTy::I64 | IrTy::F64 | IrTy::Bool);
+    let (op, span) = match i {
+        Inst::SetIndex { op, span, .. } | Inst::SetField { op, span, .. } => (*op, *span),
+        _ => return None,
+    };
+    let after = ctx.steps.saturating_add(1 + u64::from(op.is_some()));
+    if after >= ctx.next_poll || after > ctx.max_steps {
+        return None;
+    }
+    let (vt, vw) = *regs
+        .last()
+        .zip(words.last())
+        .map(|((_, t), w)| (*t, *w))
+        .as_ref()?;
+    if !scalar(vt) {
+        return None;
+    }
+    // SAFETY: a number or `boolean` word owns nothing.
+    let v = unsafe { from_word(vw, vt) }?;
+    match i {
+        Inst::SetIndex { .. } if ref_kind(regs[0].1) == Some(ARRAY) => {
+            // SAFETY: an `ARRAY` word points at a live `RefCell<ArrayData>`.
+            let cell = unsafe { &*(words[0] as *const RefCell<ArrayData>) };
+            let mut a = cell.try_borrow_mut().ok()?;
+            if matches!(*a, ArrayData::Other(_)) {
+                return None;
+            }
+            let k = match super::machine::checked_index(words[1] as i64, a.len(), span) {
+                Ok(k) => k,
+                Err(d) => return Some(Err(d)),
+            };
+            ctx.steps = after;
+            let v = match op {
+                None => v,
+                Some(op) => match super::machine::binary(op, a.get(k), v, span) {
+                    Ok(x) => x,
+                    Err(d) => return Some(Err(d)),
+                },
+            };
+            Some(a.set(k, v, span))
+        }
+        Inst::SetField { index, .. } if ref_kind(regs[0].1) == Some(STRUCT) => {
+            // SAFETY: a `STRUCT` word points at a live `StructVal`.
+            let st = unsafe { &*(words[0] as *const StructVal) };
+            let mut fields = st.fields.try_borrow_mut().ok()?;
+            let slot = fields.get_mut(*index as usize)?;
+            // A `String` field takes `str_binary`, which charges for the text.
+            if !matches!(slot, Value::Int(_) | Value::Double(_) | Value::Bool(_)) {
+                return None;
+            }
+            let new = match op {
+                None => Ok(v),
+                Some(op) => super::machine::binary(op, slot.clone(), v, span),
+            };
+            // A field keeps its declared type: `int` widens to `double` (`machine::coerce`).
+            let new = match (&*slot, new) {
+                (_, Err(d)) => {
+                    ctx.steps = after;
+                    return Some(Err(d));
+                }
+                (Value::Double(_), Ok(Value::Int(n))) => Value::Double(n as f64),
+                (Value::Int(_), Ok(x @ Value::Int(_)))
+                | (Value::Double(_), Ok(x @ Value::Double(_)))
+                | (Value::Bool(_), Ok(x @ Value::Bool(_))) => x,
+                _ => return None,
+            };
+            ctx.steps = after;
+            *slot = new;
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
+// Registers loaded from a slot (`Load`) only to be read by the next heap instruction that uses
+// them, as the array of `Index`, `SetIndex` or `Len` or the struct of `GetField` or `SetField`:
+// one definition, one use later in the same block, and no `Store` to the slot in between. Such
+// a register borrows the slot's count of the value instead of taking one (a `qx_retain` and a
+// `qx_release` call less per access), since the slot keeps the value alive until the use and
+// `qx_heap` takes its own count of what it reads.
+fn borrowed_loads(f: &Func) -> Vec<bool> {
+    let n = f.regs.len();
+    let mut defs = vec![0u32; n];
+    let mut uses = vec![0u32; n];
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Some(d) = defined(i) {
+                defs[d as usize] += 1;
+            }
+            for r in read_regs(i) {
+                uses[r as usize] += 1;
+            }
+        }
+        match &b.term {
+            Term::Br { cond, .. } => uses[*cond as usize] += 1,
+            Term::Ret(Some(r)) => uses[*r as usize] += 1,
+            _ => {}
+        }
+    }
+    let mut out = vec![false; n];
+    for b in &f.blocks {
+        for (k, i) in b.insts.iter().enumerate() {
+            let Inst::Load { dst, slot } = i else {
+                continue;
+            };
+            let r = *dst as usize;
+            if defs[r] != 1 || uses[r] != 1 || ref_kind(f.regs[r]).is_none() {
+                continue;
+            }
+            for later in &b.insts[k + 1..] {
+                if matches!(later, Inst::Store { slot: s, .. } if s == slot) {
+                    break;
+                }
+                let base = match later {
+                    Inst::Index { base, .. } | Inst::SetIndex { base, .. } => Some(*base),
+                    Inst::SetField { base, .. } => Some(*base),
+                    Inst::GetField { recv, .. } => Some(*recv),
+                    Inst::Len { src, .. } => Some(*src),
+                    _ => None,
+                };
+                if read_regs(later).contains(dst) {
+                    out[r] = base == Some(*dst)
+                        && read_regs(later).iter().filter(|x| *x == dst).count() == 1;
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+// The register an instruction defines.
+fn defined(i: &Inst) -> Option<Reg> {
+    use Inst::*;
+    match i {
+        Const { dst, .. }
+        | Str { dst, .. }
+        | Load { dst, .. }
+        | Widen { dst, .. }
+        | Upcast { dst, .. }
+        | IntOp { dst, .. }
+        | FloatOp { dst, .. }
+        | BoolOp { dst, .. }
+        | StrOp { dst, .. }
+        | DynOp { dst, .. }
+        | Unary { dst, .. }
+        | Cast { dst, .. }
+        | Index { dst, .. }
+        | View { dst, .. }
+        | NewArray { dst, .. }
+        | ArrayLit { dst, .. }
+        | NewStruct { dst, .. }
+        | NewEnum { dst, .. }
+        | EnumTag { dst, .. }
+        | EnumField { dst, .. }
+        | GetField { dst, .. }
+        | StrMethod { dst, .. }
+        | NewNative { dst, .. }
+        | NativeMethod { dst, .. }
+        | QAlloc { dst, .. }
+        | QAllocReg { dst, .. }
+        | Measure { dst, .. }
+        | Len { dst, .. }
+        | StdCall { dst, .. }
+        | Call { dst, .. }
+        | CallDyn { dst, .. } => Some(*dst),
+        Charge { .. }
+        | Store { .. }
+        | SetField { .. }
+        | SetIndex { .. }
+        | Gate { .. }
+        | Rotate { .. }
+        | Cx { .. }
+        | Ccx { .. }
+        | Discard { .. }
+        | Print { .. }
+        | HostText { .. }
+        | IfBit { .. } => None,
+    }
+}
+
+// The registers an instruction reads.
+fn read_regs(i: &Inst) -> Vec<Reg> {
+    use Inst::*;
+    match i {
+        Charge { .. } | Const { .. } | Str { .. } | Load { .. } | QAlloc { .. } => Vec::new(),
+        Store { src, .. }
+        | Widen { src, .. }
+        | Upcast { src, .. }
+        | Unary { src, .. }
+        | Cast { src, .. }
+        | View { src, .. }
+        | EnumTag { src, .. }
+        | EnumField { src, .. }
+        | Measure { src, .. }
+        | Discard { src, .. }
+        | Len { src, .. }
+        | HostText { src, .. } => vec![*src],
+        IntOp { a, b, .. }
+        | FloatOp { a, b, .. }
+        | BoolOp { a, b, .. }
+        | StrOp { a, b, .. }
+        | DynOp { a, b, .. }
+        | Cx { a, b, .. } => vec![*a, *b],
+        Ccx { a, b, t, .. } => vec![*a, *b, *t],
+        Index { base, index, .. } => vec![*base, *index],
+        NewArray { dims: rs, .. }
+        | ArrayLit { elems: rs, .. }
+        | NewStruct { args: rs, .. }
+        | NewEnum { args: rs, .. }
+        | NewNative { args: rs, .. }
+        | Print { args: rs, .. }
+        | Call { args: rs, .. }
+        | CallDyn { args: rs, .. } => rs.to_vec(),
+        GetField { recv, .. } => vec![*recv],
+        SetField { base, value, .. } => vec![*base, *value],
+        SetIndex {
+            base, index, value, ..
+        } => vec![*base, *index, *value],
+        StrMethod { recv, args, .. } | NativeMethod { recv, args, .. } => {
+            let mut v = vec![*recv];
+            v.extend_from_slice(args);
+            v
+        }
+        QAllocReg { size, .. } => vec![*size],
+        Gate { q, .. } => vec![*q],
+        Rotate { q, angle, .. } => vec![*q, *angle],
+        StdCall { args, .. } => args.iter().map(|(r, _)| *r).collect(),
+        IfBit { bit, .. } => vec![*bit],
     }
 }
 
@@ -988,6 +1246,7 @@ impl<'m> Jit<'m> {
             slots: Vec::new(),
             regs: Vec::new(),
             owned: Vec::new(),
+            borrowed: borrowed_loads(src),
         };
         g.function()
     }
@@ -1111,6 +1370,8 @@ struct Gen<'a, 'b> {
     // Slots and registers holding reference words: each owns one count of its value, given up
     // when it is overwritten and when the function returns or fails.
     owned: Vec<(Variable, u8)>,
+    // Registers that borrow the count of the slot they are loaded from (`borrowed_loads`).
+    borrowed: Vec<bool>,
 }
 
 impl Gen<'_, '_> {
@@ -1132,8 +1393,16 @@ impl Gen<'_, '_> {
                 self.owned.push((v, kind));
             }
         }
-        for r in &src.regs {
+        for (k, r) in src.regs.iter().enumerate() {
             let var = cl_ty(*r).map(|t| self.b.declare_var(t));
+            if self.borrowed[k] {
+                if let Some(v) = var {
+                    let zero = self.b.ins().iconst(types::I64, 0);
+                    self.b.def_var(v, zero);
+                }
+                self.regs.push(var);
+                continue;
+            }
             if let (Some(v), Some(kind)) = (var, ref_kind(*r)) {
                 let zero = self.b.ins().iconst(types::I64, 0);
                 self.b.def_var(v, zero);
@@ -1175,9 +1444,14 @@ impl Gen<'_, '_> {
         Ok(self.b.use_var(v))
     }
 
-    // Defines register `r`; a reference `v` must be owned (it is given to the register).
+    // Defines register `r`; a reference `v` must be owned (it is given to the register), unless
+    // the register only borrows (`borrowed_loads`).
     fn set(&mut self, r: u32, v: cl::Value) -> Result<(), String> {
         let var = self.regs[r as usize].ok_or("unit register defined")?;
+        if self.borrowed[r as usize] {
+            self.b.def_var(var, v);
+            return Ok(());
+        }
         if let Some(kind) = ref_kind(self.src.regs[r as usize]) {
             let old = self.b.use_var(var);
             self.b.def_var(var, v);
@@ -1276,7 +1550,9 @@ impl Gen<'_, '_> {
             Inst::Load { dst, slot } => {
                 let v = self.b.use_var(self.slots[*slot as usize]);
                 if let Some(kind) = ref_kind(src.slots[*slot as usize].ty) {
-                    self.count(v, kind, true);
+                    if !self.borrowed[*dst as usize] {
+                        self.count(v, kind, true);
+                    }
                 }
                 self.set(*dst, v)?;
             }

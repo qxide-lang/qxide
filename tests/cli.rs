@@ -1454,7 +1454,11 @@ fn experimental_flags_are_named_and_kept_from_bundles() {
     let err = String::from_utf8(unknown.stderr).unwrap();
     assert!(err.contains("unknown experimental feature `nope`"), "{err}");
     let file = format!("{}/bench/compare/qx/matmul.qx", env!("CARGO_MANIFEST_DIR"));
-    let build = qxide_io(&["build", &file, "--experimental", "value-semantics"], &[], "");
+    let build = qxide_io(
+        &["build", &file, "--experimental", "value-semantics"],
+        &[],
+        "",
+    );
     assert_eq!(build.status.code(), Some(2));
     let err = String::from_utf8(build.stderr).unwrap();
     assert!(err.contains("does not support"), "{err}");

@@ -1,9 +1,9 @@
 // Experimental language features, off by default. `value-semantics` turns on the memory model
 // of docs/design/memory-model.md (`inout` and classical `consume` parameters, moves, `.copy()`,
 // `Shared<T>`); without it the language, its diagnostics and its step counts are unchanged.
-// The choice is per thread like the engine (src/lang/engine.rs): the CLI sets it from
-// `--experimental value-semantics` or `QXIDE_EXPERIMENTAL=value-semantics` on the thread that
-// checks and runs the program, and `qxide lsp` reads the environment variable.
+// `--experimental value-semantics` on the command line turns it on for the whole process,
+// `QXIDE_EXPERIMENTAL=value-semantics` for any thread that has not set it (`qxide lsp` uses
+// that), and tests set it per thread like the engine (src/lang/engine.rs).
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +45,9 @@ pub fn take_cli_flags(args: Vec<String>) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Turns value semantics on or off for programs checked and run on this thread.
+/// Turns value semantics on or off for programs checked and run on this thread (tests, the
+/// debug-build check of `values::lower`).
+#[cfg_attr(not(any(test, debug_assertions)), allow(dead_code))]
 pub fn set_value_semantics(on: bool) {
     VALUES.with(|v| v.set(Some(on)));
 }

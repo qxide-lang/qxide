@@ -44,7 +44,7 @@ impl ArrayData {
     }
 
     // Stores `v` (already of the element type, `int` widened for `double` arrays).
-    fn set(&mut self, i: usize, v: Value, span: Span) -> R<()> {
+    pub(super) fn set(&mut self, i: usize, v: Value, span: Span) -> R<()> {
         match (self, v) {
             (ArrayData::Int(a), Value::Int(n)) => a[i] = n,
             (ArrayData::Double(a), Value::Double(x)) => a[i] = x,
