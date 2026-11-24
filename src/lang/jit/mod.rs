@@ -302,6 +302,10 @@ extern "C" fn qx_release(w: u64, kind: u32) {
 
 // `Upcast`: a new boxed interface word for the struct or enum word `w` of kind `kind`.
 extern "C" fn qx_upcast(w: u64, kind: u32) -> u64 {
+    // A null word stays null, so a lowering bug is an internal error in `qx_heap`, not UB here.
+    if w == 0 {
+        return 0;
+    }
     // SAFETY: native code passes a live, nonzero word of `kind` (a struct or an enum) it owns.
     let v = unsafe {
         match kind as u8 {
@@ -315,6 +319,9 @@ extern "C" fn qx_upcast(w: u64, kind: u32) -> u64 {
 // The receiver of a call through an interface: a new word of kind `kind` for the struct or enum
 // inside the boxed interface word `w` (0 if it holds something else).
 extern "C" fn qx_unbox(w: u64, kind: u32) -> u64 {
+    if w == 0 {
+        return 0;
+    }
     // SAFETY: native code passes a live, nonzero boxed interface word.
     match (unsafe { &*(w as *const Value) }, kind as u8) {
         (Value::Struct(s), STRUCT) => Rc::into_raw(s.clone()) as u64,

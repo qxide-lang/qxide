@@ -46,7 +46,7 @@ void main() {
 
 ## Q0103: unknown escape sequence in a string literal
 
-A string literal contains a backslash escape sequence that the `.qx` language does not recognize. Only `\n`, `\t`, `\\`, and `\"` are supported escape sequences. Rejecting unknown escapes during lexing prevents mistyped escapes from being silently turned into unintended characters.
+A string literal contains a backslash escape sequence that the `.qx` language does not recognize. Only `\n`, `\t`, `\r` (carriage return), `\\`, `\"`, and `\u` followed by exactly four hex digits naming one Unicode character (such as `\u001B`, the ESC character used by terminal control sequences) are supported; surrogates and other forms like `\u{1b}` are rejected. Rejecting invalid escapes during lexing prevents mistyped escapes from being silently turned into unintended characters.
 
 Erroneous code example:
 
