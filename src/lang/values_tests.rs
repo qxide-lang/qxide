@@ -279,6 +279,99 @@ fn shared_handles_share_one_value() {
 }
 
 #[test]
+fn moves_on_break_paths_count_after_the_loop() {
+    on();
+    let holder = "struct H {\n    int[] items;\n}\n\n";
+    let broke = format!("{holder}void main() {{\n    int[] a = {{1}};\n    H h = new H(new int[1]);\n    while true {{\n        h.items = a;\n        break;\n    }}\n    a[0] = 9;\n}}\n");
+    assert_eq!(codes(&broke), vec!["Q0321"]);
+    let for_break = main_src("int[] a = {1};\nint[] b = new int[1];\nfor i in 0..3 {\n    if i == 1 {\n        b = a;\n        break;\n    }\n}\nprintln(\"{}\", a[0]);");
+    assert_eq!(codes(&for_break), vec!["Q0321"]);
+    // A `while true` that breaks completes, so moves before it still count.
+    let after = main_src(
+        "int[] a = {1};\nint[] b = a;\nwhile true {\n    break;\n}\nprintln(\"{}\", a[0]);",
+    );
+    assert_eq!(codes(&after), vec!["Q0321"]);
+    ok(&main_src("int[] a = {1};\nwhile true {\n    int[] b = a;\n    a = new int[1];\n    break;\n}\nprintln(\"{}\", a[0]);"));
+}
+
+#[test]
+fn changes_through_a_collection_read_change_the_collection() {
+    on();
+    let p = PARTICLE;
+    let get = format!("{p}void f(List<P> xs) {{\n    xs[0].x = 1.0;\n}}\n\nvoid main() {{\n    List<P> xs = new List<P>();\n    f(xs);\n}}\n");
+    assert_eq!(codes(&get), vec!["Q0320"]);
+    let nested = "void f(List<List<int>> rows) {\n    rows[0].add(1);\n}\n\nvoid main() {\n    f(new List<List<int>>());\n}\n";
+    assert_eq!(codes(nested), vec!["Q0320"]);
+    let method = "struct C {\n    int n;\n\n    inout void bump() {\n        this.n += 1;\n    }\n}\n\nvoid f(List<C> xs) {\n    xs[0].bump();\n}\n\nvoid main() {\n    f(new List<C>());\n}\n";
+    assert_eq!(codes(method), vec!["Q0320"]);
+    let payload = "struct P {\n    double x;\n}\n\nOption<int> f(Map<String, P> m) {\n    m.get(\"k\")?.x = 1.0;\n    return Option.None;\n}\n\nvoid main() {\n    Map<String, P> m = new Map<String, P>();\n    println(\"{}\", f(m).isPresent());\n}\n";
+    assert_eq!(codes(payload), vec!["Q0320"]);
+}
+
+#[test]
+fn a_value_cannot_be_lent_and_given_away_in_one_call() {
+    on();
+    let g = "int g(int[] a, consume int[] b) {\n    return a[0] + b[0];\n}\n\nvoid main() {\n    int[] a = {1};\n    println(\"{}\", g(a, a));\n}\n";
+    assert!(codes(g).contains(&"Q0323"), "{:?}", codes(g));
+    let inout = "void f(inout int[] a, consume int[] b) {\n}\n\nvoid main() {\n    int[] a = {1};\n    f(inout a, a);\n}\n";
+    assert!(codes(inout).contains(&"Q0323"), "{:?}", codes(inout));
+    // Small values are copied, so they may be both.
+    ok("int g(int a, consume int b) {\n    return a + b;\n}\n\nvoid main() {\n    int a = 1;\n    println(\"{}\", g(a, a));\n}\n");
+}
+
+#[test]
+fn inout_cells_need_a_plain_statement_and_a_changeable_variable() {
+    on();
+    let f = "void inc(inout int n) {\n    n += 1;\n}\n\nboolean bump(inout int n) {\n    n += 1;\n    return true;\n}\n\n";
+    let short = format!("{f}void main() {{\n    int[] xs = {{1}};\n    int i = 3;\n    boolean b = i < len(xs) && bump(inout xs[i]);\n}}\n");
+    assert_eq!(codes(&short), vec!["Q0325"]);
+    let fin = format!("{f}void main() {{\n    final int k = 1;\n    inc(inout k);\n}}\n");
+    assert_eq!(codes(&fin), vec!["Q0325"]);
+    // A local that hides a cell parameter is an ordinary variable.
+    let hide = "void inc(inout int n) {\n    if n > 0 {\n        int m = n;\n        for n in 0..2 {\n            m += n;\n        }\n        n = m;\n    }\n}\n\nvoid main() {\n    int x = 1;\n    inc(inout x);\n    println(\"{}\", x);\n}\n";
+    assert_eq!(run_ok(hide), "2\n");
+}
+
+#[test]
+fn an_owned_payload_moves_its_enum_once() {
+    on();
+    let src =
+        "void main() {\n    Option<int[]> o = Option.Some(new int[2]);\n    int[] a = o?;\n}\n";
+    // `?` needs a function that returns an `Option`; the move itself is not an error.
+    let c = codes(src);
+    assert!(!c.contains(&"Q0322"), "{c:?}");
+}
+
+#[test]
+fn every_offered_fix_removes_its_error() {
+    on();
+    let programs = [
+        "void push(int[] a) {\n    a[0] = 1;\n}\n\nvoid main() {\n    push(new int[1]);\n}\n",
+        "int[] keep(int[] a) {\n    return a;\n}\n\nvoid main() {\n    println(\"{}\", len(keep(new int[2])));\n}\n",
+        "void main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    println(\"{}\", a[0]);\n}\n",
+        "void main() {\n    int[][] m = new int[2][2];\n    int[] row = m[0];\n}\n",
+        "void main() {\n    int[] a = {1};\n    for i in 0..2 {\n        int[] b = a;\n    }\n}\n",
+        "void inc(inout int n) {\n    n += 1;\n}\n\nvoid main() {\n    int x = 1;\n    inc(x);\n}\n",
+        "int one(int n) {\n    return n;\n}\n\nvoid main() {\n    int x = 1;\n    println(\"{}\", one(inout x));\n}\n",
+        "struct C {\n    int n;\n\n    void bump() {\n        this.n += 1;\n    }\n}\n\nvoid main() {\n    C c = new C(0);\n    c.bump();\n}\n",
+    ];
+    for src in programs {
+        let first = codes_at(src)[0];
+        for f in fixed(src) {
+            let after = codes_at(&f);
+            assert!(
+                !after.iter().any(|e| e.0 == first.0 && e.1 == first.1),
+                "{src}\nfix:\n{f}\nstill {after:?}"
+            );
+        }
+    }
+    // No `.copy()` fix where `.copy()` cannot copy (`Q0326`).
+    let opt = "void main() {\n    Map<String, int[]> m = new Map<String, int[]>();\n    Option<int[]> o = m.get(\"k\");\n}\n";
+    assert_eq!(codes(opt), vec!["Q0322"]);
+    assert!(fixed(opt).is_empty());
+}
+
+#[test]
 fn qubit_rules_are_the_same_with_the_feature() {
     // The catalog's examples of the qubit codes report the same code, and their fixes run.
     for (code, entry) in explain::entries() {

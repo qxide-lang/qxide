@@ -1,9 +1,10 @@
 // Experimental language features, off by default. `value-semantics` turns on the memory model
 // of docs/design/memory-model.md (`inout` and classical `consume` parameters, moves, `.copy()`,
 // `Shared<T>`); without it the language, its diagnostics and its step counts are unchanged.
-// `--experimental value-semantics` on the command line turns it on for the whole process,
-// `QXIDE_EXPERIMENTAL=value-semantics` for any thread that has not set it (`qxide lsp` uses
-// that), and tests set it per thread like the engine (src/lang/engine.rs).
+// `--experimental value-semantics` or `QXIDE_EXPERIMENTAL=value-semantics` on the command line
+// turns it on for the whole CLI process (`qxide lsp` included); tests set it per thread like the
+// engine (src/lang/engine.rs). Bundled programs, the desktop app runtime and the Rust API keep
+// it off.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,16 +53,25 @@ pub fn set_value_semantics(on: bool) {
     VALUES.with(|v| v.set(Some(on)));
 }
 
-/// Whether value semantics is on for this thread: set explicitly, else from `QXIDE_EXPERIMENTAL`.
+/// Whether value semantics is on for this thread: set explicitly, else from the command line.
 pub fn value_semantics() -> bool {
     VALUES.with(|v| match v.get() {
         Some(on) => on,
         None => {
-            let on = CLI_VALUES.load(Ordering::Relaxed) || from_env(VALUE_SEMANTICS);
+            let on = CLI_VALUES.load(Ordering::Relaxed);
             v.set(Some(on));
             on
         }
     })
+}
+
+/// `QXIDE_EXPERIMENTAL=value-semantics` for the command line (`qxide lsp` included). Only the
+/// CLI calls this, after it has handled a bundled program: bundles, the desktop app runtime and
+/// the Rust API never read the variable.
+pub fn take_env() {
+    if from_env(VALUE_SEMANTICS) {
+        CLI_VALUES.store(true, Ordering::Relaxed);
+    }
 }
 
 // `QXIDE_EXPERIMENTAL=a,b` names the features to turn on.

@@ -169,6 +169,17 @@ impl<'p> Decls<'p> {
         ok
     }
 
+    /// The function of method `name` of a struct or enum value of type `t`.
+    pub fn method_fn(&self, t: Ty, name: &str) -> Option<&'p FnDecl> {
+        if !matches!(t, Ty::Struct(_) | Ty::Enum(_)) {
+            return None;
+        }
+        let (base, _) = split(t);
+        [t.name(), base.name()]
+            .iter()
+            .find_map(|owner| self.fns.get(format!("{owner}.{name}").as_str()).copied())
+    }
+
     /// Is `t` the prelude's `Shared<T>` (not a program's own struct of that name)?
     pub fn is_shared(&self, t: Ty) -> bool {
         let (base, _) = split(t);
@@ -278,6 +289,41 @@ fn subst(t: Ty, params: &[Ident], args: &[Ty]) -> Ty {
     })
 }
 
+/// Which parameters of `f` `lower` turns into write-back cells: an `inout` parameter the
+/// engines would pass by value (a number, `boolean`, `String`, enum or handle) or one `f`
+/// assigns as a whole. `this` never is: it cannot be assigned.
+pub fn celled_params(f: &FnDecl) -> Vec<bool> {
+    (0..f.params.len())
+        .map(|i| {
+            let q = &f.params[i];
+            if q.inout.is_none() || (i == 0 && f.method.is_some()) {
+                return false;
+            }
+            let shared_in_place = matches!(q.ty, Ty::Struct(_) | Ty::Array(_) | Ty::Native(_));
+            !shared_in_place || assigns(&f.body, &q.name.name)
+        })
+        .collect()
+}
+
+fn assigns(b: &Block, name: &str) -> bool {
+    b.stmts.iter().any(|s| match s {
+        Stmt::Assign { name: n, .. } => n.name == name,
+        Stmt::If(i) => if_assigns(i, name),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => assigns(body, name),
+        Stmt::Match { arms, .. } => arms.iter().any(|a| assigns(&a.body, name)),
+        _ => false,
+    })
+}
+
+fn if_assigns(i: &IfStmt, name: &str) -> bool {
+    assigns(&i.then, name)
+        || match &i.els {
+            Some(Else::Block(b)) => assigns(b, name),
+            Some(Else::If(inner)) => if_assigns(inner, name),
+            None => false,
+        }
+}
+
 /// Hidden variables of `for x in xs` loops (`parser::for_stmt`): `#it` holds the collection and
 /// `#i` the index. A program cannot write these names.
 fn is_loop_collection(name: &str) -> bool {
@@ -315,6 +361,8 @@ struct Local {
     // A small struct copied from a field or element (`P p = ps[i];`): its first change is
     // reported (`Q0803`), since it used to change `ps[i]` too.
     copy_of: Option<(Span, String)>,
+    // Declared `final`: it cannot be an `inout` argument as a whole.
+    is_final: bool,
 }
 
 // One step of a place below its variable: a field, or an element (`Some` for a literal index).
@@ -343,6 +391,7 @@ pub fn check(p: &Program, types: &Types) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
             loops: Vec::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
+            short_rhs: 0,
         };
         w.function(f);
         errors.append(&mut w.errors);
@@ -414,6 +463,19 @@ struct Loop {
     // `locals.len()` when the loop began: older locals belong outside it.
     outer: usize,
     before: Vec<State>,
+    // The states at each `break`: they continue after the loop.
+    exits: Vec<Vec<State>>,
+}
+
+// After two paths that both continue: moved on either is moved.
+fn merged(a: &[State], b: &[State]) -> Vec<State> {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| match (x, y) {
+            (State::Moved(s), _) | (_, State::Moved(s)) => State::Moved(*s),
+            _ => State::Live,
+        })
+        .collect()
 }
 
 struct Walker<'a, 'p> {
@@ -426,6 +488,8 @@ struct Walker<'a, 'p> {
     loops: Vec<Loop>,
     errors: Vec<Diagnostic>,
     warnings: Vec<Diagnostic>,
+    // Inside the right operand of `&&` or `||`, which may not run.
+    short_rhs: usize,
 }
 
 impl Walker<'_, '_> {
@@ -445,6 +509,7 @@ impl Walker<'_, '_> {
             decl: name.span,
             state: State::Live,
             copy_of: None,
+            is_final: false,
         });
         let id = self.locals.len() - 1;
         self.scopes.last_mut().unwrap().push(id);
@@ -514,7 +579,12 @@ impl Walker<'_, '_> {
 
     fn stmt(&mut self, s: &Stmt) -> bool {
         match s {
-            Stmt::Decl { name, init, .. } => {
+            Stmt::Decl {
+                name,
+                init,
+                is_final,
+                ..
+            } => {
                 let ty = self.types.var(self.fi, name).unwrap_or(Ty::Error);
                 let foreach = matches!(&init.kind, ExprKind::Index { base, .. }
                     if matches!(&base.kind, ExprKind::Var(n) if is_loop_collection(n)));
@@ -531,6 +601,7 @@ impl Walker<'_, '_> {
                 };
                 if Self::classical(ty) {
                     self.declare(name, ty, kind);
+                    self.locals.last_mut().unwrap().is_final = *is_final;
                     let small_struct = matches!(ty, Ty::Struct(_))
                         && self.decls.implicit_copy(ty)
                         && !self.decls.is_shared(ty);
@@ -578,14 +649,22 @@ impl Walker<'_, '_> {
             } => {
                 self.read(start);
                 self.read(end);
-                self.looped(None, body);
+                self.looped(None, body, false);
                 false
             }
             Stmt::While { cond, body, .. } => {
-                self.looped(Some(cond), body);
-                matches!(cond.kind, ExprKind::Bool(true))
+                let forever = matches!(cond.kind, ExprKind::Bool(true));
+                let breaks = self.looped(Some(cond), body, forever);
+                // Like Java, `while true` without `break` never completes normally.
+                forever && !breaks
             }
-            Stmt::Break { .. } => true,
+            Stmt::Break { .. } => {
+                let now = self.states();
+                if let Some(l) = self.loops.last_mut() {
+                    l.exits.push(now);
+                }
+                true
+            }
             Stmt::Continue { .. } => {
                 self.moved_in_loop();
                 true
@@ -663,21 +742,38 @@ impl Walker<'_, '_> {
     }
 
     // A loop body (and `while` condition): a value moved out of an outer variable would be gone
-    // on the next iteration (`Q0324`).
-    fn looped(&mut self, cond: Option<&Expr>, body: &Block) {
+    // on the next iteration (`Q0324`). After the loop, a value moved on any path that leaves it
+    // (no iteration, the end of the last one, a `break`) is moved. `forever`: `while true`,
+    // which leaves only by `break`. Returns whether some `break` leaves this loop.
+    fn looped(&mut self, cond: Option<&Expr>, body: &Block, forever: bool) -> bool {
         let before = self.states();
         self.loops.push(Loop {
             outer: self.locals.len(),
             before: before.clone(),
+            exits: Vec::new(),
         });
         if let Some(c) = cond {
             self.read(c);
         }
+        let mut paths = Vec::new();
+        if !forever {
+            paths.push(before.clone());
+        }
         if !self.block(body) {
             self.moved_in_loop();
+            if !forever {
+                paths.push(self.states());
+            }
         }
-        self.loops.pop();
-        self.restore(&before);
+        let exits = self.loops.pop().map(|l| l.exits).unwrap_or_default();
+        let breaks = !exits.is_empty();
+        paths.extend(exits);
+        let after = paths
+            .into_iter()
+            .reduce(|a, b| merged(&a, &b))
+            .unwrap_or(before);
+        self.restore(&after);
+        breaks
     }
 
     fn moved_in_loop(&mut self) {
@@ -723,14 +819,15 @@ impl Walker<'_, '_> {
             ExprKind::Call { name, args } => {
                 let f = self.decls.fn_decl(&name.name);
                 let modes = f.map(|f| f.params.iter().map(Mode::of).collect::<Vec<_>>());
+                let cells: Vec<bool> = f.map(celled_params).unwrap_or_default();
                 match (f, modes.as_deref(), args.split_first()) {
                     // A method call after monomorphization: the receiver is the first argument.
                     (Some(f), Some([this, rest @ ..]), Some((recv, args)))
                         if f.method.is_some() =>
                     {
-                        self.call_args(Some(rest), Some((recv, *this)), args);
+                        self.call_args(Some(rest), Some((recv, *this)), args, &cells[1..]);
                     }
-                    _ => self.call_args(modes.as_deref(), None, args),
+                    _ => self.call_args(modes.as_deref(), None, args, &cells),
                 }
             }
             ExprKind::Method { recv, name, args } => self.method(recv, name, args),
@@ -740,9 +837,12 @@ impl Walker<'_, '_> {
             }
             ExprKind::Field { recv, .. } => self.read(recv),
             ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => self.read(expr),
-            ExprKind::Binary { lhs, rhs, .. } => {
+            ExprKind::Binary { op, lhs, rhs } => {
                 self.read(lhs);
+                let short = matches!(op, BinOp::And | BinOp::Or);
+                self.short_rhs += usize::from(short);
                 self.read(rhs);
+                self.short_rhs -= usize::from(short);
             }
             ExprKind::NewStruct { args: items, .. }
             | ExprKind::Variant { args: items, .. }
@@ -791,6 +891,12 @@ impl Walker<'_, '_> {
         if !Self::classical(ty) || self.decls.implicit_copy(ty) || !self.is_place(e) {
             return self.read(e);
         }
+        // `v = opt?` keeps the payload of `opt`: the rules for keeping `opt` itself.
+        if let ExprKind::Try { expr, .. } = &e.kind {
+            if matches!(expr.kind, ExprKind::Var(_)) {
+                return self.value(expr);
+            }
+        }
         if let ExprKind::Var(n) = &e.kind {
             if let Some(id) = self.lookup(n) {
                 self.used(id, e.span);
@@ -828,11 +934,16 @@ impl Walker<'_, '_> {
             d.help = Some(msg::vs_help_param_copy(ty.name()));
             return d;
         }
-        // `r.get(k)?` copies the payload: `.copy()` goes before the `?`.
-        let at = match &e.kind {
-            ExprKind::Try { expr, .. } => expr.span.end,
-            _ => e.span.end,
+        // `r.get(k)?` copies the payload: `.copy()` goes before the `?`, and copies what is there.
+        let (at, copied) = match &e.kind {
+            ExprKind::Try { expr, .. } => (expr.span.end, self.ty(expr)),
+            _ => (e.span.end, Some(ty)),
         };
+        // Offered only where `.copy()` works (`Q0326` otherwise).
+        if !copied.is_some_and(|t| self.decls.copyable(t)) {
+            d.help = Some(msg::vs_help_copy_by_hand());
+            return d;
+        }
         d.fixes.push(Fix::new(
             msg::vs_fix_copy(&text_of(e)),
             Span::new(at, at),
@@ -946,17 +1057,43 @@ impl Walker<'_, '_> {
     fn write_place(&mut self, e: &Expr) {
         // Indices are read; a place reached through a temporary or a handle is not checked.
         self.read_indices(e);
-        if let Some((id, path)) = self.place(e) {
-            let _ = path;
+        if let Some(id) = self.root(e) {
             self.write_var(id, e.span, false);
         } else if let ExprKind::Field { recv, .. } = &e.kind {
             self.read(recv);
         }
     }
 
+    // The variable whose value a change through `e` changes: through fields, elements, the
+    // collection reads that share an element (`xs.get(0).x = 1`) and `?`, but not through a
+    // `Shared<T>` handle or a temporary.
+    fn root(&self, e: &Expr) -> Option<usize> {
+        match &e.kind {
+            ExprKind::Var(n) => self.lookup(n),
+            ExprKind::Field { recv, .. } => {
+                if self.ty(recv).is_some_and(|t| self.decls.is_shared(t)) {
+                    return None;
+                }
+                self.root(recv)
+            }
+            ExprKind::Index { base, .. } => self.root(base),
+            ExprKind::Method { recv, .. } if self.is_place(e) => self.root(recv),
+            ExprKind::Try { expr, .. } => self.root(expr),
+            _ => None,
+        }
+    }
+
     fn read_indices(&mut self, e: &Expr) {
         match &e.kind {
-            ExprKind::Field { recv, .. } => self.read_indices(recv),
+            ExprKind::Field { recv, .. } | ExprKind::Try { expr: recv, .. } => {
+                self.read_indices(recv)
+            }
+            ExprKind::Method { recv, args, .. } if self.is_place(e) => {
+                self.read_indices(recv);
+                for a in args {
+                    self.read(a);
+                }
+            }
             ExprKind::Index { base, index } => {
                 self.read_indices(base);
                 self.read(index);
@@ -975,7 +1112,13 @@ impl Walker<'_, '_> {
             return;
         };
         if let Some(modes) = self.decls.method_modes(t, &name.name) {
-            return self.call_args(Some(&modes[1..]), Some((recv, modes[0])), args);
+            let cells = self
+                .decls
+                .method_fn(t, &name.name)
+                .map(celled_params)
+                .unwrap_or_default();
+            let cells = cells.get(1..).unwrap_or_default();
+            return self.call_args(Some(&modes[1..]), Some((recv, modes[0])), args, cells);
         }
         if let Some((kind, _)) = native::kind(t) {
             let n = name.name.as_str();
@@ -1003,8 +1146,15 @@ impl Walker<'_, '_> {
     }
 
     // Arguments by parameter mode (`None`: a built-in function, which only reads), with the
-    // receiver of a method call and the mode of its `this`.
-    fn call_args(&mut self, modes: Option<&[Mode]>, recv: Option<(&Expr, Mode)>, args: &[Expr]) {
+    // receiver of a method call and the mode of its `this`, and which parameters `lower` turns
+    // into write-back cells (`celled_params`).
+    fn call_args(
+        &mut self,
+        modes: Option<&[Mode]>,
+        recv: Option<(&Expr, Mode)>,
+        args: &[Expr],
+        cells: &[bool],
+    ) {
         // The places this call lends, for the overlap rule: (argument, place, `inout`).
         let mut lent: Vec<(Span, (usize, Vec<Step>), bool)> = Vec::new();
         if let Some((r, mode)) = recv {
@@ -1053,6 +1203,29 @@ impl Walker<'_, '_> {
                     match self.place(inner) {
                         Some(p) => {
                             self.write_place(inner);
+                            let cell = cells.get(i).copied().unwrap_or(false);
+                            // The cell is filled before the statement, so the argument would be
+                            // read even when `&&`/`||` skips the call.
+                            if cell && self.short_rhs > 0 {
+                                let d = Diagnostic::new(
+                                    Code::InoutArgument,
+                                    inner.span,
+                                    msg::vs_inout_short_circuit(),
+                                );
+                                self.errors.push(d);
+                            }
+                            let whole_final = p.1.is_empty() && self.locals[p.0].is_final;
+                            if whole_final {
+                                let name = self.locals[p.0].name.clone();
+                                let mut d = Diagnostic::new(
+                                    Code::InoutArgument,
+                                    inner.span,
+                                    msg::vs_inout_final(&name),
+                                );
+                                d.notes
+                                    .push(note(self.locals[p.0].decl, msg::note_declared_here()));
+                                self.errors.push(d);
+                            }
                             lent.push((inner.span, p, true));
                         }
                         None => {
@@ -1075,6 +1248,11 @@ impl Walker<'_, '_> {
                         ));
                     }
                     if mode == Mode::Consume {
+                        // A large variable given away must not also be lent to the same call.
+                        let large = self.ty(inner).is_some_and(|t| !self.decls.implicit_copy(t));
+                        if let (true, Some(p)) = (large, self.place(inner)) {
+                            lent.push((inner.span, p, true));
+                        }
                         self.value(inner);
                     } else {
                         self.read(inner);

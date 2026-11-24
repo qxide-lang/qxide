@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::super::ast::*;
 use super::super::diag::Span;
-use super::{is_loop_collection, Decls, Mode, Types, PROJECTING, STORING};
+use super::{celled_params, is_loop_collection, Decls, Mode, Types, PROJECTING, STORING};
 
 /// Rewrites `p` (monomorphized, checked with `types` recorded) for value semantics.
 pub fn lower(p: &mut Program, types: &Types) {
@@ -27,10 +27,7 @@ pub fn lower(p: &mut Program, types: &Types) {
     let cells: HashMap<String, Vec<bool>> = snapshot
         .fns
         .iter()
-        .map(|f| {
-            let flags = (0..f.params.len()).map(|i| celled(f, i)).collect();
-            (f.name.name.clone(), flags)
-        })
+        .map(|f| (f.name.name.clone(), celled_params(f)))
         .collect();
     let mut l = Lower {
         decls: &decls,
@@ -77,35 +74,6 @@ pub fn lower(p: &mut Program, types: &Types) {
     }
     p.fns.append(&mut l.new_fns);
     p.structs.append(&mut l.new_structs);
-}
-
-// Does parameter `i` of `f` need a write-back cell? `this` never does: it cannot be assigned.
-fn celled(f: &FnDecl, i: usize) -> bool {
-    let q = &f.params[i];
-    if q.inout.is_none() || (i == 0 && f.method.is_some()) {
-        return false;
-    }
-    let shared_in_place = matches!(q.ty, Ty::Struct(_) | Ty::Array(_) | Ty::Native(_));
-    !shared_in_place || assigns(&f.body, &q.name.name)
-}
-
-fn assigns(b: &Block, name: &str) -> bool {
-    b.stmts.iter().any(|s| match s {
-        Stmt::Assign { name: n, .. } => n.name == name,
-        Stmt::If(i) => if_assigns(i, name),
-        Stmt::For { body, .. } | Stmt::While { body, .. } => assigns(body, name),
-        Stmt::Match { arms, .. } => arms.iter().any(|a| assigns(&a.body, name)),
-        _ => false,
-    })
-}
-
-fn if_assigns(i: &IfStmt, name: &str) -> bool {
-    assigns(&i.then, name)
-        || match &i.els {
-            Some(Else::Block(b)) => assigns(b, name),
-            Some(Else::If(inner)) => if_assigns(inner, name),
-            None => false,
-        }
 }
 
 // Statements to run before and after the statement being rewritten: the cells of its `inout`
@@ -592,11 +560,19 @@ impl Lower<'_, '_> {
     }
 
     fn block(&mut self, b: &mut Block) {
+        // A local of the same name hides a cell parameter until the end of its block.
+        let cells = self.celled_here.clone();
         let stmts = std::mem::take(&mut b.stmts);
         for s in stmts {
             let out = self.stmt(s);
+            for d in &out {
+                if let Stmt::Decl { name, .. } = d {
+                    self.celled_here.remove(&name.name);
+                }
+            }
             b.stmts.extend(out);
         }
+        self.celled_here = cells;
     }
 
     // A statement, with the cells its calls need around it.
@@ -656,7 +632,10 @@ impl Lower<'_, '_> {
                 return out;
             }
             Stmt::For {
-                start, end, body, ..
+                var: index_var,
+                start,
+                end,
+                body,
             } => {
                 self.expr(start, &mut h);
                 self.expr(end, &mut h);
@@ -668,7 +647,10 @@ impl Lower<'_, '_> {
                     }
                     h.pre.append(&mut h.post);
                 }
+                let cells = self.celled_here.clone();
+                self.celled_here.remove(&index_var.name);
                 self.block(body);
+                self.celled_here = cells;
             }
             Stmt::While { cond, body, .. } => {
                 self.expr(cond, &mut h);
@@ -727,7 +709,14 @@ impl Lower<'_, '_> {
                     h.pre.append(&mut h.post);
                 }
                 for a in arms {
+                    let cells = self.celled_here.clone();
+                    if let PatKind::Variant { binds, .. } = &a.pat.kind {
+                        for b in binds {
+                            self.celled_here.remove(&b.name);
+                        }
+                    }
                     self.block(&mut a.body);
+                    self.celled_here = cells;
                 }
             }
             Stmt::Expr(e) => self.expr(e, &mut h),

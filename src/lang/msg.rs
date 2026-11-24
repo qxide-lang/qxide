@@ -1215,3 +1215,15 @@ pub fn vs_note_copied_here() -> String {
 pub fn vs_help_copy_changed(name: &str, src: &str) -> String {
     format!("with value semantics a small struct is copied; change `{src}` directly, or write the copy back with `{src} = {name};`")
 }
+
+pub fn vs_inout_short_circuit() -> String {
+    "this `inout` argument is prepared before the statement runs, so it cannot be on the right of `&&` or `||`; call the function in its own statement".into()
+}
+
+pub fn vs_inout_final(name: &str) -> String {
+    format!("`{name}` is `final`, so it cannot be passed to an `inout` parameter")
+}
+
+pub fn vs_help_copy_by_hand() -> String {
+    "`.copy()` cannot copy this value yet; `match` on it and copy the parts you keep".into()
+}

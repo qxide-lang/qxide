@@ -1225,6 +1225,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    lang::features::take_env();
     // A bundle or an app runs later without the feature, so it would run another program.
     if let Some(cmd @ ("build" | "app")) = args.first().map(String::as_str) {
         if lang::features::value_semantics() {
