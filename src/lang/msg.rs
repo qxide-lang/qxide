@@ -508,7 +508,7 @@ pub fn repl_return() -> String {
 /// Generic advice for an error code, shown as a `help:` line.
 pub fn help(code: Code) -> Option<String> {
     Some(match code {
-        Code::InvalidEscape => "supported escapes are `\\n`, `\\t`, `\\\\`, and `\\\"`".into(),
+        Code::InvalidEscape => "supported escapes are `\\n`, `\\t`, `\\r`, `\\\\`, `\\\"`, and `\\uXXXX` (four hex digits for Unicode, e.g. `\\u001B`)".into(),
         Code::TooDeep => "split the expression into smaller parts and store them in local variables".into(),
         Code::UnknownType => "use one of the available types: `int`, `double`, `boolean`, `String`, `Bit`, `BitReg`, `Qubit`, `QReg`, or `void` for functions that return nothing".into(),
         Code::BadFormat => "use `{}` to insert a value, and `{{` or `}}` to print literal braces".into(),
@@ -550,7 +550,13 @@ pub fn help(code: Code) -> Option<String> {
         Code::MisplacedImport => "move every `import` to the top of the file, before the first function".into(),
         Code::AmbiguousName => "import the function by full path, e.g. `import pkg.module.function;`, to override wildcard imports".into(),
         Code::ImportConflict => "rename the local function or remove one of the conflicting imports".into(),
-        Code::StdUnknown => "available standard modules are `std.log`, `std.time`, `std.fs`, `std.app`, and `std.qxide`; check the spelling".into(),
+        Code::StdUnknown => {
+            let names: Vec<String> = super::stdlib::MODULES
+                .iter()
+                .map(|(n, _)| format!("`std.{n}`"))
+                .collect();
+            help_std_modules(&names.join(", "))
+        }
         Code::StdUnavailable => "apps built with `qxide app build` offer more standard modules than this command, and `std.app` is only available in apps".into(),
         Code::StdDenied => "add the module name to `permissions` in the `[app]` section of `qxide.toml`, or pass `--allow fs` to `qxide run` for `std.fs`".into(),
         Code::StdIo => "check that the file exists in the data folder (use `fs.exists` first) and is UTF-8 text no larger than 16 MiB".into(),
@@ -570,6 +576,44 @@ pub fn help(code: Code) -> Option<String> {
 
 pub fn double_out_of_range() -> String {
     "floating-point literal is out of range for `double`".into()
+}
+
+pub fn c_style_for() -> String {
+    "parentheses are not used in Qxide `for` loops".into()
+}
+
+pub fn help_c_for(var: &str) -> String {
+    format!("write a counted loop as `for {var} in 0..n {{ ... }}` (end bound excluded), or use `while cond {{ ... }}` for other loops")
+}
+
+pub fn help_c_for_each(var: &str) -> String {
+    format!("rewrite as `for {var} in xs {{ ... }}` to iterate over an array or `List`")
+}
+
+pub fn no_incdec(op: &str) -> String {
+    format!("operator `{op}` does not exist in Qxide")
+}
+
+pub fn help_incdec(target: &str, compound: &str) -> String {
+    format!("write `{target} {compound} 1;` as a separate statement")
+}
+
+pub fn body_needs_braces(keyword: &str) -> String {
+    format!("body of `{keyword}` must be a block in braces")
+}
+
+pub fn help_body_braces(example: &str) -> String {
+    format!(
+        "wrap the body in braces, e.g. `{example}` (parentheses around the condition are optional)"
+    )
+}
+
+pub fn no_do_while() -> String {
+    "there is no `do`-`while` loop in Qxide".into()
+}
+
+pub fn help_do_while() -> String {
+    "rewrite as `while true { ...; if !cond { break; } }`".into()
 }
 
 pub fn removed_syntax(word: &str) -> String {
@@ -681,6 +725,18 @@ pub fn note_imported_by(module: &str) -> String {
 
 pub fn import_cycle(chain: &str) -> String {
     format!("import cycle detected: {chain}")
+}
+
+pub fn help_std_modules(list: &str) -> String {
+    format!("check the spelling; available standard modules: {list}")
+}
+
+pub fn help_std_prefix(module: &str) -> String {
+    format!("add the `std.` prefix: `import std.{module};` (standard modules work in a single file without a project)")
+}
+
+pub fn invalid_unicode_escape() -> String {
+    "invalid Unicode escape; expected `\\uXXXX` (four hex digits, non-surrogate)".into()
 }
 
 pub fn import_outside_project() -> String {

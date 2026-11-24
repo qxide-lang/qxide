@@ -1411,3 +1411,36 @@ fn bench_command_times_bench_functions() {
         Some(2)
     );
 }
+
+// `examples/cli/progress.qx` redraws one line with `\r` and an ANSI erase sequence; `std.io`
+// output reaches stdout while the program runs (roadmap A3).
+#[test]
+fn progress_example_redraws_a_line() {
+    let progress = format!("{}/examples/cli/progress.qx", env!("CARGO_MANIFEST_DIR"));
+    let frame = |pct: &str, filled: usize| {
+        format!(
+            "\r\u{1b}[K[{}{}] {pct}%",
+            "#".repeat(filled),
+            ".".repeat(30 - filled)
+        )
+    };
+    let want = format!("{}{}{}\n", frame("0", 0), frame("50", 15), frame("100", 30));
+    let mut engines = vec!["ast", "ir"];
+    if cfg!(feature = "jit") {
+        engines.push("jit");
+    }
+    for engine in engines {
+        let out = qxide_io(
+            &["run", &progress, "--engine", engine, "--", "2", "0"],
+            &[],
+            "",
+        );
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), want, "{engine}");
+    }
+    let out = qxide_io(&["run", &progress, "--", "0"], &[], "");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains("progress.qx"));
+}

@@ -274,6 +274,30 @@ void main() {
 }
 ```
 
+## Q0113: Java or C syntax that Qxide writes differently
+
+Error `Q0113` occurs when the parser encounters Java or C syntax that Qxide writes differently: a `for` loop with a parenthesized C-style (`for (int i = 0; i < n; i++)`) or Java for-each (`for (int x : xs)`) header, increment or decrement operators (`i++`, `++i`, `i--`, `--i`), a single-statement `if`, `while`, or `for` body without braces, or a `do { ... } while (cond);` loop. Adjacent `--` before an operand (`--i`) is diagnosed as this error rather than double negation, while `- -i`, `-(-i)`, and `a--1` continue to work. Parentheses around an `if` or `while` condition such as `while (i < n) { ... }` are still valid because `(cond)` is an ordinary expression, as long as the body uses braces. Recognizing these familiar Java/C forms lets the parser report a targeted error with a help line showing the equivalent Qxide syntax instead of a generic syntax failure.
+
+Erroneous code example:
+
+```qx
+void main() {
+    for (int i = 0; i < 3; i++) {  // error[Q0113]
+        println("{}", i);
+    }
+}
+```
+
+To fix it, rewrite C-style `for` loops as `for i in 0..n { ... }` (where the end bound is excluded) or `while cond { ... }`, Java for-each loops as `for x in xs { ... }`, and increment or decrement operators as separate `i += 1;` or `i -= 1;` statements. Enclose every `if`, `while`, and `for` body in braces `{ ... }`, and replace `do { ... } while (cond);` with `while true { ...; if !cond { break; } }`.
+
+```qx
+void main() {
+    for i in 0..3 {
+        println("{}", i);
+    }
+}
+```
+
 ## Q0201: use of an unknown variable
 
 `Q0201` occurs when an expression references a variable name that has not been declared in the current scope. Every variable in `.qx` must be declared before it is used and be visible at the point where it is referenced. This check catches misspelled names, missing declarations, and out-of-scope references at compile time.

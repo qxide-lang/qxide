@@ -318,9 +318,34 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnosti
                     }
                     '\\' => {
                         let esc = src[i + 1..].chars().next();
+                        // `\u001B` (Java): exactly four hex digits naming one Unicode scalar
+                        // value, so terminal control sequences can be written in a string.
+                        if esc == Some('u') {
+                            let hex = src.get(i + 2..i + 6).unwrap_or("");
+                            let ch = (hex.len() == 4 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                                .then(|| u32::from_str_radix(hex, 16).ok())
+                                .flatten()
+                                .and_then(char::from_u32);
+                            let Some(ch) = ch else {
+                                let end = src[i + 2..]
+                                    .char_indices()
+                                    .take(4)
+                                    .last()
+                                    .map_or(i + 2, |(k, c)| i + 2 + k + c.len_utf8());
+                                return Err(Diagnostic::new(
+                                    Code::InvalidEscape,
+                                    Span::new(i, end),
+                                    msg::invalid_unicode_escape(),
+                                ));
+                            };
+                            s.push(ch);
+                            i += 6;
+                            continue;
+                        }
                         let decoded = match esc {
                             Some('n') => '\n',
                             Some('t') => '\t',
+                            Some('r') => '\r',
                             Some('\\') => '\\',
                             Some('"') => '"',
                             Some(other) => {

@@ -33,7 +33,7 @@
       "end": "\"",
       "endCaptures": { "0": { "name": "punctuation.definition.string.end.qx" } },
       "patterns": [
-        { "name": "constant.character.escape.qx", "match": "\\\\[nt\\\\\"]" },
+        { "name": "constant.character.escape.qx", "match": "\\\\(?:[ntr\\\\\"]|u[0-9A-Fa-f]{4})" },
         { "name": "invalid.illegal.unknown-escape.qx", "match": "\\\\." },
         { "name": "constant.other.placeholder.qx", "match": "\\{\\}" }
       ]

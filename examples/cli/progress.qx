@@ -1,0 +1,39 @@
+// Redraws a text progress bar on one terminal line, waiting between frames with std.time.sleep.
+// std.io.write emits CR, ANSI ESC [ K (\u001B[K, erase to end of line), and the bar at once.
+// println collects output until after the run, so animations use std.io instead.
+// On Windows, qxide run enables console ANSI. Run default (20 steps, 50 ms apart) or 40, 25 ms:
+//     qxide run examples/cli/progress.qx
+//     qxide run examples/cli/progress.qx -- 40 25
+import std.io;
+import std.time;
+
+// Returns the bar (e.g. [###...] 10%) with width cells filled in proportion to done/total.
+String bar(int done, int total, int width) {
+    int filled = done * width / total;
+    return "[" + "#".repeat(filled) + ".".repeat(width - filled) + "] " + (done * 100 / total) + "%";
+}
+
+int main(String[] args) {
+    int steps = 20;
+    int delay = 50;
+    if len(args) > 0 {
+        steps = args[0].parseInt();
+    }
+    if len(args) > 1 {
+        delay = args[1].parseInt();
+    }
+    if steps < 1 || delay < 0 {
+        io.writeErrLine("usage: qxide run progress.qx -- [STEPS] [DELAY_MS] (STEPS at least 1, DELAY_MS at least 0)");
+        return 2;
+    }
+    // CR moves cursor to line start and ESC [ K erases the rest so each frame overwrites the last.
+    final String clear = "\r\u001B[K";
+    for i in 0..steps + 1 {
+        io.write(clear + bar(i, steps, 30));
+        if i < steps {
+            time.sleep(delay);
+        }
+    }
+    io.writeLine("");
+    return 0;
+}

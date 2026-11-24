@@ -221,6 +221,18 @@ fn fmt_keeps_literal_spelling_bom_and_crlf() {
     );
 }
 
+// `- -a` is double negation; written together it would be the Java decrement (`Q0113`).
+#[test]
+fn fmt_keeps_double_negation_apart() {
+    let src = "void main() {\n  int a=1;int b=- -a;int c=a- -b;int d=-(-a);\n  println(\"{} {} {} \\u001B\",b,c,d);\n}\n";
+    let out = fmt_ok(src);
+    assert_eq!(
+        out,
+        "void main() {\n    int a = 1;\n    int b = - -a;\n    int c = a - -b;\n    int d = -(-a);\n    println(\"{} {} {} \\u001B\", b, c, d);\n}\n"
+    );
+    assert_eq!(fmt_ok(&out), out);
+}
+
 // A CRLF file may contain a raw line break inside a string literal; it must stay `\r\n`.
 #[test]
 fn fmt_keeps_crlf_line_breaks_inside_strings() {

@@ -55,6 +55,7 @@ codes! {
     RemovedSyntax => "Q0110",
     VarNotAllowed => "Q0111",
     TypeNameAsIdent => "Q0112",
+    CStyleSyntax => "Q0113",
     UnknownVar => "Q0201",
     UnknownFn => "Q0202",
     Arity => "Q0203",

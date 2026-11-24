@@ -2785,3 +2785,86 @@ fn collection_errors() {
         "ok\n"
     );
 }
+
+// Java/C loop syntax gets `Q0113` with the Qxide form in the help (roadmap A1).
+#[test]
+fn java_and_c_loop_syntax_points_to_the_qxide_form() {
+    for body in [
+        "for (int i = 0; i < 3; i++) {\n}",
+        "int[] xs = {1};\nfor (int x : xs) {\n}",
+        "int i = 0;\ni++;",
+        "int i = 0;\ni--;",
+        "int i = 0;\n++i;",
+        "int i = 0;\n--i;",
+        "int i = 0;\nint j = i++;",
+        "int[] a = {1};\na[0]++;",
+        "int i = 0;\nwhile (i < 3) i += 1;",
+        "int i = 0;\nif (i < 3) i += 1;",
+        "for i in 0..3 println(\"{}\", i);",
+        "do {\n} while (true);",
+    ] {
+        assert_eq!(codes(&main_body(body)), ["Q0113"], "{body}");
+    }
+    let help = |body: &str| match check("t.qx", &main_body(body)) {
+        Err(Failure(d)) => d,
+        Ok(_) => panic!("expected an error in {body}"),
+    };
+    assert!(help("for (int k = 0; k < 3; k++) {\n}").contains("`for k in 0..n {"));
+    assert!(help("int[] xs = {1};\nfor (int v : xs) {\n}").contains("`for v in xs {"));
+    assert!(help("int n = 0;\nn++;").contains("`n += 1;`"));
+    assert!(help("int n = 0;\n--n;").contains("`n -= 1;`"));
+    // Parenthesized conditions are ordinary expressions, so `while (c) { }` stays valid (D1), and
+    // `-` signs written apart or followed by an operand are still subtraction and negation.
+    let src = main_body(
+        "int i = 0;\nwhile (i < 3) {\n    i += 1;\n}\nif (i == 3) {\n    println(\"{}\", i);\n}\nint a = i--1;\nint b = - -a;\nint c = a - -b;\nprintln(\"{} {} {}\", a, b, c);",
+    );
+    assert_eq!(run_ok(&src, 1), "3\n4 4 8\n");
+}
+
+// `\r` and Java's `\uXXXX` let a program write terminal control sequences (roadmap A3).
+#[test]
+fn carriage_return_and_unicode_escapes() {
+    let src = "import std.io;\n\nvoid main() {\n    io.write(\"\\u001B[2J\\r\\u00e9\\u0041\");\n    println(\"{}\", \"\\u001B\".length());\n}\n";
+    let mut term = Term::default();
+    assert_eq!(run_term(src, &mut term), Ok((0, "1\n".to_string())));
+    assert_eq!(term.out, "\u{1b}[2J\r\u{e9}A");
+    for bad in [
+        r#""\u12""#,
+        r#""\uD800""#,
+        r#""\uZZZZ""#,
+        r#""\u""#,
+        r#""\u{1b}""#,
+    ] {
+        assert_eq!(
+            codes(&main_body(&format!("String s = {bad};"))),
+            ["Q0103"],
+            "{bad}"
+        );
+    }
+}
+
+// Standard modules need no project; package imports do, with a hint for a missing `std.`.
+#[test]
+fn std_imports_need_no_project() {
+    assert_eq!(
+        codes_cli("import std.time;\nimport std.io;\nimport std.math.*;\n\nvoid main() {\n    io.write(\"\" + sqrt(4.0));\n    time.sleep(0);\n}\n"),
+        Vec::<&str>::new()
+    );
+    let err = match check("t.qx", "import time.sleep;\n\nvoid main() {}\n") {
+        Err(Failure(d)) => d,
+        Ok(_) => panic!("expected Q0508"),
+    };
+    assert!(
+        err.starts_with("error[Q0508]") && err.contains("`import std.time;`"),
+        "{err}"
+    );
+    // An unknown module lists every module this build has.
+    let err = match check("t.qx", "import std.tme;\n\nvoid main() {}\n") {
+        Err(Failure(d)) => d,
+        Ok(_) => panic!("expected Q0701"),
+    };
+    assert!(
+        err.contains("`std.io`") && err.contains("`std.json`"),
+        "{err}"
+    );
+}

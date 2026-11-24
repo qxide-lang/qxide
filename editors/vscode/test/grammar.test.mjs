@@ -135,6 +135,9 @@ test("strings with escapes and placeholders", () => {
   assert.equal(scopeOf(src, "\\n"), "constant.character.escape.qx");
   assert.equal(scopeOf(src, "\\q"), "invalid.illegal.unknown-escape.qx");
   assert.equal(scopeOf(src, " x)"), "source.qx");
+  const esc = 'io.write("\\r\\u001B[K");';
+  assert.equal(scopeOf(esc, "\\r"), "constant.character.escape.qx");
+  assert.equal(scopeOf(esc, "\\u001B"), "constant.character.escape.qx");
 });
 
 test("every example program tokenizes and its comments stay comments", () => {

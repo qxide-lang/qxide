@@ -155,6 +155,99 @@ impl Parser {
         self.toks[self.pos.saturating_sub(1)].span
     }
 
+    fn span_at(&self, n: usize) -> Span {
+        self.toks[(self.pos + n).min(self.toks.len() - 1)].span
+    }
+
+    // Java/C `++` or `--` at token `n`: two `+` or two `-` written together.
+    fn incdec_at(&self, n: usize) -> Option<&'static str> {
+        let op = match (self.peek_at(n), self.peek_at(n + 1)) {
+            (Tok::Plus, Tok::Plus) => "++",
+            (Tok::Minus, Tok::Minus) => "--",
+            _ => return None,
+        };
+        (self.span_at(n).end == self.span_at(n + 1).start).then_some(op)
+    }
+
+    // `i++` / `i--` written after `target`; `i--1` (`i - -1`) is not one, since an operand follows.
+    fn postfix_incdec(&self, target: &Expr) -> Option<Diagnostic> {
+        let op = self.incdec_at(0)?;
+        if !matches!(
+            self.peek_at(2),
+            Tok::Semi | Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Comma | Tok::Eof
+        ) {
+            return None;
+        }
+        let name = match &target.kind {
+            ExprKind::Var(n) => n.clone(),
+            _ => "x".to_string(),
+        };
+        Some(self.incdec_error(op, &name))
+    }
+
+    fn incdec_error(&self, op: &str, target: &str) -> Diagnostic {
+        let span = self.span().to(self.span_at(1));
+        let compound = if op == "++" { "+=" } else { "-=" };
+        Diagnostic::new(Code::CStyleSyntax, span, msg::no_incdec(op))
+            .with_help(msg::help_incdec(target, compound))
+    }
+
+    // `while cond stmt;` without braces: Qxide bodies are always blocks.
+    fn body(&mut self, keyword: &str, example: &str) -> PResult<Block> {
+        if self.peek() != &Tok::LBrace {
+            return Err(Diagnostic::new(
+                Code::CStyleSyntax,
+                self.span(),
+                msg::body_needs_braces(keyword),
+            )
+            .with_help(msg::help_body_braces(example)));
+        }
+        self.block()
+    }
+
+    // `for (int i = 0; i < n; i++)` or `for (int x : xs)`: the `(` after `for`. The help names the
+    // loop variable when the header has the usual shape.
+    fn c_style_for(&self) -> Diagnostic {
+        let mut depth = 0usize;
+        let mut each = false;
+        let mut n = 0;
+        loop {
+            match self.peek_at(n) {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Tok::Colon if depth == 1 => {
+                    each = true;
+                    break;
+                }
+                Tok::Semi if depth == 1 => break,
+                Tok::Eof => break,
+                _ => {}
+            }
+            n += 1;
+        }
+        // The name just before `=` (counted loop) or `:` (for-each).
+        let var = match (n >= 2, self.peek_at(n.saturating_sub(1))) {
+            (true, Tok::Ident(v)) if each => Some(v.clone()),
+            _ => match (self.peek_at(2), self.peek_at(3), self.peek_at(1)) {
+                (Tok::Ident(v), Tok::Eq, _) => Some(v.clone()),
+                (Tok::Eq, _, Tok::Ident(v)) => Some(v.clone()),
+                _ => None,
+            },
+        };
+        let var = var.unwrap_or_else(|| if each { "x" } else { "i" }.to_string());
+        let help = if each {
+            msg::help_c_for_each(&var)
+        } else {
+            msg::help_c_for(&var)
+        };
+        Diagnostic::new(Code::CStyleSyntax, self.span(), msg::c_style_for()).with_help(help)
+    }
+
     fn bump(&mut self) -> Token {
         let t = self.toks[self.pos].clone();
         if self.pos + 1 < self.toks.len() {
@@ -848,10 +941,19 @@ impl Parser {
                 Tok::If => stmts.push(Stmt::If(self.if_stmt()?)),
                 Tok::Match => stmts.push(self.match_stmt()?),
                 Tok::For => stmts.extend(self.for_stmt()?),
+                // `do { } while (c);` is not a Qxide loop (D1).
+                Tok::Ident(n) if n == "do" && self.peek_at(1) == &Tok::LBrace => {
+                    return Err(Diagnostic::new(
+                        Code::CStyleSyntax,
+                        self.span(),
+                        msg::no_do_while(),
+                    )
+                    .with_help(msg::help_do_while()));
+                }
                 Tok::While => {
                     let span = self.bump().span;
                     let cond = self.expr()?;
-                    let body = self.block()?;
+                    let body = self.body("while", "while i < n { i += 1; }")?;
                     stmts.push(Stmt::While { cond, body, span });
                 }
                 Tok::Break | Tok::Continue => {
@@ -979,7 +1081,7 @@ impl Parser {
         self.enter()?;
         self.bump();
         let cond = self.expr()?;
-        let then = self.block()?;
+        let then = self.body("if", "if x > 0 { println(\"positive\"); }")?;
         let els = if self.eat(&Tok::Else) {
             if self.peek() == &Tok::If {
                 Some(Else::If(Box::new(self.if_stmt()?)))
@@ -998,11 +1100,14 @@ impl Parser {
     // program can write): the collection is evaluated once, and so is its length.
     fn for_stmt(&mut self) -> PResult<Vec<Stmt>> {
         self.bump();
+        if self.peek() == &Tok::LParen {
+            return Err(self.c_style_for());
+        }
         let var = self.name()?;
         self.expect(Tok::In)?;
         let start = self.expr()?;
         if self.peek() != &Tok::DotDot {
-            let mut body = self.block()?;
+            let mut body = self.body("for", "for x in xs { println(\"{}\", x); }")?;
             let at = start.span;
             let n = self.fresh;
             self.fresh += 1;
@@ -1058,7 +1163,7 @@ impl Parser {
         }
         self.expect(Tok::DotDot)?;
         let end = self.expr()?;
-        let body = self.block()?;
+        let body = self.body("for", "for i in 0..n { println(\"{}\", i); }")?;
         Ok(vec![Stmt::For {
             var,
             start,
@@ -1185,6 +1290,14 @@ impl Parser {
                 span,
             });
         }
+        // `++i` / `--i`: Java/C increment, not two signs (write `-(-i)` for that).
+        if let Some(op) = self.incdec_at(0) {
+            let target = match self.peek_at(2) {
+                Tok::Ident(n) => n.clone(),
+                _ => "x".to_string(),
+            };
+            return Err(self.incdec_error(op, &target));
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Bang => UnOp::Not,
@@ -1264,6 +1377,9 @@ impl Parser {
                 self.enter()?;
                 grown += 1;
             } else {
+                if let Some(d) = self.postfix_incdec(&e) {
+                    return Err(d);
+                }
                 self.depth -= grown;
                 return Ok(e);
             }
@@ -1545,7 +1661,8 @@ mod tests {
             ")".repeat(500)
         );
         assert_eq!(parse_src(&deep).unwrap_err().code, Code::TooDeep);
-        let neg = format!("void main() {{ int x = {}1; }}", "-".repeat(500));
+        // Spaced: `--` written together is the Java decrement (`Q0113`).
+        let neg = format!("void main() {{ int x = {}1; }}", "- ".repeat(500));
         assert_eq!(parse_src(&neg).unwrap_err().code, Code::TooDeep);
     }
 

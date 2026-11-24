@@ -9,6 +9,7 @@ mod lang;
 mod lsp;
 mod pkg;
 mod qpu;
+mod term;
 
 use qxide::{Backend, Circuit};
 use std::path::{Path, PathBuf};
@@ -421,6 +422,9 @@ fn project_data_dir(entry: &std::path::Path) -> std::path::PathBuf {
 
 // Runs one `.qx` command: `run`, `check` or `qasm`.
 fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
+    if cmd == "run" {
+        term::enable_ansi();
+    }
     // Flags may come before or after the file (`run --shots 9 a.qx` or `run a.qx --shots 9`).
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
     let mut allow_ffi = false;
@@ -1139,6 +1143,7 @@ fn write_bundle(b: &bundle::Bundle, out: &Path) -> Result<(), String> {
 // Every command-line argument goes to `main(String[] args)`; without `--seed` at build time each
 // run draws a fresh seed and, unlike `qxide run`, does not print it.
 fn run_bundle(b: bundle::Bundle) -> ExitCode {
+    term::enable_ansi();
     if b.version != VERSION {
         eprintln!(
             "qxide: this program was bundled by qxide {} but carries the qxide {VERSION} runtime; rebuild it with `qxide build`",

@@ -427,7 +427,8 @@ impl<'a> Printer<'a> {
             return false;
         }
         if (matches!(prev, Tok::Minus | Tok::Bang) && self.is_unary(p)) || *prev == Tok::Tilde {
-            return false;
+            // `- -a` stays apart: `--a` is the Java decrement, rejected with `Q0113`.
+            return *prev == Tok::Minus && *tok == Tok::Minus;
         }
         // `a >> b`, `a >>> b`: the `>` of one shift operator stay together.
         if *prev == Tok::Gt

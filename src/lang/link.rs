@@ -459,12 +459,19 @@ impl Linker<'_> {
     // Resolves the package and module path of an import, reporting unknown packages.
     fn import_module(&mut self, m: usize, imp: &Import) -> Option<(usize, Vec<String>)> {
         let first = &imp.module[0];
+        // `import time.sleep;` for `import std.time.sleep;`: standard modules need no project.
+        let std_hint = stdlib::module_source(&first.name)
+            .is_some()
+            .then(|| msg::help_std_prefix(&first.name));
         let Some(project) = self.project else {
-            self.err(
+            let d = self.err(
                 Code::ImportOutsideProject,
                 imp.span,
                 msg::import_outside_project(),
             );
+            if std_hint.is_some() {
+                d.help = std_hint;
+            }
             return None;
         };
         let from = self.modules[m].pkg.unwrap_or(project.entry_package);
@@ -478,11 +485,14 @@ impl Linker<'_> {
                 .find(|&d| project.packages[d].name == first.name)
         };
         let Some(pkg) = pkg else {
-            self.err(
+            let d = self.err(
                 Code::UnknownPackage,
                 first.span,
                 msg::unknown_package(&first.name),
             );
+            if std_hint.is_some() {
+                d.help = std_hint;
+            }
             return None;
         };
         let mut path: Vec<String> = imp.module[1..].iter().map(|s| s.name.clone()).collect();
