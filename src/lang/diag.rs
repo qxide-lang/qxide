@@ -148,12 +148,13 @@ codes! {
     ResultTooLarge => "Q0716",
     Ffi => "Q0717",
     Deprecated => "Q0801",
+    DoubleNegation => "Q0802",
 }
 
 impl Code {
     /// Warnings (`Q08xx`) never stop a program; every other code is an error.
     pub fn is_warning(self) -> bool {
-        matches!(self, Code::Deprecated)
+        matches!(self, Code::Deprecated | Code::DoubleNegation)
     }
 }
 

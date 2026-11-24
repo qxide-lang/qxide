@@ -74,6 +74,14 @@ pub fn unknown_fn(name: &str) -> String {
     format!("cannot find function `{name}` in this scope")
 }
 
+pub fn double_negation() -> String {
+    "prefix `--` is double negation, not a decrement".into()
+}
+
+pub fn help_double_negation(target: &str) -> String {
+    format!("use `{target} -= 1;` to decrement, or `-(-{target})` to keep the double negation")
+}
+
 pub fn deprecated_name(old: &str, new: &str) -> String {
     format!("deprecated name `{old}`; use `{new}` instead")
 }

@@ -1959,6 +1959,35 @@ impl Checker {
                 }
                 match op {
                     UnOp::Neg => {
+                        // `--x` written together: double negation, likely meant as a decrement.
+                        // In `-(-x)` the inner span starts at `(`, two bytes before its operand.
+                        let joined = match &expr.kind {
+                            ExprKind::Unary {
+                                op: UnOp::Neg,
+                                expr: inner,
+                            } => {
+                                expr.span.start == e.span.start + 1
+                                    && inner.span.start == expr.span.start + 1
+                            }
+                            _ => false,
+                        };
+                        if joined && !self.inferred.warnings.iter().any(|w| w.span == e.span) {
+                            let target = match &expr.kind {
+                                ExprKind::Unary { expr: inner, .. } => match &inner.kind {
+                                    ExprKind::Var(n) => n.clone(),
+                                    _ => "x".to_string(),
+                                },
+                                _ => "x".to_string(),
+                            };
+                            self.inferred.warnings.push(
+                                Diagnostic::new(
+                                    Code::DoubleNegation,
+                                    Span::new(e.span.start, e.span.start + 2),
+                                    msg::double_negation(),
+                                )
+                                .with_help(msg::help_double_negation(&target)),
+                            );
+                        }
                         self.numeric(expr.span, t);
                         if t == Ty::Double {
                             Ty::Double

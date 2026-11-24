@@ -1290,8 +1290,9 @@ impl Parser {
                 span,
             });
         }
-        // `++i` / `--i`: Java/C increment, not two signs (write `-(-i)` for that).
-        if let Some(op) = self.incdec_at(0) {
+        // `++i`: Java/C increment (Qxide has no unary `+`). `--i` stays double negation, which the
+        // checker warns about (`Q0802`) since 0.8.0 accepted it.
+        if let Some(op @ "++") = self.incdec_at(0) {
             let target = match self.peek_at(2) {
                 Tok::Ident(n) => n.clone(),
                 _ => "x".to_string(),

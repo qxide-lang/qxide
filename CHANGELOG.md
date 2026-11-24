@@ -4,13 +4,9 @@ Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` languag
 
 ## [Unreleased]
 
-### Breaking changes
-
-- **Disallow adjacent unary minus (`--x`)**: Writing two minus signs together as `--x` is now error `Q0113` instead of double negation (which previously caused `--i;` to silently do nothing); write `-(-x)` or `- -x` instead. `qxide fmt` now keeps `- -a` apart rather than joining it into `--a`.
-
 ### Added
 
-- **Java/C syntax diagnostics (`Q0113`)**: Added error `Q0113` with a help line showing the Qxide form for parenthesized `for` headers (`for (int i = 0; i < n; i++)`, `for (int x : xs)`), `i++`/`++i`/`i--`/`--i`, unbraced `while`/`if`/`for` bodies, and `do { } while (c);`. Braced `while (cond) { }` remains valid.
+- **Java/C syntax diagnostics (`Q0113`)**: Added error `Q0113` with a help line showing the Qxide form for parenthesized `for` headers (`for (int i = 0; i < n; i++)`, `for (int x : xs)`), `i++`/`++i`/`i--`, unbraced `while`/`if`/`for` bodies, and `do { } while (c);`. Braced `while (cond) { }` remains valid.
 - **String escapes `\r` and `\uXXXX`**: Added carriage-return (`\r`) and Java-style four-hex-digit Unicode (`\uXXXX`) escapes so programs can write ANSI terminal sequences such as `\u001B[2J`. Other escape forms and surrogates report error `Q0103`.
 - **Windows console ANSI processing**: `qxide run` and executables built with `qxide build` now enable ANSI escape processing on Windows consoles.
 - **Progress bar CLI example**: Added `examples/cli/progress.qx`, a progress bar redrawn using `std.io.write` and `std.time.sleep`.
@@ -20,6 +16,7 @@ Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` languag
 
 ### Changed
 
+- **Warn on adjacent unary minus (`--x`)**: Writing two minus signs together as `--x` remains valid double negation (existing programs keep working), but now reports warning `Q0802` because `--i;` silently does nothing, suggesting `x -= 1;` or `-(-x)`. `qxide fmt` now keeps `- -a` apart rather than joining it into `--a`.
 - **Standard module import hints**: `Q0508` (import outside a project) and unknown-package errors now suggest `import std.<name>;` when the first segment is a standard module name such as `time`. Standard library imports already work without a project.
 
 ### Fixed

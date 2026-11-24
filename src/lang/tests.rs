@@ -2795,7 +2795,6 @@ fn java_and_c_loop_syntax_points_to_the_qxide_form() {
         "int i = 0;\ni++;",
         "int i = 0;\ni--;",
         "int i = 0;\n++i;",
-        "int i = 0;\n--i;",
         "int i = 0;\nint j = i++;",
         "int[] a = {1};\na[0]++;",
         "int i = 0;\nwhile (i < 3) i += 1;",
@@ -2812,13 +2811,27 @@ fn java_and_c_loop_syntax_points_to_the_qxide_form() {
     assert!(help("for (int k = 0; k < 3; k++) {\n}").contains("`for k in 0..n {"));
     assert!(help("int[] xs = {1};\nfor (int v : xs) {\n}").contains("`for v in xs {"));
     assert!(help("int n = 0;\nn++;").contains("`n += 1;`"));
-    assert!(help("int n = 0;\n--n;").contains("`n -= 1;`"));
     // Parenthesized conditions are ordinary expressions, so `while (c) { }` stays valid (D1), and
     // `-` signs written apart or followed by an operand are still subtraction and negation.
     let src = main_body(
         "int i = 0;\nwhile (i < 3) {\n    i += 1;\n}\nif (i == 3) {\n    println(\"{}\", i);\n}\nint a = i--1;\nint b = - -a;\nint c = a - -b;\nprintln(\"{} {} {}\", a, b, c);",
     );
     assert_eq!(run_ok(&src, 1), "3\n4 4 8\n");
+}
+
+// `--i` is double negation, as in 0.8.0: it runs unchanged but warns (`Q0802`); `- -i` and
+// `-(-i)` do not warn.
+#[test]
+fn joined_double_minus_warns() {
+    let src = main_body("int i = 3;\n--i;\nint j = --i + - -i + -(-i);\nprintln(\"{} {}\", i, j);");
+    assert_eq!(run_ok(&src, 1), "3 9\n");
+    match check("t.qx", &src) {
+        Ok(_) => {}
+        Err(Failure(d)) => panic!("{d}"),
+    }
+    let warned = take_warnings();
+    assert_eq!(warned.matches("warning[Q0802]").count(), 2, "{warned}");
+    assert!(warned.contains("`i -= 1;`"), "{warned}");
 }
 
 // `\r` and Java's `\uXXXX` let a program write terminal control sequences (roadmap A3).

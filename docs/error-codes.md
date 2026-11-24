@@ -276,7 +276,7 @@ void main() {
 
 ## Q0113: Java or C syntax that Qxide writes differently
 
-Error `Q0113` occurs when the parser encounters Java or C syntax that Qxide writes differently: a `for` loop with a parenthesized C-style (`for (int i = 0; i < n; i++)`) or Java for-each (`for (int x : xs)`) header, increment or decrement operators (`i++`, `++i`, `i--`, `--i`), a single-statement `if`, `while`, or `for` body without braces, or a `do { ... } while (cond);` loop. Adjacent `--` before an operand (`--i`) is diagnosed as this error rather than double negation, while `- -i`, `-(-i)`, and `a--1` continue to work. Parentheses around an `if` or `while` condition such as `while (i < n) { ... }` are still valid because `(cond)` is an ordinary expression, as long as the body uses braces. Recognizing these familiar Java/C forms lets the parser report a targeted error with a help line showing the equivalent Qxide syntax instead of a generic syntax failure.
+Error `Q0113` occurs when the parser encounters Java or C syntax that Qxide writes differently: a `for` loop with a parenthesized C-style (`for (int i = 0; i < n; i++)`) or Java for-each (`for (int x : xs)`) header, increment or postfix decrement operators (`i++`, `++i`, `i--`), a single-statement `if`, `while`, or `for` body without braces, or a `do { ... } while (cond);` loop. Adjacent `--` before an operand (`--i`) is not this error; it is accepted as double negation and reported by warning `Q0802`, while `- -i`, `-(-i)`, and `a--1` continue to work without warning. Parentheses around an `if` or `while` condition such as `while (i < n) { ... }` are still valid because `(cond)` is an ordinary expression, as long as the body uses braces. Recognizing these familiar Java/C forms lets the parser report a targeted error with a help line showing the equivalent Qxide syntax instead of a generic syntax failure.
 
 Erroneous code example:
 
@@ -2852,3 +2852,27 @@ The table below lists every renamed name by its owner type or `std` module, old 
 | `std.fs` | `append_text` | `appendString` | - |
 | `std.app` | `set_title` | `setTitle` | `Frame.setTitle` |
 | `std.app` | `set_size` | `setSize` | `Frame.setSize` |
+
+## Q0802: two minus signs written together
+
+Warning `Q0802` is emitted when two minus signs are written together before an operand, such as `--i`; it is printed as `warning[Q0802]` on stderr and shown as a warning by the language server, without ever changing program output or exit code. Qxide has no decrement operator, so `--i` is double negation: it equals `i` and does nothing as a statement, whereas Java and C programmers usually meant a decrement. Because earlier releases accepted it silently, it stays valid and only warns. Writing `- -i` (with a space) or `-(-i)` does not warn, while `i--` after an operand is error `Q0113` instead.
+
+Erroneous code example:
+
+```qx
+void main() {
+    int i = 3;
+    --i; // warning[Q0802]
+    println("{}", i);
+}
+```
+
+To fix it, replace `--i;` with `i -= 1;` to decrement the variable, or write `-(-i)` when double negation is really meant:
+
+```qx
+void main() {
+    int i = 3;
+    i -= 1;
+    println("{}", i);
+}
+```
