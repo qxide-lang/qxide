@@ -158,7 +158,7 @@ fn methods_and_interface_calls_run_alongside_native_code() {
         vec![
             ("Rect.area", true),
             ("Light.name", true),
-            ("total<Shape>", false),
+            ("total<Shape>", true),
             ("max_of<Money>", true)
         ]
     );
@@ -444,7 +444,11 @@ fn on_stack<T: Send + 'static>(bytes: usize, f: impl FnOnce() -> T + Send + 'sta
 #[test]
 fn deepest_recursion_of_the_widest_compiled_function_fits_the_stack() {
     let mut n = 64;
-    while supported(&module(&wide_recursion(n * 2, 1)).funcs[0]) {
+    loop {
+        let m = module(&wide_recursion(n * 2, 1));
+        if !supported(&m, &m.funcs[0]) {
+            break;
+        }
         n *= 2;
     }
     let src = wide_recursion(n, 198);
@@ -753,4 +757,200 @@ void main() {
     assert_eq!(Rc::strong_count(&arr), 1);
     assert_eq!(Rc::strong_count(&text), 1);
     assert!(same(src, Limits::CLI).contains("Q0403"));
+}
+
+// Interface values in native code (roadmap 3c): upcasts, calls through an interface on structs and
+// enums, interface-typed arrays, fields and `List` elements, run-time errors inside a dynamically
+// called method, every step-limit position, and balanced reference counts.
+#[test]
+fn interface_values_compile() {
+    let src = "interface Shape {
+    int area();
+    Shape grown(int k);
+}
+struct Sq implements Shape {
+    int side;
+    int area() {
+        return this.side * this.side;
+    }
+    Shape grown(int k) {
+        return new Sq(this.side * k);
+    }
+}
+enum Tile implements Shape {
+    Empty,
+    Bar(int len);
+    int area() {
+        match this {
+            Empty => {
+                return 0;
+            }
+            Bar(len) => {
+                return len;
+            }
+        }
+    }
+    Shape grown(int k) {
+        match this {
+            Empty => {
+                return Tile.Bar(k);
+            }
+            Bar(len) => {
+                return Tile.Bar(len * k);
+            }
+        }
+    }
+}
+struct Holder {
+    Shape s;
+    int n;
+}
+int total(Shape[] xs) {
+    int t = 0;
+    for x in xs {
+        t += x.area();
+    }
+    return t;
+}
+Shape pick(int i) {
+    if i % 3 == 0 {
+        return new Sq(i);
+    }
+    if i % 3 == 1 {
+        return Tile.Bar(i);
+    }
+    return Tile.Empty;
+}
+int grow(int n, int k) {
+    List<Shape> xs = new List<Shape>();
+    Holder h = new Holder(pick(n), n);
+    for i in 0..n {
+        Shape s = pick(i).grown(k);
+        xs.add(s);
+        h.s = s;
+    }
+    int t = h.s.area();
+    for x in xs {
+        t += x.area();
+    }
+    return t;
+}
+int big(int k) {
+    Shape s = new Sq(k);
+    return s.area();
+}
+void main() {
+    Shape[] xs = {pick(2), pick(3), pick(4), pick(0)};
+    xs[3] = pick(5);
+    println(\"{} {} {}\", total(xs), grow(7, 3), big(5));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    for f in [
+        "Sq.area",
+        "Tile.area",
+        "Sq.grown",
+        "Tile.grown",
+        "total",
+        "pick",
+        "grow",
+        "big",
+    ] {
+        assert!(jit.compiles(m.index[f]), "{f}");
+    }
+    let out = same(src, Limits::CLI);
+    assert_eq!(out, "ok\n13 750 25\n");
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = super::super::stdlib::LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    for max in (0..=total + 1).step_by(7).chain([total - 1, total]) {
+        same(
+            src,
+            Limits {
+                max_steps: max,
+                ..Limits::CLI
+            },
+        );
+    }
+    // Overflow inside a method reached through an interface value.
+    let bad = src.replace("big(5)", "big(4000000000)");
+    let out = same(&bad, Limits::CLI);
+    assert!(out.starts_with("error\n") && out.contains("Q0401"), "{out}");
+}
+
+// A struct passed in as an interface value, boxed, unboxed for each call and handed back: every
+// count is returned, also on a run-time error.
+#[test]
+fn interface_reference_counts_balance() {
+    let src = "interface Named {
+    int id();
+}
+struct P implements Named {
+    int n;
+    int id() {
+        return this.n;
+    }
+}
+P make(int n) {
+    return new P(n);
+}
+Named twice(Named a, int k) {
+    Named b = a;
+    int s = 0;
+    for i in 0..k {
+        s += b.id();
+        b = a;
+    }
+    if k > 2 {
+        return twice(b, k - 1);
+    }
+    return b;
+}
+int fails(Named a) {
+    return a.id() / 0;
+}
+void main() {
+    println(\"{}\", twice(make(3), 4).id() + fails(make(1)));
+}
+";
+    let m = module(src);
+    let mut jit = Jit::new(&m).expect("Cranelift supports this machine");
+    let id = |n: &str| m.index[n];
+    for f in ["make", "twice", "fails", "P.id"] {
+        assert!(jit.has(id(f)), "{f}");
+    }
+    let mut host = super::super::stdlib::LogOnly::default();
+    let mut machine = Machine::new(&mut host, &Limits::CLI, m.layouts.clone());
+    let Value::Struct(p) = jit
+        .call(id("make"), vec![Value::Int(3)], &mut machine)
+        .unwrap()
+    else {
+        panic!("not a struct");
+    };
+    assert_eq!(Rc::strong_count(&p), 1);
+    let back = jit
+        .call(
+            id("twice"),
+            vec![Value::Struct(p.clone()), Value::Int(4)],
+            &mut machine,
+        )
+        .unwrap();
+    assert!(
+        matches!(&back, Value::Struct(r) if Rc::ptr_eq(r, &p)),
+        "{back:?}"
+    );
+    drop(back);
+    assert_eq!(Rc::strong_count(&p), 1);
+    let err = jit
+        .call(id("fails"), vec![Value::Struct(p.clone())], &mut machine)
+        .unwrap_err();
+    assert_eq!(err.code, Code::DivByZero);
+    assert_eq!(Rc::strong_count(&p), 1);
+    assert!(same(src, Limits::CLI).contains("Q0402"));
 }

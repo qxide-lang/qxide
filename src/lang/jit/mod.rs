@@ -1,6 +1,7 @@
 // Cranelift JIT for the build-time classical functions of a lowered module (docs/design/qx-jit.md).
 // A function is compiled when it only handles `int`, `double`, `boolean`, `String`, array, struct,
-// enum and `List`/`Map`/`Random` values and only calls such functions or `std.math`; everything
+// enum, interface and `List`/`Map`/`Random` values and only calls such functions (directly or
+// through an interface) or `std.math`; everything
 // else stays in the IR interpreter. Reference values are owned `Rc<Value>` pointers whose
 // operations run the IR interpreter's own code (`exec::heap_inst`) through `qx_heap`. Native code charges the same steps
 // at the same points as the interpreter (a fast inline check, else `Machine::charge_all` through
@@ -53,7 +54,14 @@ struct Rt {
     fails: *const Vec<Diagnostic>,
     maths: *const Vec<MathSite>,
     heaps: *const Vec<HeapSite>,
+    dyns: *const Vec<DynSite>,
     err: Option<Diagnostic>,
+}
+
+// One call through an interface value (`CallDyn`): the receiver types that have the method, in
+// the order of the branches native code jumps to.
+struct DynSite {
+    types: Vec<Ty>,
 }
 
 // One instruction on reference values run by `qx_heap`: its operand registers (and their
@@ -161,7 +169,9 @@ const NATIVE: u8 = 4;
 
 fn ref_kind(t: IrTy) -> Option<u8> {
     match t {
-        IrTy::Str => Some(BOXED),
+        // An interface value is the struct or enum value itself, boxed like a `String`: its run-time
+        // type decides which method a call runs.
+        IrTy::Str | IrTy::Iface(_) => Some(BOXED),
         IrTy::Array(_) => Some(ARRAY),
         IrTy::Struct(_) => Some(STRUCT),
         IrTy::Enum(_) => Some(ENUM),
@@ -182,6 +192,9 @@ fn to_word(v: Value, t: IrTy) -> Option<u64> {
         (Value::Enum(x), Some(ENUM)) => Rc::into_raw(x) as u64,
         (Value::Native(x), Some(NATIVE)) => Rc::into_raw(x) as u64,
         (v @ Value::Str(_), Some(BOXED)) => Rc::into_raw(Rc::new(v)) as u64,
+        (v @ (Value::Struct(_) | Value::Enum(_)), Some(BOXED)) if matches!(t, IrTy::Iface(_)) => {
+            Rc::into_raw(Rc::new(v)) as u64
+        }
         (v, None) => match (
             coerce(v, if t == IrTy::F64 { Ty::Double } else { Ty::Int }),
             t,
@@ -285,6 +298,86 @@ extern "C" fn qx_retain(w: u64, kind: u32) {
 extern "C" fn qx_release(w: u64, kind: u32) {
     // SAFETY: as in `qx_retain`; the count given up is the caller's own.
     unsafe { count(w, kind as u8, false) }
+}
+
+// `Upcast`: a new boxed interface word for the struct or enum word `w` of kind `kind`.
+extern "C" fn qx_upcast(w: u64, kind: u32) -> u64 {
+    // SAFETY: native code passes a live, nonzero word of `kind` (a struct or an enum) it owns.
+    let v = unsafe {
+        match kind as u8 {
+            STRUCT => Value::Struct(cloned(w)),
+            _ => Value::Enum(cloned(w)),
+        }
+    };
+    Rc::into_raw(Rc::new(v)) as u64
+}
+
+// The receiver of a call through an interface: a new word of kind `kind` for the struct or enum
+// inside the boxed interface word `w` (0 if it holds something else).
+extern "C" fn qx_unbox(w: u64, kind: u32) -> u64 {
+    // SAFETY: native code passes a live, nonzero boxed interface word.
+    match (unsafe { &*(w as *const Value) }, kind as u8) {
+        (Value::Struct(s), STRUCT) => Rc::into_raw(s.clone()) as u64,
+        (Value::Enum(e), ENUM) => Rc::into_raw(e.clone()) as u64,
+        _ => 0,
+    }
+}
+
+// `CallDyn`: the branch for the run-time type of the boxed interface word `w`, like the IR
+// interpreter's `dyn_type` lookup in `Module::methods`; `u32::MAX` if no branch has it.
+extern "C" fn qx_dyn(ctx: *mut Ctx, site: u32, w: u64) -> u32 {
+    // SAFETY: as in `qx_charge`; `w` is a live boxed interface word (0 is refused).
+    let rt = unsafe { &*(*ctx).rt };
+    let s = unsafe { &(&*rt.dyns)[site as usize] };
+    if w == 0 {
+        return u32::MAX;
+    }
+    super::interp::dyn_type(unsafe { &*(w as *const Value) })
+        .and_then(|t| s.types.iter().position(|x| *x == t))
+        .map_or(u32::MAX, |k| k as u32)
+}
+
+// The methods named `method` a call through an interface value may run, by receiver type.
+fn dyn_candidates(m: &Module, method: &str) -> Vec<(Ty, FuncId)> {
+    let mut out: Vec<(Ty, FuncId)> = m
+        .methods
+        .iter()
+        .filter_map(|(t, ms)| ms.get(method).map(|f| (*t, *f)))
+        .collect();
+    out.sort_by_key(|(_, f)| *f);
+    out
+}
+
+// Whether native code can make the call `CallDyn { method, args, dst }` of `f`: every candidate
+// takes a struct or enum receiver and the same argument and result words as the call site.
+fn dyn_call_supported(m: &Module, f: &Func, method: &str, args: &[Reg], dst: Reg) -> bool {
+    let same = |a: IrTy, b: IrTy| cl_ty(a) == cl_ty(b) && ref_kind(a) == ref_kind(b);
+    let cands = dyn_candidates(m, method);
+    !cands.is_empty()
+        && ref_kind(f.regs[args[0] as usize]) == Some(BOXED)
+        && cands.iter().all(|(_, id)| {
+            let c = &m.funcs[*id as usize];
+            c.params.len() == args.len()
+                && matches!(ref_kind(c.params[0].ty), Some(STRUCT | ENUM))
+                && c.params[1..]
+                    .iter()
+                    .zip(&args[1..])
+                    .all(|(p, a)| same(p.ty, f.regs[*a as usize]))
+                && (same(c.ret, f.regs[dst as usize])
+                    || (c.ret == IrTy::Unit && f.regs[dst as usize] == IrTy::Unit))
+        })
+}
+
+// The functions `inst` may call: its callee, or every candidate of a call through an interface.
+fn callees_of(m: &Module, inst: &Inst) -> Vec<FuncId> {
+    match inst {
+        Inst::Call { func, .. } => vec![*func],
+        Inst::CallDyn { method, .. } => dyn_candidates(m, method)
+            .into_iter()
+            .map(|(_, f)| f)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 // An instruction on reference values: `exec::heap_inst` on the operand words at `ops`, the
@@ -482,7 +575,7 @@ fn cl_ty(t: IrTy) -> Option<cl::Type> {
 const MAX_VALUES: usize = 4096;
 
 // Whether a function's own code can be compiled (its callees are checked by `jitable`).
-fn supported(f: &Func) -> bool {
+fn supported(m: &Module, f: &Func) -> bool {
     let reg = |r: u32| f.regs[r as usize];
     !f.host
         && f.slots.len() + f.regs.len() <= MAX_VALUES
@@ -504,6 +597,10 @@ fn supported(f: &Func) -> bool {
                     | Inst::FloatOp { .. }
                     | Inst::BoolOp { .. }
                     | Inst::Call { .. } => true,
+                    Inst::Upcast { src, .. } => matches!(ref_kind(reg(*src)), Some(STRUCT | ENUM)),
+                    Inst::CallDyn {
+                        method, args, dst, ..
+                    } => dyn_call_supported(m, f, method, args, *dst),
                     i if heap_operands(i).is_some() => true,
                     Inst::StdCall {
                         name, args, dst, ..
@@ -525,7 +622,7 @@ fn supported(f: &Func) -> bool {
 
 /// Functions native code can run: supported code that only calls such functions (fixpoint).
 pub fn jitable(m: &Module) -> Vec<bool> {
-    let mut ok: Vec<bool> = m.funcs.iter().map(supported).collect();
+    let mut ok: Vec<bool> = m.funcs.iter().map(|f| supported(m, f)).collect();
     loop {
         let mut changed = false;
         for (i, f) in m.funcs.iter().enumerate() {
@@ -533,7 +630,7 @@ pub fn jitable(m: &Module) -> Vec<bool> {
                 && f.blocks
                     .iter()
                     .flat_map(|b| &b.insts)
-                    .any(|inst| matches!(inst, Inst::Call { func, .. } if !ok[*func as usize]));
+                    .any(|inst| callees_of(m, inst).iter().any(|c| !ok[*c as usize]));
             if calls_other {
                 ok[i] = false;
                 changed = true;
@@ -592,11 +689,12 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 7],
+    helpers: [ClId; 10],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     maths: Vec<MathSite>,
     heaps: Vec<HeapSite>,
+    dyns: Vec<DynSite>,
     fctx: FunctionBuilderContext,
     calls: Vec<u32>,
     hot: u32,
@@ -641,6 +739,9 @@ impl<'m> Jit<'m> {
         b.symbol("qx_heap", qx_heap as *const u8);
         b.symbol("qx_retain", qx_retain as *const u8);
         b.symbol("qx_release", qx_release as *const u8);
+        b.symbol("qx_upcast", qx_upcast as *const u8);
+        b.symbol("qx_unbox", qx_unbox as *const u8);
+        b.symbol("qx_dyn", qx_dyn as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -686,17 +787,37 @@ impl<'m> Jit<'m> {
         let release = cl
             .declare_function("qx_release", Linkage::Import, &rsig)
             .ok()?;
+        let mut usig = cl.make_signature();
+        usig.params = vec![AbiParam::new(types::I64), AbiParam::new(types::I32)];
+        usig.returns = vec![AbiParam::new(types::I64)];
+        let upcast = cl
+            .declare_function("qx_upcast", Linkage::Import, &usig)
+            .ok()?;
+        let unbox = cl
+            .declare_function("qx_unbox", Linkage::Import, &usig)
+            .ok()?;
+        let mut dsig = cl.make_signature();
+        dsig.params = vec![
+            AbiParam::new(ptr),
+            AbiParam::new(types::I32),
+            AbiParam::new(types::I64),
+        ];
+        dsig.returns = vec![AbiParam::new(types::I32)];
+        let dynf = cl.declare_function("qx_dyn", Linkage::Import, &dsig).ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
             ok: jitable(ir),
             ids: vec![None; ir.funcs.len()],
             entries: vec![None; ir.funcs.len()],
-            helpers: [charge, fail, fmod, math, heap, retain, release],
+            helpers: [
+                charge, fail, fmod, math, heap, retain, release, upcast, unbox, dynf,
+            ],
             charges: Vec::new(),
             fails: Vec::new(),
             maths: Vec::new(),
             heaps: Vec::new(),
+            dyns: Vec::new(),
             fctx: FunctionBuilderContext::new(),
             calls: vec![0; ir.funcs.len()],
             hot: HOT.with(std::cell::Cell::get),
@@ -727,9 +848,7 @@ impl<'m> Jit<'m> {
                 .iter()
                 .flat_map(|b| &b.insts)
             {
-                if let Inst::Call { func, .. } = i {
-                    stack.push(*func);
-                }
+                stack.extend(callees_of(self.ir, i));
             }
         }
         out
@@ -827,11 +946,11 @@ impl<'m> Jit<'m> {
         let src = &ir.funcs[f as usize];
         let mut callees = std::collections::HashMap::new();
         for inst in src.blocks.iter().flat_map(|b| &b.insts) {
-            if let Inst::Call { func: callee, .. } = inst {
+            for callee in callees_of(ir, inst) {
                 if let (Some((body, _)), false) =
-                    (self.ids[*callee as usize], callees.contains_key(callee))
+                    (self.ids[callee as usize], callees.contains_key(&callee))
                 {
-                    callees.insert(*callee, cl.declare_func_in_func(body, func));
+                    callees.insert(callee, cl.declare_func_in_func(body, func));
                 }
             }
         }
@@ -839,6 +958,7 @@ impl<'m> Jit<'m> {
         let g = Gen {
             config: cl.target_config(),
             b: FunctionBuilder::new(func, &mut self.fctx),
+            ir,
             src,
             callees,
             charge: helpers[0],
@@ -848,10 +968,14 @@ impl<'m> Jit<'m> {
             heap: helpers[4],
             retain: helpers[5],
             release: helpers[6],
+            upcast: helpers[7],
+            unbox: helpers[8],
+            dynf: helpers[9],
             charges: &mut self.charges,
             fails: &mut self.fails,
             maths: &mut self.maths,
             heaps: &mut self.heaps,
+            dyns: &mut self.dyns,
             ctx: cl::Value::from_u32(0),
             err: cl::Block::from_u32(0),
             slots: Vec::new(),
@@ -917,6 +1041,7 @@ impl Native for Jit<'_> {
             fails: &self.fails,
             maths: &self.maths,
             heaps: &self.heaps,
+            dyns: &self.dyns,
             err: None,
         };
         let mut ctx = Ctx {
@@ -953,6 +1078,7 @@ impl Native for Jit<'_> {
 struct Gen<'a, 'b> {
     b: FunctionBuilder<'b>,
     config: cranelift_codegen::isa::TargetFrontendConfig,
+    ir: &'a Module,
     src: &'a Func,
     callees: std::collections::HashMap<FuncId, cl::FuncRef>,
     charge: cl::FuncRef,
@@ -962,10 +1088,14 @@ struct Gen<'a, 'b> {
     heap: cl::FuncRef,
     retain: cl::FuncRef,
     release: cl::FuncRef,
+    upcast: cl::FuncRef,
+    unbox: cl::FuncRef,
+    dynf: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
     maths: &'a mut Vec<MathSite>,
     heaps: &'a mut Vec<HeapSite>,
+    dyns: &'a mut Vec<DynSite>,
     ctx: cl::Value,
     // Returns status 1: a helper stored the diagnostic.
     err: cl::Block,
@@ -1225,6 +1355,20 @@ impl Gen<'_, '_> {
                 args,
                 span,
             } => self.call(*func, *dst, args, *span)?,
+            Inst::Upcast { dst, src: r } => {
+                let x = self.get(*r)?;
+                let kind = ref_kind(src.regs[*r as usize]).ok_or("upcast operand")?;
+                let k = self.b.ins().iconst(types::I32, i64::from(kind));
+                let call = self.b.ins().call(self.upcast, &[x, k]);
+                let v = self.b.inst_results(call)[0];
+                self.set(*dst, v)?;
+            }
+            Inst::CallDyn {
+                method,
+                dst,
+                args,
+                span,
+            } => self.dyn_call(method, *dst, args, *span)?,
             Inst::StdCall {
                 name,
                 dst,
@@ -1337,6 +1481,62 @@ impl Gen<'_, '_> {
     // The IR interpreter's `Call`: aliasing is moot without qubits, then `Machine::enter_call`
     // (one step, then the depth limit), the call, `leave_call`.
     fn call(&mut self, func: FuncId, dst: u32, args: &[u32], span: Span) -> Result<(), String> {
+        let vals = self.enter_call(args, span)?;
+        let callee = *self.callees.get(&func).ok_or("callee not declared")?;
+        let call = self.b.ins().call(callee, &vals);
+        let st = self.b.inst_results(call)[0];
+        self.leave_call(st, dst)
+    }
+
+    // The IR interpreter's `CallDyn`: the method of the receiver's run-time type (`qx_dyn`), then
+    // a call like `call`, the receiver passed as that type's own word (`qx_unbox`).
+    fn dyn_call(&mut self, method: &str, dst: u32, args: &[u32], span: Span) -> Result<(), String> {
+        let cands = dyn_candidates(self.ir, method);
+        self.dyns.push(DynSite {
+            types: cands.iter().map(|(t, _)| *t).collect(),
+        });
+        let site = self
+            .b
+            .ins()
+            .iconst(types::I32, (self.dyns.len() - 1) as i64);
+        let recv = self.get(args[0])?;
+        let call = self.b.ins().call(self.dynf, &[self.ctx, site, recv]);
+        let k = self.b.inst_results(call)[0];
+        let missing = self.b.ins().icmp_imm_s(IntCC::Equal, k, -1);
+        self.fail_if(missing, internal(span));
+        // The receiver is replaced by its unboxed word below, so only the other arguments count.
+        let mut vals = self.enter_call(&args[1..], span)?;
+        let merge = self.b.create_block();
+        self.b.append_block_param(merge, types::I8);
+        let branches: Vec<cl::Block> = cands.iter().map(|_| self.b.create_block()).collect();
+        let mut switch = cranelift_frontend::Switch::new();
+        for (i, blk) in branches.iter().enumerate() {
+            switch.set_entry(i as u128, *blk);
+        }
+        // `k` is a valid index here, so the default is never taken.
+        let last = *branches.last().ok_or("no candidates")?;
+        switch.emit(&mut self.b, k, last);
+        for ((_, func), blk) in cands.iter().zip(&branches) {
+            self.b.switch_to_block(*blk);
+            let kind = ref_kind(self.ir.funcs[*func as usize].params[0].ty).ok_or("receiver")?;
+            let kv = self.b.ins().iconst(types::I32, i64::from(kind));
+            let un = self.b.ins().call(self.unbox, &[recv, kv]);
+            let r = self.b.inst_results(un)[0];
+            vals.insert(1, r);
+            let callee = *self.callees.get(func).ok_or("callee not declared")?;
+            let c = self.b.ins().call(callee, &vals);
+            vals.remove(1);
+            let st = self.b.inst_results(c)[0];
+            self.b.ins().jump(merge, &[cl::BlockArg::Value(st)]);
+        }
+        self.b.switch_to_block(merge);
+        let st = self.b.block_params(merge)[0];
+        self.leave_call(st, dst)
+    }
+
+    // The start of a call: one step at the call, the depth limit, one level deeper, and the
+    // argument words (`ctx` first), each reference retained for the callee.
+    fn enter_call(&mut self, args: &[u32], span: Span) -> Result<Vec<cl::Value>, String> {
         self.charge(1, vec![(1, span)]);
         let flags = MemFlagsData::trusted();
         let ctx = self.ctx;
@@ -1365,9 +1565,13 @@ impl Gen<'_, '_> {
             }
             vals.push(v);
         }
-        let callee = *self.callees.get(&func).ok_or("callee not declared")?;
-        let call = self.b.ins().call(callee, &vals);
-        let st = self.b.inst_results(call)[0];
+        Ok(vals)
+    }
+
+    // The end of a call with status `st`: back one level, then the error path or the result.
+    fn leave_call(&mut self, st: cl::Value, dst: u32) -> Result<(), String> {
+        let flags = MemFlagsData::trusted();
+        let ctx = self.ctx;
         let depth = self.b.ins().load(types::I64, flags, ctx, DEPTH);
         let back = self.b.ins().iadd_imm_s(depth, -1);
         self.b.ins().store(flags, back, ctx, DEPTH);

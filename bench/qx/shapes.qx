@@ -1,0 +1,97 @@
+// bench: shots=1
+// Calls through interface values: areas of a mixed array of structs and enums, summed repeatedly.
+
+interface Shape {
+    double area();
+    Shape scaled(double k);
+}
+
+struct Rect implements Shape {
+    double w;
+    double h;
+
+    double area() {
+        return this.w * this.h;
+    }
+
+    Shape scaled(double k) {
+        return new Rect(this.w * k, this.h * k);
+    }
+}
+
+struct Circle implements Shape {
+    double r;
+
+    double area() {
+        return 3.0 * this.r * this.r;
+    }
+
+    Shape scaled(double k) {
+        return new Circle(this.r * k);
+    }
+}
+
+enum Mark implements Shape {
+    Dot,
+    Bar(double len);
+
+    double area() {
+        match this {
+            Dot => {
+                return 0.0;
+            }
+            Bar(len) => {
+                return len;
+            }
+        }
+    }
+
+    Shape scaled(double k) {
+        match this {
+            Dot => {
+                return Mark.Dot;
+            }
+            Bar(len) => {
+                return Mark.Bar(len * k);
+            }
+        }
+    }
+}
+
+Shape make(int i) {
+    if i % 3 == 0 {
+        return new Rect(i * 0.5, 2.0);
+    }
+    if i % 3 == 1 {
+        return new Circle(i * 0.25);
+    }
+    return Mark.Bar(i * 1.0);
+}
+
+double sweep(int n, int rounds) {
+    List<Shape> shapes = new List<Shape>();
+    for i in 0..n {
+        shapes.add(make(i));
+    }
+    double total = 0.0;
+    for r in 0..rounds {
+        for s in shapes {
+            total += s.area();
+        }
+    }
+    return total;
+}
+
+double grow(int n) {
+    Shape s = new Rect(1.0, 1.0);
+    double total = 0.0;
+    for i in 0..n {
+        s = s.scaled(1.0001);
+        total += s.area();
+    }
+    return total;
+}
+
+void main() {
+    println("{} {}", sweep(300, 400), grow(20000));
+}
