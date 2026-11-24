@@ -1971,7 +1971,8 @@ impl Checker {
                             }
                             _ => false,
                         };
-                        if joined && !self.inferred.warnings.iter().any(|w| w.span == e.span) {
+                        let at = Span::new(e.span.start, e.span.start + 2);
+                        if joined && !self.inferred.warnings.iter().any(|w| w.span == at) {
                             let target = match &expr.kind {
                                 ExprKind::Unary { expr: inner, .. } => match &inner.kind {
                                     ExprKind::Var(n) => n.clone(),
@@ -1980,12 +1981,8 @@ impl Checker {
                                 _ => "x".to_string(),
                             };
                             self.inferred.warnings.push(
-                                Diagnostic::new(
-                                    Code::DoubleNegation,
-                                    Span::new(e.span.start, e.span.start + 2),
-                                    msg::double_negation(),
-                                )
-                                .with_help(msg::help_double_negation(&target)),
+                                Diagnostic::new(Code::DoubleNegation, at, msg::double_negation())
+                                    .with_help(msg::help_double_negation(&target)),
                             );
                         }
                         self.numeric(expr.span, t);

@@ -2832,6 +2832,18 @@ fn joined_double_minus_warns() {
     let warned = take_warnings();
     assert_eq!(warned.matches("warning[Q0802]").count(), 2, "{warned}");
     assert!(warned.contains("`i -= 1;`"), "{warned}");
+    // One warning per site, also in a generic function, a method and an array initializer.
+    for src in [
+        "<T> T id(T x) {\n    return x;\n}\n\n<T> int neg(T x, int n) {\n    return --n;\n}\n\nvoid main() {\n    println(\"{} {}\", neg(1, 2), neg(\"a\", 3));\n}\n",
+        "struct P {\n    int n;\n\n    int flip() {\n        return --this.n;\n    }\n}\n\nvoid main() {\n    P p = new P(4);\n    println(\"{} {}\", p.flip(), p.flip());\n}\n",
+        "void main() {\n    int n = 2;\n    int[] a = {--n, 1};\n    println(\"{}\", a[0]);\n}\n",
+    ] {
+        if let Err(Failure(d)) = check("t.qx", src) {
+            panic!("{d}");
+        }
+        let warned = take_warnings();
+        assert_eq!(warned.matches("warning[Q0802]").count(), 1, "{src}\n{warned}");
+    }
 }
 
 // `\r` and Java's `\uXXXX` let a program write terminal control sequences (roadmap A3).
