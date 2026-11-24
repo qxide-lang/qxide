@@ -36,12 +36,12 @@ The table below reports median kernel times and Rust % for each case on Windows.
 - qxide `87b7a77` (`cargo build --release --features jit`), `--engine jit|ir --trusted`; rustc 1.99.1 (58cf8f9c3 2026-10-13), `cargo build --release` (opt-level 3)
 - Windows 11 AMD64; 5 interleaved rounds (ir: 3); times are the kernel only, ms: median (min-max, ± half the range as % of the median)
 
-| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | ir / jit | Same result |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `nbody` | 1000000 | 30.2 (22.7-35.9, ±22%) | 11216.0 (10713.0-12763.0, ±9%) | 28175.0 (28144.0-30688.0, ±5%) | 0.3 % | 2.51 | yes |
-| `binarytrees` | 14 | 212.1 (195.6-257.3, ±15%) | 1438.0 (1383.0-1862.0, ±17%) | 2520.0 (2491.0-2777.0, ±6%) | 14.8 % | 1.75 | yes |
-| `matmul` | 400 | 12.1 (11.1-16.9, ±24%) | 8502.0 (7717.0-8998.0, ±8%) | 31378.0 (30140.0-31589.0, ±2%) | 0.1 % | 3.69 | yes |
-| `strings` | 200000 | 28.3 (26.1-35.1, ±16%) | 568.0 (460.0-656.0, ±17%) | 772.0 (623.0-936.0, ±20%) | 5.0 % | 1.36 | yes |
+| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | jit / Rust | ir / jit | Same result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `nbody` | 1000000 | 30.2 (22.7-35.9, ±22%) | 11216.0 (10713.0-12763.0, ±9%) | 28175.0 (28144.0-30688.0, ±5%) | 0.27 % | 371.4x | 2.51 | yes |
+| `binarytrees` | 14 | 212.1 (195.6-257.3, ±15%) | 1438.0 (1383.0-1862.0, ±17%) | 2520.0 (2491.0-2777.0, ±6%) | 14.75 % | 6.8x | 1.75 | yes |
+| `matmul` | 400 | 12.1 (11.1-16.9, ±24%) | 8502.0 (7717.0-8998.0, ±8%) | 31378.0 (30140.0-31589.0, ±2%) | 0.14 % | 702.6x | 3.69 | yes |
+| `strings` | 200000 | 28.3 (26.1-35.1, ±16%) | 568.0 (460.0-656.0, ±17%) | 772.0 (623.0-936.0, ±20%) | 4.98 % | 20.1x | 1.36 | yes |
 
 ## What differs between the two sides
 
@@ -55,7 +55,7 @@ No tuning was done to remove these differences; they are part of what later stag
 
 ## Reading
 
-- On Windows (the only platform measured), the JIT reaches 0.1 % (`matmul`) to 14.8 % (`binarytrees`) of Rust.
-- The gap is largest where the kernel is array and struct field access (`matmul`, `nbody`), which goes through helper calls and reference counting — the exact workload targeted by the memory-model proposal (`docs/design/memory-model.md`, hypotheses H1–H2) and the open 3c item "inline array access".
+- On Windows (the only platform measured), the JIT reaches 0.14 % (`matmul`, 702.6x slower) to 14.75 % (`binarytrees`, 6.8x slower) of Rust.
+- The gap is largest in the kernels dominated by array and struct field access (`matmul`, `nbody`), where Qxide goes through helper calls and reference counting. The baseline measures the gap only, not how much each cause contributes; the hypothesis (not yet measured) is that this is a main cost, and it is what the memory-model proposal (`docs/design/memory-model.md`, H1–H2) and the open 3c item "inline array access" aim at.
 - `binarytrees` and `strings` are allocation-bound on both sides, so the gap is smaller.
-- Reaching 95 % will require the memory model, removing the step budget from compiled code, and better code generation; an LLVM backend may be needed (it is the user's premise that Cranelift generates slower code than LLVM, though this was not measured here).
+- Reaching 95 % is expected to need changes such as the memory model, removing the step budget from compiled code, and better code generation (possibly an LLVM backend; that Cranelift generates slower code than LLVM is the user's premise, not measured here); which of these matter most has not been measured.

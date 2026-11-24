@@ -105,11 +105,12 @@ def main():
           f'{args.reps} interleaved rounds (ir: {args.ir_reps}); times are the kernel only, ms: '
           f'median (min-max, ± half the range as % of the median)')
     print()
-    print('| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | ir / jit | Same result |')
-    print('| --- | --- | --- | --- | --- | --- | --- | --- |')
+    print('| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | jit / Rust | ir / jit | Same result |')
+    print('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
     for name, n, rust, jit, ir, pct, ratio, match in rows:
         r = f'{ratio:.2f}' if ratio else '-'
-        print(f'| `{name}` | {n} | {rust} | {jit} | {ir} | {pct:.1f} % | {r} | {"yes" if match else "NO"} |')
+        slow = f'{100 / pct:.1f}x' if pct else '-'
+        print(f'| `{name}` | {n} | {rust} | {jit} | {ir} | {pct:.2f} % | {slow} | {r} | {"yes" if match else "NO"} |')
 
 
 if __name__ == '__main__':
