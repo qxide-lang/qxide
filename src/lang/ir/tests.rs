@@ -465,7 +465,7 @@ void main() {
 // the same steps at the same places in every engine.
 #[test]
 fn value_semantics_agrees_at_every_step_limit() {
-    crate::lang::features::set_value_semantics(true);
+    super::super::features::set_value_semantics(true);
     let src = "struct P {
     int x;
 }
