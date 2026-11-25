@@ -1494,6 +1494,8 @@ impl<'m> Jit<'m> {
             cache: std::collections::HashMap::new(),
             reg_slot: Vec::new(),
             inline_rc: self.inline_rc,
+            steps: Variable::from_u32(0),
+            limit: Variable::from_u32(0),
         };
         g.function()
     }
@@ -1628,6 +1630,12 @@ struct Gen<'a, 'b> {
     // The slot each borrowing register is loaded from.
     reg_slot: Vec<Option<u32>>,
     inline_rc: bool,
+    // `ctx.steps` and the first step count that needs `qx_charge` (`Gen::load_budget`), kept in
+    // registers: written back before every call that reads or charges the budget (`qx_charge`,
+    // `qx_heap`, native callees) and before returning, read again after those calls. A failure
+    // ends the run, so the error path writes nothing back.
+    steps: Variable,
+    limit: Variable,
 }
 
 impl Gen<'_, '_> {
@@ -1639,6 +1647,9 @@ impl Gen<'_, '_> {
         self.err = self.b.create_block();
         self.b.switch_to_block(entry);
         self.ctx = self.b.block_params(entry)[0];
+        self.steps = self.b.declare_var(types::I64);
+        self.limit = self.b.declare_var(types::I64);
+        self.load_budget();
         for s in &src.slots {
             let t = cl_ty(s.ty).ok_or("slot type")?;
             let v = self.b.declare_var(t);
@@ -1785,36 +1796,65 @@ impl Gen<'_, '_> {
         self.b.ins().jump(self.err, &[]);
     }
 
-    // `Machine::charge_all(total, parts)`: inline when no limit or poll is in reach.
-    fn charge(&mut self, total: u64, parts: Vec<(u64, Span)>) {
-        self.charges.push(ChargeSite { total, parts });
-        let site = (self.charges.len() - 1) as i64;
+    // Reads `ctx.steps` into `self.steps` and the first count that is not below both the next
+    // cancellation poll and `max_steps + 1` into `self.limit`: a charge whose sum stays below
+    // `limit` is what `Machine::charge_all` adds at once.
+    fn load_budget(&mut self) {
         let flags = MemFlagsData::trusted();
         let ctx = self.ctx;
         let steps = self.b.ins().load(types::I64, flags, ctx, STEPS);
         let poll = self.b.ins().load(types::I64, flags, ctx, NEXT_POLL);
         let max = self.b.ins().load(types::I64, flags, ctx, MAX_STEPS);
-        let after = self.b.ins().iadd_imm_s(steps, total as i64);
-        let below_poll = self.b.ins().icmp(IntCC::UnsignedLessThan, after, poll);
-        let within = self
-            .b
+        let next = self.b.ins().iadd_imm_s(max, 1);
+        let wrapped = self.b.ins().icmp_imm_s(IntCC::Equal, next, 0);
+        let all = self.b.ins().iconst(types::I64, -1);
+        let next = self.b.ins().select(wrapped, all, next);
+        let limit = self.b.ins().umin(poll, next);
+        self.b.def_var(self.steps, steps);
+        self.b.def_var(self.limit, limit);
+    }
+
+    // Writes `self.steps` back to `ctx.steps`.
+    fn store_budget(&mut self) {
+        let steps = self.b.use_var(self.steps);
+        self.b
             .ins()
-            .icmp(IntCC::UnsignedLessThanOrEqual, after, max);
-        let fast = self.b.ins().band(below_poll, within);
-        let (fast_bb, slow_bb, cont) = (
+            .store(MemFlagsData::trusted(), steps, self.ctx, STEPS);
+    }
+
+    // `self.steps + n` and whether it is below `self.limit` (no limit or poll in reach).
+    fn steps_after(&mut self, n: u64) -> (cl::Value, cl::Value) {
+        let steps = self.b.use_var(self.steps);
+        let limit = self.b.use_var(self.limit);
+        let after = self.b.ins().iadd_imm_s(steps, n as i64);
+        let fast = self.b.ins().icmp(IntCC::UnsignedLessThan, after, limit);
+        (after, fast)
+    }
+
+    // `Machine::charge_all(total, parts)`: inline when no limit or poll is in reach.
+    fn charge(&mut self, total: u64, parts: Vec<(u64, Span)>) {
+        self.charges.push(ChargeSite { total, parts });
+        let site = (self.charges.len() - 1) as i64;
+        let (after, fast) = self.steps_after(total);
+        let (fast_bb, slow_bb, reload, cont) = (
+            self.b.create_block(),
             self.b.create_block(),
             self.b.create_block(),
             self.b.create_block(),
         );
         self.b.ins().brif(fast, fast_bb, &[], slow_bb, &[]);
         self.b.switch_to_block(fast_bb);
-        self.b.ins().store(flags, after, ctx, STEPS);
+        self.b.def_var(self.steps, after);
         self.b.ins().jump(cont, &[]);
         self.b.switch_to_block(slow_bb);
+        self.store_budget();
         let site = self.b.ins().iconst(types::I32, site);
-        let call = self.b.ins().call(self.charge, &[ctx, site]);
+        let call = self.b.ins().call(self.charge, &[self.ctx, site]);
         let st = self.b.inst_results(call)[0];
-        self.b.ins().brif(st, self.err, &[], cont, &[]);
+        self.b.ins().brif(st, self.err, &[], reload, &[]);
+        self.b.switch_to_block(reload);
+        self.load_budget();
+        self.b.ins().jump(cont, &[]);
         self.b.switch_to_block(cont);
     }
 
@@ -2054,6 +2094,7 @@ impl Gen<'_, '_> {
     fn call(&mut self, func: FuncId, dst: u32, args: &[u32], span: Span) -> Result<(), String> {
         let vals = self.enter_call(args, span)?;
         let callee = *self.callees.get(&func).ok_or("callee not declared")?;
+        self.store_budget();
         let call = self.b.ins().call(callee, &vals);
         let st = self.b.inst_results(call)[0];
         self.leave_call(st, dst)
@@ -2077,6 +2118,7 @@ impl Gen<'_, '_> {
         self.fail_if(missing, internal(span));
         // The receiver is replaced by its unboxed word below, so only the other arguments count.
         let mut vals = self.enter_call(&args[1..], span)?;
+        self.store_budget();
         let merge = self.b.create_block();
         self.b.append_block_param(merge, types::I8);
         let branches: Vec<cl::Block> = cands.iter().map(|_| self.b.create_block()).collect();
@@ -2149,6 +2191,7 @@ impl Gen<'_, '_> {
         let cont = self.b.create_block();
         self.b.ins().brif(st, self.err, &[], cont, &[]);
         self.b.switch_to_block(cont);
+        self.load_budget();
         if let Some(t) = cl_ty(self.src.regs[dst as usize]) {
             let v = self.b.ins().load(t, flags, ctx, RET);
             self.set(dst, v)?;
@@ -2487,17 +2530,7 @@ impl Gen<'_, '_> {
             Some(op) => {
                 // `set_index` (src/lang/array.rs) and `set_field` (src/lang/record.rs): one step
                 // for the store, one for the operation.
-                let ctx = self.ctx;
-                let steps = self.b.ins().load(types::I64, flags, ctx, STEPS);
-                let poll = self.b.ins().load(types::I64, flags, ctx, NEXT_POLL);
-                let max = self.b.ins().load(types::I64, flags, ctx, MAX_STEPS);
-                let after = self.b.ins().iadd_imm_s(steps, 1 + i64::from(op.is_some()));
-                let below_poll = self.b.ins().icmp(IntCC::UnsignedLessThan, after, poll);
-                let within = self
-                    .b
-                    .ins()
-                    .icmp(IntCC::UnsignedLessThanOrEqual, after, max);
-                let ok = self.b.ins().band(below_poll, within);
+                let (after, ok) = self.steps_after(1 + u64::from(op.is_some()));
                 let store = self.b.create_block();
                 self.b.ins().brif(ok, store, &[], slow, &[]);
                 self.b.switch_to_block(store);
@@ -2529,7 +2562,7 @@ impl Gen<'_, '_> {
                     }
                 };
                 self.b.ins().store(flags, new, ptr, 0);
-                self.b.ins().store(flags, after, ctx, STEPS);
+                self.b.def_var(self.steps, after);
             }
         }
         self.b.ins().jump(done, &[]);
@@ -2580,11 +2613,13 @@ impl Gen<'_, '_> {
             .iconst(types::I32, (self.heaps.len() - 1) as i64);
         let ptr = self.config.pointer_type();
         let addr = self.b.ins().stack_addr(ptr, slot, 0);
+        self.store_budget();
         let call = self.b.ins().call(self.heap, &[self.ctx, site, addr]);
         let st = self.b.inst_results(call)[0];
         let cont = self.b.create_block();
         self.b.ins().brif(st, self.err, &[], cont, &[]);
         self.b.switch_to_block(cont);
+        self.load_budget();
         if let Some((d, t)) = dst {
             if let Some(ct) = cl_ty(t) {
                 let v = self
@@ -2620,6 +2655,7 @@ impl Gen<'_, '_> {
                         .store(MemFlagsData::trusted(), v, self.ctx, RET);
                 }
                 self.release_all();
+                self.store_budget();
                 let zero = self.b.ins().iconst(types::I8, 0);
                 self.b.ins().return_(&[zero]);
             }
