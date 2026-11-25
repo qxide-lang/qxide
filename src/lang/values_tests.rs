@@ -392,16 +392,30 @@ fn fixed_programs_print_what_they_printed_before() {
         assert!(!fixed.applied.is_empty());
         assert_eq!(run_ok(&fixed.src), before, "{}", fixed.src);
     }
-    // An alias: `b` saw the change made through `a`. The `.copy()` fix makes `b` separate, so the
-    // output changes, and `fix` lists the line (`copies`) for the CLI to point out.
-    let alias = "void main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    a[0] = 7;\n    println(\"{} {}\", a[0], b[0]);\n}\n";
+    // An alias: `b` saw the change made through `a`. The first fix makes both `Shared<int[]>`
+    // handles, so the output stays; without a change afterwards `.copy()` is enough, and `fix`
+    // lists its line (`copies`) for the CLI to point out.
+    let alias = "void show(int[] xs) {\n    println(\"{}\", xs[0]);\n}\n\nvoid main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    a[0] = 7;\n    show(b);\n    println(\"{} {} {}\", a[0], b[1], len(a));\n    for x in b {\n        println(\"{}\", x);\n    }\n}\n";
     features::set_value_semantics(false);
-    assert_eq!(run_ok(alias), "7 7\n");
+    let before = run_ok(alias);
+    assert_eq!(before, "7\n7 2 2\n7\n2\n");
     on();
     let fixed = fix(&Input::file("t.qx", alias));
+    assert!(
+        fixed.remaining.is_none(),
+        "{:?}\n{}",
+        fixed.remaining,
+        fixed.src
+    );
+    assert!(fixed.copies.is_empty(), "{:?}", fixed.copies);
+    assert!(fixed.src.contains("Shared<int[]> b = a;"), "{}", fixed.src);
+    assert_eq!(run_ok(&fixed.src), before);
+    let unchanged = "void main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    println(\"{} {}\", a[0], b[0]);\n}\n";
+    let fixed = fix(&Input::file("t.qx", unchanged));
     assert!(fixed.remaining.is_none(), "{:?}", fixed.remaining);
     assert_eq!(fixed.copies, vec![3]);
-    assert_eq!(run_ok(&fixed.src), "7 1\n");
+    assert!(!fixed.src.contains("Shared"), "{}", fixed.src);
+    assert_eq!(run_ok(&fixed.src), "1 1\n");
     // `27` cannot be an `inout` argument, so no fix inserts `inout` before it.
     let lit = "void inc(inout int n) {\n    n += 1;\n}\n\nvoid main() {\n    inc(27);\n}\n";
     assert_eq!(codes(lit), vec!["Q0325"]);

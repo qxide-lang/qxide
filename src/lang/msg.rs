@@ -1152,6 +1152,10 @@ pub fn vs_inout_unmarked() -> String {
     "this argument is passed to an `inout` parameter: write `inout` before it".into()
 }
 
+pub fn vs_fix_share(a: &str, b: &str) -> String {
+    format!("share one value: make `{a}` and `{b}` `Shared<...>` handles")
+}
+
 pub fn vs_fix_add_inout() -> String {
     "add `inout`".into()
 }

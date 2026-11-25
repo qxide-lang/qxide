@@ -371,6 +371,9 @@ struct Local {
     copy_of: Option<(Span, String)>,
     // Declared `final`: it cannot be an `inout` argument as a whole.
     is_final: bool,
+    // A `T x = init;` declaration: the span of `T` (`None` for `var`) and of `init`.
+    decl_ty: Option<Span>,
+    init: Option<Span>,
 }
 
 // One step of a place below its variable: a field, or an element (`Some` for a literal index).
@@ -378,6 +381,17 @@ struct Local {
 enum Step {
     Field(String),
     Elem(Option<i64>),
+}
+
+// The span of the variable a place starts from (`a` in `a.b[2]`), as `Walker::root` follows it.
+fn root_span(e: &Expr) -> Option<Span> {
+    match &e.kind {
+        ExprKind::Var(_) => Some(e.span),
+        ExprKind::Field { recv, .. } | ExprKind::Method { recv, .. } => root_span(recv),
+        ExprKind::Index { base, .. } => root_span(base),
+        ExprKind::Try { expr, .. } => root_span(expr),
+        _ => None,
+    }
 }
 
 /// The ownership rules for every function of `p`: errors, then warnings (`Q0803`).
@@ -400,8 +414,13 @@ pub fn check(p: &Program, types: &Types) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
             errors: Vec::new(),
             warnings: Vec::new(),
             short_rhs: 0,
+            refs: Vec::new(),
+            aliases: Vec::new(),
+            moved_uses: Vec::new(),
+            changes: Vec::new(),
         };
         w.function(f);
+        w.share_fixes();
         errors.append(&mut w.errors);
         warnings.append(&mut w.warnings);
     }
@@ -498,6 +517,24 @@ struct Walker<'a, 'p> {
     warnings: Vec<Diagnostic>,
     // Inside the right operand of `&&` or `||`, which may not run.
     short_rhs: usize,
+    // Every mention of a local by name (`share_fixes`).
+    refs: Vec<(usize, Span)>,
+    // `T b = a;` moving the local `a` into the new local `b`.
+    aliases: Vec<Alias>,
+    // `Q0321` errors (index in `errors`) and the move they report.
+    moved_uses: Vec<(usize, Span)>,
+    // Changes inside a local (an element, a field, a changing method): the local and where.
+    changes: Vec<(usize, Span)>,
+}
+
+// `T b = a;`: `a` moved into `b`. With reference semantics both names shared one value; when one
+// of them is changed inside and `a` is used again, `Shared<T>` keeps that (`share_fixes`).
+struct Alias {
+    from: usize,
+    to: usize,
+    ty: Ty,
+    // The move: the `a` of `T b = a;`.
+    at: Span,
 }
 
 impl Walker<'_, '_> {
@@ -518,6 +555,8 @@ impl Walker<'_, '_> {
             state: State::Live,
             copy_of: None,
             is_final: false,
+            decl_ty: None,
+            init: None,
         });
         let id = self.locals.len() - 1;
         self.scopes.last_mut().unwrap().push(id);
@@ -591,8 +630,15 @@ impl Walker<'_, '_> {
                 name,
                 init,
                 is_final,
-                ..
+                ty: decl_ty,
+                ty_span,
             } => {
+                let moved_from = match &init.kind {
+                    ExprKind::Var(n) => self
+                        .lookup(n)
+                        .filter(|&id| self.locals[id].kind == Kind::Owned),
+                    _ => None,
+                };
                 let ty = self.types.var(self.fi, name).unwrap_or(Ty::Error);
                 let foreach = matches!(&init.kind, ExprKind::Index { base, .. }
                     if matches!(&base.kind, ExprKind::Var(n) if is_loop_collection(n)));
@@ -609,7 +655,24 @@ impl Walker<'_, '_> {
                 };
                 if Self::classical(ty) {
                     self.declare(name, ty, kind);
-                    self.locals.last_mut().unwrap().is_final = *is_final;
+                    let l = self.locals.last_mut().unwrap();
+                    l.is_final = *is_final;
+                    l.decl_ty = decl_ty.is_some().then_some(*ty_span);
+                    l.init = Some(init.span);
+                    let to = self.locals.len() - 1;
+                    if let Some(from) = moved_from {
+                        if kind == Kind::Owned
+                            && !self.decls.implicit_copy(ty)
+                            && !self.decls.is_shared(ty)
+                        {
+                            self.aliases.push(Alias {
+                                from,
+                                to,
+                                ty,
+                                at: init.span,
+                            });
+                        }
+                    }
                     let small_struct = matches!(ty, Ty::Struct(_))
                         && self.decls.implicit_copy(ty)
                         && !self.decls.is_shared(ty);
@@ -623,6 +686,7 @@ impl Walker<'_, '_> {
             Stmt::Assign { name, value } => {
                 self.value(value);
                 if let Some(id) = self.lookup(&name.name) {
+                    self.refs.push((id, name.span));
                     self.write_var(id, name.span, true);
                 }
                 false
@@ -821,6 +885,7 @@ impl Walker<'_, '_> {
         match &e.kind {
             ExprKind::Var(n) => {
                 if let Some(id) = self.lookup(n) {
+                    self.refs.push((id, e.span));
                     self.used(id, e.span);
                 }
             }
@@ -885,6 +950,7 @@ impl Walker<'_, '_> {
                 Span::new(was.end, was.end),
                 ".copy()",
             ));
+            self.moved_uses.push((self.errors.len(), was));
             self.errors.push(d);
         }
     }
@@ -913,6 +979,7 @@ impl Walker<'_, '_> {
         }
         if let ExprKind::Var(n) = &e.kind {
             if let Some(id) = self.lookup(n) {
+                self.refs.push((id, e.span));
                 self.used(id, e.span);
                 let (kind, name) = (self.locals[id].kind, self.locals[id].name.clone());
                 match kind {
@@ -1073,9 +1140,70 @@ impl Walker<'_, '_> {
         // Indices are read; a place reached through a temporary or a handle is not checked.
         self.read_indices(e);
         if let Some(id) = self.root(e) {
+            if let Some(at) = root_span(e) {
+                self.refs.push((id, at));
+            }
+            self.changes.push((id, e.span));
             self.write_var(id, e.span, false);
         } else if let ExprKind::Field { recv, .. } = &e.kind {
             self.read(recv);
+        }
+    }
+
+    // `Q0321` after `T b = a;` where `a` or `b` is changed inside afterwards: with reference
+    // semantics the change showed through both names, and `.copy()` would end that. The first
+    // fix then turns both into `Shared<T>` handles: `T aInit = init; Shared<T> a = new
+    // Shared<T>(aInit);` (the original declaration keeps its form, so a `{...}` literal still
+    // has its type), `Shared<T> b = a;` and `.value` at every other mention. Offered only when
+    // each name is
+    // declared once in the function, so every mention is one of the two. Provisional decision
+    // delegated by the user (memory-model.md §11).
+    fn share_fixes(&mut self) {
+        let shared = |t: Ty| format!("Shared<{}>", t.name());
+        for &(k, was) in &self.moved_uses {
+            let Some(a) = self.aliases.iter().find(|a| a.at == was) else {
+                continue;
+            };
+            let changed = self
+                .changes
+                .iter()
+                .any(|&(id, at)| (id == a.from || id == a.to) && at.start > was.start);
+            let unique = [a.from, a.to].iter().all(|&id| {
+                let n = &self.locals[id].name;
+                self.locals.iter().filter(|l| &l.name == n).count() == 1
+            });
+            let (from, to) = (&self.locals[a.from], &self.locals[a.to]);
+            let Some(init) = from.init else {
+                continue;
+            };
+            if !changed || !unique || from.kind != Kind::Owned {
+                continue;
+            }
+            let ty = shared(a.ty);
+            let first = format!("{}Init", from.name);
+            let mut edits = vec![
+                (from.decl, first.clone()),
+                (
+                    Span::new(init.end, init.end),
+                    format!("; {ty} {} = new {ty}({first})", from.name),
+                ),
+            ];
+            if let Some(t) = to.decl_ty {
+                edits.push((t, ty.clone()));
+            }
+            let mut seen = Vec::new();
+            for &(id, at) in &self.refs {
+                if (id == a.from || id == a.to) && at != was && !seen.contains(&at) {
+                    seen.push(at);
+                    edits.push((Span::new(at.end, at.end), ".value".to_string()));
+                }
+            }
+            let name = from.name.clone();
+            let fix = Fix {
+                title: msg::vs_fix_share(&name, &to.name),
+                edits,
+            };
+            self.errors[k].fixes.insert(0, fix);
         }
     }
 
