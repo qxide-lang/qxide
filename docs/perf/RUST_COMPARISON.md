@@ -77,15 +77,22 @@ Rust % on the `jit` engine (Rust time / Qxide time × 100):
 | `753819a` | same, flag on | 2.03 % | 15.92 % | 3.20 % | 5.65 % |
 | `2fb866e` | JIT: step count kept in a register; flag off | 5.80 % | 16.30 % | 6.16 % | 5.53 % |
 | `2fb866e` | same, flag on | 2.74 % | 16.33 % | 6.29 % | 5.59 % |
+| `ead4cd5` | JIT: struct element fields read and written in place; flag off | 5.35 % | 16.56 % | 6.40 % | 6.00 % |
+| `ead4cd5` | same, flag on | 4.31 % | 16.01 % | 6.43 % | 5.93 % |
+| `ead4cd5` | same, flag off, `--no-budget` (no step budget, no step checks) | 7.23 % | 16.90 % | 11.85 % | 5.53 % |
 
 Kernel times behind the `69ad055` rows (ms, median of 5): Rust `nbody` 28.2, `binarytrees` 210.0, `matmul` 11.9, `strings` 21.7; Qxide jit 7316 / 1563 / 3979 / 380 with the flag off and 11007 / 1519 / 3912 / 391 with it on. Against `cb2c00b` (12539 / 1928 / 8488 / 416 ms) the JIT change made `matmul` 2.1x and `nbody` 1.7x faster; `binarytrees` and `strings` moved within the noise.
 
 Kernel times behind the 2026-11-25 rows (ms, median of 5, `--ir-reps 1`): at `753819a` Rust 28.4 / 236.7 / 10.3 / 23.5 and Qxide jit 718 / 1487 / 323 / 408 (flag on 1400 / 1487 / 323 / 415); at `2fb866e` Rust 39.6 / 260.6 / 11.7 / 22.8 and Qxide jit 684 / 1599 / 190 / 412 (flag on 1445 / 1596 / 186 / 407). The machine was busier during the `2fb866e` run: the Rust `nbody` time rose from 28.4 to 39.6 ms with a spread of ±50 %, so its Rust % moved more than the Qxide time did. Rust % compares times taken in the same interleaved rounds, which cancels part of the load. Against `69ad055` (7316 / 1563 / 3979 / 380 ms) `matmul` is about 21x and `nbody` about 11x faster on the jit engine; `binarytrees` and `strings` did not change.
 
+Kernel times behind the `ead4cd5` rows (ms, median of 5, `--reps 5 --ir-reps 1 --values --no-budget`): Rust 29.3 / 270.8 / 14.3 / 29.8; Qxide jit 548 / 1635 / 224 / 497; flag on 679 / 1691 / 223 / 503; `--no-budget` 405 / 1602 / 121 / 539. Again measured while other jobs ran: the Rust times themselves were up to a quarter higher than in the `753819a` run, and the `nbody` Rust spread was ±58 %.
+
 What these rows say:
 
 - Value semantics as implemented now does not make anything faster, and it was not expected to: it runs on the same shared-reference representation and adds copies and write-back cells (`docs/design/memory-model.md` §12). The flag-on `nbody` is slower (0.26 % against 0.39 %). A likely reason, not measured: the value-semantics version reads `bs[i].x` through the array on every access instead of through a local `Body` reference, so it makes more helper calls.
 - The JIT change is independent of the memory model and is the larger effect so far.
+- `--no-budget` makes `matmul` about 1.9x and `nbody` about 1.35x faster; `binarytrees` and `strings` spend their time in allocation and text helpers, not in step checks, and do not change beyond the noise.
+- At `ead4cd5` the flag-on `nbody` is within a quarter of the flag-off one (4.31 % against 5.35 %), since `bs[i].x` is now read and written in place. Before that:
 - From `753819a` on, the flag-on `nbody` is about half as fast as the flag-off one (2.74 % against 5.80 %). The value-semantics version reads `bs[i].x`. The base of that field access is an array element, not a local variable, so it gets none of the per-slot addresses and still makes a helper call per access. `matmul`, `binarytrees` and `strings` are the same with the flag on or off.
 
 ## Where the time goes (2026-11-25, `2fb866e`)
