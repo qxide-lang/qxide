@@ -809,6 +809,12 @@ void main() {
     fail("int[][] g = new int[2][2]; int[] r = g[n + 1]; return r[0];");
 }
 
+// The `Rc` layout check passes here, so the count tests below run the inline counting.
+#[test]
+fn reference_counts_are_updated_inline() {
+    assert!(rc_counts_inline());
+}
+
 #[test]
 fn reference_counts_balance_in_native_code() {
     use super::super::array::ArrayData;

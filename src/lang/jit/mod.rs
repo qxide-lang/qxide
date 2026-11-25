@@ -290,6 +290,49 @@ unsafe fn count(w: u64, kind: u8, up: bool) {
     }
 }
 
+// Whether the strong count of every reference kind sits two words before the value, where `Rc::into_raw` points (std's `RcInner` is `repr(C)`: strong, weak, value). Native
+// code then adds and removes counts itself and calls `qx_release` only to drop the last one.
+// Checked once on real values, since the layout is std's and not a promise; when the check
+// fails, native code calls `qx_retain` and `qx_release` for every count.
+fn rc_counts_inline() -> bool {
+    use super::array::ArrayData;
+    use super::native::NativeVal;
+    use super::record::{EnumVal, StructVal};
+    use std::cell::RefCell;
+    fn probe<T>(v: T) -> bool {
+        if std::mem::align_of::<T>() > 8 {
+            return false;
+        }
+        let p = Rc::into_raw(Rc::new(v));
+        // SAFETY: `p` came from `Rc::into_raw` and is live; the word read is inside the
+        // allocation whatever its layout (it holds two counts before the value).
+        let ok = unsafe {
+            let strong = (p as *const u8).sub(RC_STRONG_BACK) as *const usize;
+            let one = strong.read() == 1;
+            Rc::increment_strong_count(p);
+            let two = strong.read() == 2;
+            Rc::decrement_strong_count(p);
+            one && two && strong.read() == 1
+        };
+        // SAFETY: the count taken by `into_raw` is given back.
+        drop(unsafe { Rc::from_raw(p) });
+        ok
+    }
+    // `RcInner<T>` is one generic layout: for `T` aligned to 8 bytes or less the value starts
+    // two words in. Values of each alignment class stand in for the struct, enum and native
+    // kinds, whose alignment is checked.
+    std::mem::align_of::<StructVal>() <= 8
+        && std::mem::align_of::<EnumVal>() <= 8
+        && std::mem::align_of::<NativeVal>() <= 8
+        && probe(0u8)
+        && probe(0u64)
+        && probe(Value::Int(0))
+        && probe(RefCell::new(ArrayData::Int(Vec::new())))
+}
+
+// Bytes from an `Rc::into_raw` pointer back to the strong count (`rc_counts_inline`).
+const RC_STRONG_BACK: usize = 16;
+
 extern "C" fn qx_retain(w: u64, kind: u32) {
     // SAFETY: native code passes only words of `kind` that it owns a count of.
     unsafe { count(w, kind as u8, true) }
@@ -569,6 +612,16 @@ extern "C" fn qx_span(ctx: *mut Ctx, w: u64, kind: u32) -> u64 {
     };
     ctx.ret = n as u64;
     p
+}
+
+// `qx_field` for `n` fields at once: each of the `n` words at `io` holds `index << 2 | kind` and
+// is replaced by that field's address (0 when unknown).
+extern "C" fn qx_fields(w: u64, io: *mut u64, n: u32) {
+    // SAFETY: native code passes `n` words of its own stack.
+    let io = unsafe { std::slice::from_raw_parts_mut(io, n as usize) };
+    for x in io {
+        *x = qx_field(w, (*x >> 2) as i64, (*x & 3) as u32);
+    }
 }
 
 // What native code keeps about the value of a local slot, refreshed whenever the slot is set
@@ -1096,7 +1149,7 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 14],
+    helpers: [ClId; 15],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     maths: Vec<MathSite>,
@@ -1105,6 +1158,8 @@ pub struct Jit<'m> {
     fctx: FunctionBuilderContext,
     calls: Vec<u32>,
     hot: u32,
+    // `rc_counts_inline`.
+    inline_rc: bool,
     // After a failed compilation nothing more runs natively (the module may hold declarations
     // without code).
     broken: bool,
@@ -1153,6 +1208,7 @@ impl<'m> Jit<'m> {
         b.symbol("qx_field", qx_field as *const u8);
         b.symbol("qx_span", qx_span as *const u8);
         b.symbol("qx_elem_ref", qx_elem_ref as *const u8);
+        b.symbol("qx_fields", qx_fields as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -1241,6 +1297,15 @@ impl<'m> Jit<'m> {
         let elem_ref = cl
             .declare_function("qx_elem_ref", Linkage::Import, &esig)
             .ok()?;
+        let mut fsig2 = cl.make_signature();
+        fsig2.params = vec![
+            AbiParam::new(types::I64),
+            AbiParam::new(ptr),
+            AbiParam::new(types::I32),
+        ];
+        let fields = cl
+            .declare_function("qx_fields", Linkage::Import, &fsig2)
+            .ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
@@ -1249,7 +1314,7 @@ impl<'m> Jit<'m> {
             entries: vec![None; ir.funcs.len()],
             helpers: [
                 charge, fail, fmod, math, heap, retain, release, upcast, unbox, dynf, elem, field,
-                span, elem_ref,
+                span, elem_ref, fields,
             ],
             charges: Vec::new(),
             fails: Vec::new(),
@@ -1259,6 +1324,7 @@ impl<'m> Jit<'m> {
             fctx: FunctionBuilderContext::new(),
             calls: vec![0; ir.funcs.len()],
             hot: HOT.with(std::cell::Cell::get),
+            inline_rc: rc_counts_inline(),
             broken: false,
             #[cfg(test)]
             inject_failure: false,
@@ -1413,6 +1479,7 @@ impl<'m> Jit<'m> {
             field: helpers[11],
             span: helpers[12],
             elem_ref: helpers[13],
+            fields: helpers[14],
             charges: &mut self.charges,
             fails: &mut self.fails,
             maths: &mut self.maths,
@@ -1426,6 +1493,7 @@ impl<'m> Jit<'m> {
             borrowed: borrowed_loads(src),
             cache: std::collections::HashMap::new(),
             reg_slot: Vec::new(),
+            inline_rc: self.inline_rc,
         };
         g.function()
     }
@@ -1540,6 +1608,7 @@ struct Gen<'a, 'b> {
     field: cl::FuncRef,
     span: cl::FuncRef,
     elem_ref: cl::FuncRef,
+    fields: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
     maths: &'a mut Vec<MathSite>,
@@ -1558,6 +1627,7 @@ struct Gen<'a, 'b> {
     cache: std::collections::HashMap<u32, SlotCache>,
     // The slot each borrowing register is loaded from.
     reg_slot: Vec<Option<u32>>,
+    inline_rc: bool,
 }
 
 impl Gen<'_, '_> {
@@ -1653,8 +1723,36 @@ impl Gen<'_, '_> {
     // `qx_retain` (`up`) or `qx_release` of a reference word.
     fn count(&mut self, v: cl::Value, kind: u8, up: bool) {
         let k = self.b.ins().iconst(types::I32, i64::from(kind));
-        let f = if up { self.retain } else { self.release };
-        self.b.ins().call(f, &[v, k]);
+        if !self.inline_rc {
+            let f = if up { self.retain } else { self.release };
+            self.b.ins().call(f, &[v, k]);
+            return;
+        }
+        // The count is updated here; only dropping the last count calls `qx_release`. A null
+        // word has no count.
+        let (live, done) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(v, live, &[], done, &[]);
+        self.b.switch_to_block(live);
+        let flags = MemFlagsData::trusted();
+        let back = -(RC_STRONG_BACK as i32);
+        let n = self.b.ins().load(types::I64, flags, v, back);
+        if up {
+            let n = self.b.ins().iadd_imm_s(n, 1);
+            self.b.ins().store(flags, n, v, back);
+            self.b.ins().jump(done, &[]);
+        } else {
+            let only = self.b.ins().icmp_imm_s(IntCC::Equal, n, 1);
+            let (last, keep) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(only, last, &[], keep, &[]);
+            self.b.switch_to_block(keep);
+            let n = self.b.ins().iadd_imm_s(n, -1);
+            self.b.ins().store(flags, n, v, back);
+            self.b.ins().jump(done, &[]);
+            self.b.switch_to_block(last);
+            self.b.ins().call(self.release, &[v, k]);
+            self.b.ins().jump(done, &[]);
+        }
+        self.b.switch_to_block(done);
     }
 
     // Gives up the counts of every reference variable (when the function returns or fails).
@@ -2245,12 +2343,31 @@ impl Gen<'_, '_> {
                 self.b.def_var(len, n);
             }
             SlotCache::Struct { fields } => {
-                for (f, kind, var) in fields {
-                    let f = self.b.ins().iconst(types::I64, i64::from(f));
-                    let k = self.b.ins().iconst(types::I32, i64::from(kind));
-                    let call = self.b.ins().call(self.field, &[w, f, k]);
-                    let p = self.b.inst_results(call)[0];
-                    self.b.def_var(var, p);
+                let slot = self.b.create_sized_stack_slot(cl::StackSlotData::new(
+                    cl::StackSlotKind::ExplicitSlot,
+                    8 * fields.len() as u32,
+                    3,
+                ));
+                for (k, (f, kind, _)) in fields.iter().enumerate() {
+                    let spec = self
+                        .b
+                        .ins()
+                        .iconst(types::I64, i64::from(*f) << 2 | i64::from(*kind));
+                    {
+                        let ptr = self.config.pointer_type();
+                        self.b.ins().stack_store(ptr, spec, slot, 8 * k as i32);
+                    }
+                }
+                let ptr = self.config.pointer_type();
+                let io = self.b.ins().stack_addr(ptr, slot, 0);
+                let n = self.b.ins().iconst(types::I32, fields.len() as i64);
+                self.b.ins().call(self.fields, &[w, io, n]);
+                for (k, (_, _, var)) in fields.iter().enumerate() {
+                    let p = {
+                        let ptr = self.config.pointer_type();
+                        self.b.ins().stack_load(ptr, types::I64, slot, 8 * k as i32)
+                    };
+                    self.b.def_var(*var, p);
                 }
             }
         }
