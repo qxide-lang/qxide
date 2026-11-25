@@ -49,7 +49,7 @@
 
 - C안을 새 플래그 `--no-budget`로 구현했다. `qxide run --no-budget`과 `qxide build --no-budget`(실행 파일에 기록, 번들 권한 바이트의 셋째 비트)에서만 켤 수 있다. 기본은 예산을 켠 지금 동작이고, `--trusted`의 의미는 바꾸지 않았다.
 - 플레이그라운드와 데스크톱 앱 런타임은 이 설정을 만들 길이 없다(`Limits::without_budget`을 부르지 않는다). 둘은 예산과 취소 확인으로 폭주하는 프로그램을 멈추므로 그대로 둔다.
-- 끄면 `Machine::charge`가 곧바로 돌아가고, JIT은 과금 코드를 아예 만들지 않는다(과금 지점, 저장의 인라인 검사, 호출의 한 스텝). `Q0413`과 취소 확인이 없고, 무한 반복은 Ctrl+C로 멈춘다. 출력과 런타임 오류는 예산을 켰을 때와 같다(`jit/tests.rs`의 `programs_run_the_same_without_the_step_budget`, 세 엔진).
+- 끄면 `Machine::charge`가 곧바로 돌아가고, JIT은 과금 코드를 아예 만들지 않는다(과금 지점, 저장의 인라인 검사, 호출의 한 스텝). 메모리 과금(배열 원소, 문자열, JSON 노드, `Machine::charge_work`)도 세지 않지만, 한 번에 `2^36` 스텝(8 GiB)을 넘는 할당은 여전히 `Q0413`이다. 그래서 `new int[4000000000000]`은 프로세스가 할당 실패로 죽지 않고 오류가 된다. 조금씩 쌓이는 메모리는 막지 않는다(보통 네이티브 프로그램과 같다). `Q0413`과 취소 확인이 없고, 무한 반복은 Ctrl+C로 멈춘다. 출력과 런타임 오류는 예산을 켰을 때와 같다(`jit/tests.rs`의 `programs_run_the_same_without_the_step_budget`, 세 엔진).
 - 측정은 `docs/perf/RUST_COMPARISON.md`(`rust_compare.py --no-budget`).
 
 ## 사용자가 정해야 할 것 (위 구현 전의 질문)

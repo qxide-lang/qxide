@@ -177,7 +177,7 @@ impl Parser<'_> {
     }
 
     fn make(&self, m: &mut Machine<'_>, v: Json, depth: usize) -> Result<Rc<NativeVal>, Fail> {
-        m.charge(NODE_BYTES * STR_BYTE_STEPS, self.span)?;
+        m.charge_work(NODE_BYTES * STR_BYTE_STEPS, self.span)?;
         Ok(native::json_val(JsonNode { v, depth }, self.opt))
     }
 
@@ -206,7 +206,7 @@ impl Parser<'_> {
                         let v = self.value(m, level + 1)?;
                         depth = depth.max(depth_of(&v) + 1);
                         if members.put(k, v) {
-                            m.charge(MEMBER_BYTES * STR_BYTE_STEPS, self.span)?;
+                            m.charge_work(MEMBER_BYTES * STR_BYTE_STEPS, self.span)?;
                         }
                         self.ws();
                         match self.peek() {
@@ -235,7 +235,7 @@ impl Parser<'_> {
                     loop {
                         let v = self.value(m, level + 1)?;
                         depth = depth.max(depth_of(&v) + 1);
-                        m.charge(ITEM_BYTES * STR_BYTE_STEPS, self.span)?;
+                        m.charge_work(ITEM_BYTES * STR_BYTE_STEPS, self.span)?;
                         items.push(v);
                         self.ws();
                         match self.peek() {
@@ -590,14 +590,14 @@ impl Machine<'_> {
                 msg::json_too_deep(MAX_DEPTH),
             ));
         }
-        self.charge(NODE_BYTES * STR_BYTE_STEPS, span)?;
+        self.charge_work(NODE_BYTES * STR_BYTE_STEPS, span)?;
         let opt = native::option_of(json_ty());
         Ok(Value::Native(native::json_val(JsonNode { v, depth }, opt)))
     }
 
     // An array value of the given members (each already a `Json`).
     fn json_array(&mut self, items: Vec<Value>, span: Span) -> R<Value> {
-        self.charge(
+        self.charge_work(
             (items.len() as u64).saturating_mul(ITEM_BYTES * STR_BYTE_STEPS),
             span,
         )?;
@@ -623,7 +623,7 @@ impl Machine<'_> {
                 // Size the text before building it, so the budget refuses huge results.
                 let cap = self.steps_left() / STR_BYTE_STEPS;
                 let n = text_len(j, indent, 0, cap);
-                self.charge(n.saturating_mul(STR_BYTE_STEPS), span)?;
+                self.charge_work(n.saturating_mul(STR_BYTE_STEPS), span)?;
                 let mut out = String::new();
                 write_value(j, &mut out, indent, 0);
                 Ok(Value::Str(Rc::from(out)))

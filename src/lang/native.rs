@@ -360,7 +360,7 @@ fn native(obj: Obj, elem: Ty, key: Ty, opt: Ty) -> Value {
 
 impl Machine<'_> {
     fn charge_bytes(&mut self, bytes: u64, span: Span) -> R<()> {
-        self.charge(bytes.saturating_mul(STR_BYTE_STEPS), span)
+        self.charge_work(bytes.saturating_mul(STR_BYTE_STEPS), span)
     }
 
     /// `new List<T>()`, `new Map<K, V>()` (empty) or `new Random(seed)`; `ty` is concrete.

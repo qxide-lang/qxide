@@ -28,6 +28,10 @@ const QASM_HEADER_BYTES: u64 = 96;
 // `max_steps / 8` bytes (128 MiB for the CLI, 256 MiB per desktop-app call).
 pub const STR_BYTE_STEPS: u64 = 8;
 
+// The largest single memory charge (`Machine::charge_work`) of a run without a step budget: the
+// `--trusted` step limit, so one array or text can take at most 8 GiB, as with `--trusted`.
+pub const NO_BUDGET_WORK: u64 = 1 << 36;
+
 pub type R<T> = Result<T, Diagnostic>;
 
 // Java-style widening of an `int` into a `double` slot.
@@ -301,7 +305,24 @@ impl<'h> Machine<'h> {
 
     // Text work in proportion to its length (`STR_BYTE_STEPS` per byte), charged before it is done.
     pub fn charge_text(&mut self, bytes: usize, at: Span) -> R<()> {
-        self.charge((bytes as u64).saturating_mul(STR_BYTE_STEPS), at)
+        self.charge_work((bytes as u64).saturating_mul(STR_BYTE_STEPS), at)
+    }
+
+    /// Steps for memory a program is about to take (array elements, text, JSON nodes): `charge`.
+    /// Without a step budget nothing is counted, but one charge above `NO_BUDGET_WORK` is still
+    /// `Q0413`, so a single huge allocation fails like that instead of aborting the process.
+    pub fn charge_work(&mut self, steps: u64, at: Span) -> R<()> {
+        if self.limits.step_budget {
+            return self.charge(steps, at);
+        }
+        if steps > NO_BUDGET_WORK {
+            return Err(Diagnostic::new(
+                Code::StepLimit,
+                at,
+                msg::step_limit(NO_BUDGET_WORK),
+            ));
+        }
+        Ok(())
     }
 
     // A string literal used as a value; `println` reads its format string from the AST instead.

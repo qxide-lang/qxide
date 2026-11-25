@@ -860,6 +860,15 @@ fn programs_run_the_same_without_the_step_budget() {
     for e in [Engine::Ast, Engine::Ir, Engine::Jit] {
         assert_eq!(outputs(e, long, small.without_budget()).0, want, "{e:?}");
     }
+    // One huge allocation is still `Q0413` (`NO_BUDGET_WORK`), not an aborted process.
+    let huge = "int[] make(int n) { return new int[n]; }\nvoid main() { println(\"{}\", len(make(4000000000000))); }";
+    for e in [Engine::Ast, Engine::Ir, Engine::Jit] {
+        let out = outputs(e, huge, Limits::CLI.without_budget()).0;
+        assert!(
+            out.starts_with("error") && out.contains("Q0413"),
+            "{e:?} {out}"
+        );
+    }
 }
 
 #[test]

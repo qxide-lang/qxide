@@ -217,7 +217,7 @@ impl Machine<'_> {
     // One value slot per field, charged per byte before the struct is built.
     fn charge_struct(&mut self, n: usize, span: Span) -> R<()> {
         let bytes = (n as u64).saturating_mul(std::mem::size_of::<Value>() as u64);
-        self.charge(bytes.saturating_mul(STR_BYTE_STEPS), span)
+        self.charge_work(bytes.saturating_mul(STR_BYTE_STEPS), span)
     }
 
     /// `new Point(a, b)`: the field values in declaration order (`int` widens to `double`).

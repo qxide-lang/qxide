@@ -108,7 +108,7 @@ impl Machine<'_> {
 
     fn charge_elems(&mut self, n: usize, elem: Ty, span: Span) -> R<()> {
         let bytes = (n as u64).saturating_mul(elem_bytes(elem));
-        self.charge(bytes.saturating_mul(STR_BYTE_STEPS), span)
+        self.charge_work(bytes.saturating_mul(STR_BYTE_STEPS), span)
     }
 
     /// Charges a new `String[]` of `n` elements holding `bytes` bytes of text in all.
