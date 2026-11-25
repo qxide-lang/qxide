@@ -146,12 +146,10 @@ fn sum(copy $n: i64) -> i64 {
     slot $i.next: i64
     slot $i: i64
 bb0:
-    charge 1
+    charge 5
     %0 = const.i64 0
     store $total, %0
-    charge 1
     %1 = const.i64 0
-    charge 3
     %2 = load $n
     store $i.next, %1
     jump bb1
@@ -160,11 +158,9 @@ bb1:
     %4 = lt.i64 %3, %2
     br %4, bb2, bb4
 bb2:
-    charge 1
+    charge 7
     store $i, %3
-    charge 4
     %5 = load $total
-    charge 2
     %6 = load $i
     %7 = add.i64 %5, %6
     store $total, %7

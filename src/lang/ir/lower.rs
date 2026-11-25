@@ -24,6 +24,44 @@ struct Sig {
     ret: Ty,
 }
 
+// Instructions that cannot fail, charge steps or call out: constants, number and `boolean`
+// operations that cannot overflow or divide by zero, loads of a classical slot and stores to a
+// number or `boolean` slot. They only touch registers and local slots.
+fn steps_blind(f: &Func, i: &Inst) -> bool {
+    let plain = |t: IrTy| matches!(t, IrTy::I64 | IrTy::F64 | IrTy::Bool);
+    match i {
+        Inst::Const { .. } | Inst::Widen { .. } | Inst::FloatOp { .. } | Inst::BoolOp { .. } => {
+            true
+        }
+        Inst::IntOp { op, .. } => matches!(
+            op,
+            BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+        ),
+        Inst::Load { slot, .. } => matches!(
+            f.slots[*slot as usize].ty,
+            IrTy::I64
+                | IrTy::F64
+                | IrTy::Bool
+                | IrTy::Str
+                | IrTy::Array(_)
+                | IrTy::Struct(_)
+                | IrTy::Enum(_)
+                | IrTy::Iface(_)
+                | IrTy::Native(_)
+        ),
+        Inst::Store { slot, .. } => plain(f.slots[*slot as usize].ty),
+        _ => false,
+    }
+}
+
 pub fn lower(p: &Program) -> Module {
     let mut index = HashMap::new();
     let mut sigs = HashMap::new();
@@ -274,15 +312,26 @@ impl<'p, 'a> FnLower<'p, 'a> {
         self.terminate(Term::Trap(Box::new(d)));
     }
 
-    // One `Machine::charge(n, at)` of the interpreter, merged with an immediately preceding one.
+    // One `Machine::charge(n, at)` of the interpreter, merged with the block's last charge when
+    // only `steps_blind` instructions come after it. Charging earlier than the interpreter, before
+    // such instructions, changes nothing any engine reports: the charges keep their order (and
+    // so where a limit or a cancellation poll falls), and a step-limit error ends the run before
+    // anything those instructions did could be seen.
     fn charge(&mut self, n: u64, at: Span) {
         let end = self.func.charges.len() as u32;
-        if let Some(Inst::Charge { total, first, len }) = self.blocks[self.cur].0.last_mut() {
-            if *first + *len == end {
-                *total = total.saturating_add(n);
-                *len += 1;
-                self.func.charges.push((n, at));
-                return;
+        let insts = &self.blocks[self.cur].0;
+        let last = insts
+            .iter()
+            .rposition(|i| !steps_blind(&self.func, i))
+            .filter(|&k| matches!(insts[k], Inst::Charge { .. }));
+        if let Some(k) = last {
+            if let Inst::Charge { total, first, len } = &mut self.blocks[self.cur].0[k] {
+                if *first + *len == end {
+                    *total = total.saturating_add(n);
+                    *len += 1;
+                    self.func.charges.push((n, at));
+                    return;
+                }
             }
         }
         self.func.charges.push((n, at));
