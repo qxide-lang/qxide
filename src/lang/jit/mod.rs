@@ -614,6 +614,32 @@ extern "C" fn qx_span(ctx: *mut Ctx, w: u64, kind: u32) -> u64 {
     p
 }
 
+// The address of the number or `boolean` field `spec >> 2` (of kind `spec & 3`, as `qx_elem`)
+// of the struct element `i` of an array, read in place: no count of the element is taken, since
+// native code loads the field at once (`Gen::elem_field`). 0 when the index is out of bounds, the
+// element is not such a struct, or the array or struct is borrowed.
+extern "C" fn qx_elem_field(w: u64, i: i64, spec: u64) -> u64 {
+    use super::array::ArrayData;
+    use std::cell::RefCell;
+    if w == 0 {
+        return 0;
+    }
+    // SAFETY: as in `qx_elem`.
+    let cell = unsafe { &*(w as *const RefCell<ArrayData>) };
+    let Ok(a) = cell.try_borrow() else {
+        return 0;
+    };
+    let ArrayData::Other(v) = &*a else {
+        return 0;
+    };
+    let Some(Value::Struct(st)) = usize::try_from(i).ok().and_then(|k| v.get(k)) else {
+        return 0;
+    };
+    let p = Rc::as_ptr(st) as u64;
+    drop(a);
+    qx_field(p, (spec >> 2) as i64, (spec & 3) as u32)
+}
+
 // `qx_field` for `n` fields at once: each of the `n` words at `io` holds `index << 2 | kind` and
 // is replaced by that field's address (0 when unknown).
 extern "C" fn qx_fields(w: u64, io: *mut u64, n: u32) {
@@ -792,6 +818,81 @@ unsafe fn store_fast(
 // a register borrows the slot's count of the value instead of taking one (a `qx_retain` and a
 // `qx_release` call less per access), since the slot keeps the value alive until the use and
 // `qx_heap` takes its own count of what it reads.
+// `a[i].f = v` and `a[i].f op= v` whose `Index` (at the key) comes before the `SetField` (the value)
+// with only instructions between that cannot replace or free the element: charges, slot loads,
+// number stores, arithmetic, `std.math`, and reads of elements, fields and lengths. The `Index`
+// result is read by that `SetField` alone, `f` is a number or `boolean` field and the operation
+// one native code does (`Gen::elem_set_end`).
+fn element_sets(f: &Func, uses: &[u32], insts: &[Inst]) -> std::collections::HashMap<usize, usize> {
+    let mut out = std::collections::HashMap::new();
+    for (k, i) in insts.iter().enumerate() {
+        let Inst::Index { dst: r, base, .. } = i else {
+            continue;
+        };
+        if ref_kind(f.regs[*base as usize]) != Some(ARRAY)
+            || ref_kind(f.regs[*r as usize]) != Some(STRUCT)
+            || uses.get(*r as usize) != Some(&1)
+        {
+            continue;
+        }
+        for (m, later) in insts.iter().enumerate().skip(k + 1) {
+            match later {
+                Inst::SetField {
+                    base: b, op, value, ..
+                } if b == r => {
+                    let t = f.regs[*value as usize];
+                    let ok = matches!(
+                        (t, op),
+                        (
+                            IrTy::F64,
+                            None | Some(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                        ) | (IrTy::I64, None | Some(BinOp::Add | BinOp::Sub | BinOp::Mul))
+                            | (IrTy::Bool, None)
+                    );
+                    if ok {
+                        out.insert(k, m);
+                    }
+                    break;
+                }
+                Inst::Store { slot, .. } if ref_kind(f.slots[*slot as usize].ty).is_none() => {}
+                Inst::Charge { .. }
+                | Inst::Const { .. }
+                | Inst::Load { .. }
+                | Inst::Widen { .. }
+                | Inst::IntOp { .. }
+                | Inst::FloatOp { .. }
+                | Inst::BoolOp { .. }
+                | Inst::Unary { .. }
+                | Inst::Cast { .. }
+                | Inst::StdCall { .. }
+                | Inst::Index { .. }
+                | Inst::GetField { .. }
+                | Inst::Len { .. } => {}
+                _ => break,
+            }
+        }
+    }
+    out
+}
+
+// How many instructions and terminators read each register of `f`.
+fn use_counts(f: &Func) -> Vec<u32> {
+    let mut uses = vec![0u32; f.regs.len()];
+    for b in &f.blocks {
+        for i in &b.insts {
+            for r in read_regs(i) {
+                uses[r as usize] += 1;
+            }
+        }
+        match &b.term {
+            Term::Br { cond, .. } => uses[*cond as usize] += 1,
+            Term::Ret(Some(r)) => uses[*r as usize] += 1,
+            _ => {}
+        }
+    }
+    uses
+}
+
 fn borrowed_loads(f: &Func) -> Vec<bool> {
     let n = f.regs.len();
     let mut defs = vec![0u32; n];
@@ -1149,7 +1250,7 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 15],
+    helpers: [ClId; 16],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     maths: Vec<MathSite>,
@@ -1217,6 +1318,7 @@ impl<'m> Jit<'m> {
         b.symbol("qx_span", qx_span as *const u8);
         b.symbol("qx_elem_ref", qx_elem_ref as *const u8);
         b.symbol("qx_fields", qx_fields as *const u8);
+        b.symbol("qx_elem_field", qx_elem_field as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -1314,6 +1416,16 @@ impl<'m> Jit<'m> {
         let fields = cl
             .declare_function("qx_fields", Linkage::Import, &fsig2)
             .ok()?;
+        let mut efsig = cl.make_signature();
+        efsig.params = vec![
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I64),
+        ];
+        efsig.returns = vec![AbiParam::new(types::I64)];
+        let elem_field = cl
+            .declare_function("qx_elem_field", Linkage::Import, &efsig)
+            .ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
@@ -1322,7 +1434,7 @@ impl<'m> Jit<'m> {
             entries: vec![None; ir.funcs.len()],
             helpers: [
                 charge, fail, fmod, math, heap, retain, release, upcast, unbox, dynf, elem, field,
-                span, elem_ref, fields,
+                span, elem_ref, fields, elem_field,
             ],
             charges: Vec::new(),
             fails: Vec::new(),
@@ -1489,6 +1601,7 @@ impl<'m> Jit<'m> {
             span: helpers[12],
             elem_ref: helpers[13],
             fields: helpers[14],
+            elem_field: helpers[15],
             charges: &mut self.charges,
             fails: &mut self.fails,
             maths: &mut self.maths,
@@ -1501,6 +1614,8 @@ impl<'m> Jit<'m> {
             owned: Vec::new(),
             borrowed: borrowed_loads(src),
             cache: std::collections::HashMap::new(),
+            uses: use_counts(src),
+            pending_sets: std::collections::HashMap::new(),
             reg_slot: Vec::new(),
             inline_rc: self.inline_rc,
             budget: self.budget,
@@ -1621,6 +1736,7 @@ struct Gen<'a, 'b> {
     span: cl::FuncRef,
     elem_ref: cl::FuncRef,
     fields: cl::FuncRef,
+    elem_field: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
     maths: &'a mut Vec<MathSite>,
@@ -1637,6 +1753,11 @@ struct Gen<'a, 'b> {
     // Registers that borrow the count of the slot they are loaded from (`borrowed_loads`).
     borrowed: Vec<bool>,
     cache: std::collections::HashMap<u32, SlotCache>,
+    // How many instructions and terminators read each register.
+    uses: Vec<u32>,
+    // `elem_set_start` of the current block: by the position of the `SetField` that stores
+    // through it, the variable holding the field address (0 for none) and the `Index`.
+    pending_sets: std::collections::HashMap<usize, (Variable, Inst)>,
     // The slot each borrowing register is loaded from.
     reg_slot: Vec<Option<u32>>,
     inline_rc: bool,
@@ -1697,8 +1818,28 @@ impl Gen<'_, '_> {
         self.b.ins().jump(blocks[0], &[]);
         for (k, blk) in src.blocks.iter().enumerate() {
             self.b.switch_to_block(blocks[k]);
-            for i in &blk.insts {
-                self.inst(i)?;
+            let sets = element_sets(src, &self.uses, &blk.insts);
+            self.pending_sets.clear();
+            let mut at = 0;
+            while at < blk.insts.len() {
+                if let Some(&m) = sets.get(&at) {
+                    self.elem_set_start(&blk.insts[at], &blk.insts[m], m)?;
+                    at += 1;
+                    continue;
+                }
+                if let Some((var, index)) = self.pending_sets.remove(&at) {
+                    self.elem_set_end(var, &index, &blk.insts[at])?;
+                    at += 1;
+                    continue;
+                }
+                if let Some(pair) = blk.insts.get(at..at + 2) {
+                    if self.elem_field(pair)? {
+                        at += 2;
+                        continue;
+                    }
+                }
+                self.inst(&blk.insts[at])?;
+                at += 1;
             }
             self.term(&blk.term, &blocks)?;
         }
@@ -2278,6 +2419,161 @@ impl Gen<'_, '_> {
             self.set(dst, v)?;
         }
         Ok(())
+    }
+
+    // The `Index` of an `element_sets` pair: the address of the field its `SetField` (at `pos`)
+    // stores to, in a variable. Without one (out of bounds, ...) the `Index` runs as it is,
+    // which reports the error or leaves the element for the `SetField` to run as it is.
+    fn elem_set_start(&mut self, index: &Inst, set: &Inst, pos: usize) -> Result<(), String> {
+        let (
+            Inst::Index { base, index: i, .. },
+            Inst::SetField {
+                index: f, value, ..
+            },
+        ) = (index, set)
+        else {
+            return Err("element store pair".into());
+        };
+        let kind = elem_kind(self.src.regs[*value as usize]).ok_or("element store kind")?;
+        let (a, k) = (self.get(*base)?, self.get(*i)?);
+        let spec = self
+            .b
+            .ins()
+            .iconst(types::I64, i64::from(*f) << 2 | i64::from(kind));
+        let call = self.b.ins().call(self.elem_field, &[a, k, spec]);
+        let ptr = self.b.inst_results(call)[0];
+        let var = self.b.declare_var(types::I64);
+        self.b.def_var(var, ptr);
+        let (slow, done) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(ptr, done, &[], slow, &[]);
+        self.b.switch_to_block(slow);
+        self.inst(index)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        self.pending_sets.insert(pos, (var, index.clone()));
+        Ok(())
+    }
+
+    // The `SetField` of an `element_sets` pair: through the address `elem_set_start` kept, with
+    // the store's steps charged inline as in `elem`. Without an address the `SetField` runs as
+    // it is; when a limit or poll is in reach or an `int` overflows, the `Index` runs again
+    // (nothing between them changed the element) and then the `SetField` as it is.
+    fn elem_set_end(&mut self, var: Variable, index: &Inst, set: &Inst) -> Result<(), String> {
+        let Inst::SetField { op, value, .. } = set else {
+            return Err("element store".into());
+        };
+        let t = self.src.regs[*value as usize];
+        let ct = cl_ty(t).ok_or("element store type")?;
+        let ptr = self.b.use_var(var);
+        let (fast, plain, again, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().brif(ptr, fast, &[], plain, &[]);
+        self.b.switch_to_block(fast);
+        let store = self.b.create_block();
+        let after = if self.budget {
+            let (after, ok) = self.steps_after(1 + u64::from(op.is_some()));
+            self.b.ins().brif(ok, store, &[], again, &[]);
+            Some(after)
+        } else {
+            self.b.ins().jump(store, &[]);
+            None
+        };
+        self.b.switch_to_block(store);
+        let flags = MemFlagsData::trusted();
+        let v = self.get(*value)?;
+        let new = match op {
+            None => v,
+            Some(o) if t == IrTy::F64 => {
+                let old = self.b.ins().load(ct, flags, ptr, 0);
+                self.float_op(*o, old, v)?
+            }
+            Some(o) => {
+                let old = self.b.ins().load(ct, flags, ptr, 0);
+                let (n, of) = match o {
+                    BinOp::Add => self.b.ins().sadd_overflow(old, v),
+                    BinOp::Sub => self.b.ins().ssub_overflow(old, v),
+                    _ => self.b.ins().smul_overflow(old, v),
+                };
+                let no = self.b.create_block();
+                self.b.ins().brif(of, again, &[], no, &[]);
+                self.b.switch_to_block(no);
+                n
+            }
+        };
+        self.b.ins().store(flags, new, ptr, 0);
+        if let Some(after) = after {
+            self.b.def_var(self.steps, after);
+        }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(plain);
+        self.inst(set)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(again);
+        self.inst(index)?;
+        self.inst(set)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok(())
+    }
+
+    // `a[i].f` as `Index` then `GetField` of its only use, `f` a number or `boolean`: one
+    // `qx_elem_field` call gives the field's address and native code loads it, without taking
+    // a count of the element. Anything else (no address) runs the two instructions as they are.
+    // `false` when the pair is not of that form.
+    fn elem_field(&mut self, pair: &[Inst]) -> Result<bool, String> {
+        let src = self.src;
+        let [Inst::Index {
+            dst: r,
+            base,
+            index,
+            ..
+        }, Inst::GetField {
+            dst,
+            recv,
+            index: f,
+            ..
+        }] = pair
+        else {
+            return Ok(false);
+        };
+        let t = src.regs[*dst as usize];
+        let (Some(kind), Some(ct)) = (elem_kind(t), cl_ty(t)) else {
+            return Ok(false);
+        };
+        if recv != r
+            || ref_kind(src.regs[*base as usize]) != Some(ARRAY)
+            || ref_kind(src.regs[*r as usize]) != Some(STRUCT)
+            || self.uses.get(*r as usize) != Some(&1)
+        {
+            return Ok(false);
+        }
+        let (a, k) = (self.get(*base)?, self.get(*index)?);
+        let spec = self
+            .b
+            .ins()
+            .iconst(types::I64, i64::from(*f) << 2 | i64::from(kind));
+        let call = self.b.ins().call(self.elem_field, &[a, k, spec]);
+        let ptr = self.b.inst_results(call)[0];
+        let (fast, slow, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().brif(ptr, fast, &[], slow, &[]);
+        self.b.switch_to_block(fast);
+        let v = self.b.ins().load(ct, MemFlagsData::trusted(), ptr, 0);
+        self.set(*dst, v)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(slow);
+        self.inst(&pair[0])?;
+        self.inst(&pair[1])?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok(true)
     }
 
     // `a[i]` of an array, struct, enum or `List`/`Map`/`Random` element through `qx_elem_ref`,

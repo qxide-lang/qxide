@@ -871,6 +871,64 @@ fn programs_run_the_same_without_the_step_budget() {
     }
 }
 
+// `a[i].f` read and written in place (`qx_elem_field`, `element_sets`): the interpreters'
+// results, errors and step positions, also when a step limit falls between the `Index` and the
+// `SetField` or an `int` field overflows there.
+#[test]
+fn element_fields_are_read_and_written_in_place() {
+    let src = "import std.math;
+struct B { double x; double v; int n; boolean on; }
+double run(int k) {
+    B[] bs = new B[k];
+    for i in 0..k { bs[i] = new B(i * 1.0, 0.5, i, false); }
+    for t in 0..2 {
+        for i in 0..k {
+            bs[i].x += 0.25 * bs[i].v + math.sqrt(bs[i].x);
+            bs[i].v *= 1.5;
+            bs[i].n += i * 3;
+            bs[i].n -= 1;
+            bs[i].on = bs[i].n > 2;
+            bs[i].x = bs[i].x / 2.0;
+        }
+    }
+    double s = 0.0;
+    for i in 0..k { s += bs[i].x + bs[i].v + bs[i].n; if bs[i].on { s += 1.0; } }
+    return s;
+}
+void main() {
+    println(\"{}\", run(1));
+}
+";
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = super::super::stdlib::LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 300, "{total}");
+    for max in 0..=total + 1 {
+        same(
+            src,
+            Limits {
+                max_steps: max,
+                ..Limits::CLI
+            },
+        );
+    }
+    let fail = |body: &str| {
+        let src = format!(
+            "struct Q {{ int n; double x; }}\nint f(int n) {{ {body} }}\nvoid main() {{ println(\"{{}}\", f(1)); }}"
+        );
+        let out = same(&src, Limits::CLI);
+        assert!(out.starts_with("error"), "{out}");
+    };
+    fail("Q[] qs = new Q[2]; qs[1].n = 4611686018427387904; qs[1].n += qs[1].n; return 0;");
+    fail("Q[] qs = new Q[2]; qs[n + 1].x += 1.0; return 0;");
+    fail("Q[] qs = new Q[2]; double y = qs[n + 1].x; return 0;");
+}
+
 #[test]
 fn reference_counts_balance_in_native_code() {
     use super::super::array::ArrayData;
