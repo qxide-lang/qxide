@@ -491,3 +491,37 @@ fn dependencies_may_only_import_std_log() {
     let e = errs(entry, &[("bell_utils/src/lib.qx", native)]);
     assert_eq!(e, vec![("Q0703", path("bell_utils/src/lib.qx"), 1, 8)]);
 }
+
+// `qxide fix` with imports: a fix in the entry file is applied with the entry's own offsets, and
+// an error inside an imported module is left alone (its fix would edit another file).
+#[test]
+fn fix_edits_only_the_entry_file() {
+    super::features::set_value_semantics(true);
+    let module = "public void zero(int[] a) {\n    a[0] = 0;\n}\n";
+    let files = Files::new(&[("bell_utils/src/arr.qx", module)]);
+    let read = |p: &Path| files.read(p);
+    let p = project(None);
+    let entry = "import bell_utils.arr.zero;\n\nvoid push(int[] a) {\n    a[0] = 1;\n}\n\nvoid main() {\n    int[] a = {5};\n    push(a);\n    println(\"{}\", a[0]);\n}\n";
+    let input = Input {
+        name: "main.qx",
+        src: entry,
+        project: Some(&p),
+        read: &read,
+        perms: super::stdlib::Permissions::cli(false),
+    };
+    let fixed = fix(&input);
+    assert!(
+        fixed.src.contains("void push(inout int[] a)") && fixed.src.contains("push(inout a)"),
+        "{}",
+        fixed.src
+    );
+    assert!(fixed.src.starts_with("import bell_utils.arr.zero;\n"));
+    // The module's own error (`zero` changes a borrowed parameter) stays, unfixed.
+    let remaining = fixed.remaining.expect("the module's error is left");
+    assert!(
+        remaining.contains("Q0320") && remaining.contains("arr.qx"),
+        "{remaining}"
+    );
+    assert_eq!(fixed.applied.len(), 2, "{:?}", fixed.applied);
+    super::features::set_value_semantics(false);
+}

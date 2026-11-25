@@ -480,8 +480,9 @@ pub struct Fixed {
 
 /// `qxide fix`: applies the first quick fix of the first error that has one, checks again, and
 /// repeats until no error offers a fix (at most `FIX_ROUNDS` times). Only fixes inside the file
-/// itself are applied. Re-checking after each fix keeps every edit's spans current, and an
-/// error whose fix did not remove it stops the loop instead of repeating.
+/// itself are applied (the entry file is the first in the source map, at offset 0). Re-checking
+/// after each fix keeps every edit's spans current. If the error a fix was for comes back on the
+/// same line with the same message, the loop stops instead of repeating the fix.
 pub fn fix(input: &Input) -> Fixed {
     const FIX_ROUNDS: usize = 200;
     let src = input.src;
@@ -489,7 +490,7 @@ pub fn fix(input: &Input) -> Fixed {
     let mut out = strip_bom(src).to_string();
     let mut applied = Vec::new();
     let mut copies = Vec::new();
-    let mut last: Option<(Code, usize)> = None;
+    let mut last: Option<(Code, usize, String)> = None;
     let remaining = loop {
         let round = Input {
             name: input.name,
@@ -506,16 +507,22 @@ pub fn fix(input: &Input) -> Fixed {
         let next = errors.iter().find_map(|d| {
             d.fixes
                 .iter()
-                .find(|f| f.edits.iter().all(|(s, _)| s.end <= out.len()))
+                .find(|f| {
+                    f.edits
+                        .iter()
+                        .all(|(s, _)| s.end <= out.len() && map.file_at(s.start).2 == 0)
+                })
                 .map(|f| (d, f))
         });
         let Some((d, f)) = next.filter(|_| applied.len() < FIX_ROUNDS) else {
             break Some(render(&map, &errors, &Limits::CLI).0);
         };
-        if last == Some((d.code, d.span.start)) {
+        // Fixes insert words, so the error's offset moves but its line and message do not.
+        let this = (d.code, map.line_col(d.span.start).0, d.message.clone());
+        if last.as_ref() == Some(&this) {
             break Some(render(&map, &errors, &Limits::CLI).0);
         }
-        last = Some((d.code, d.span.start));
+        last = Some(this);
         let at = f
             .edits
             .iter()

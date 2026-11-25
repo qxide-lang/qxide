@@ -2209,8 +2209,9 @@ impl Gen<'_, '_> {
     ) -> Result<(), String> {
         let function = name.strip_prefix("std.math.").ok_or("not std.math")?;
         // Functions with one exact IEEE result and no errors run as one instruction, with the
-        // `int` argument widened as `pure::math` does.
-        if let ([(r, _)], "sqrt" | "floor" | "ceil" | "trunc" | "abs") = (args, function) {
+        // `int` argument widened as `pure::math` does. Only `sqrt` and `abs`: Cranelift may turn
+        // `floor`, `ceil` and `trunc` into library calls on x86-64 without SSE4.1.
+        if let ([(r, _)], "sqrt" | "abs") = (args, function) {
             if self.src.regs[dst as usize] == IrTy::F64 {
                 let x = self.get(*r)?;
                 let x = match self.src.regs[*r as usize] {
@@ -2218,12 +2219,10 @@ impl Gen<'_, '_> {
                     IrTy::I64 => self.b.ins().fcvt_from_sint(types::F64, x),
                     _ => return Err("std.math argument".into()),
                 };
-                let v = match function {
-                    "sqrt" => self.b.ins().sqrt(x),
-                    "floor" => self.b.ins().floor(x),
-                    "ceil" => self.b.ins().ceil(x),
-                    "trunc" => self.b.ins().trunc(x),
-                    _ => self.b.ins().fabs(x),
+                let v = if function == "sqrt" {
+                    self.b.ins().sqrt(x)
+                } else {
+                    self.b.ins().fabs(x)
                 };
                 return self.set(dst, v);
             }

@@ -742,8 +742,8 @@ void main() {
 
 // Slots keep the buffer of their array and the addresses of their struct's fields while they hold
 // the value (`SlotCache`), also when the slot is set again in a loop; elements that are arrays or
-// structs come from `qx_elem_ref`; `sqrt`, `floor`, `ceil`, `trunc` and `abs` are one native
-// instruction. All with the interpreters' results, errors and step positions.
+// structs come from `qx_elem_ref`; `sqrt` and `abs` are one native instruction (`floor`, `ceil`,
+// `trunc` go through `qx_math`). All with the interpreters' results, errors and step positions.
 #[test]
 fn cached_slots_reference_elements_and_native_math_agree() {
     let src = "import std.math;
