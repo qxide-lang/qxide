@@ -1160,6 +1160,8 @@ pub struct Jit<'m> {
     hot: u32,
     // `rc_counts_inline`.
     inline_rc: bool,
+    // `Limits::step_budget`: without it, native code has no step checks at all.
+    budget: bool,
     // After a failed compilation nothing more runs natively (the module may hold declarations
     // without code).
     broken: bool,
@@ -1180,7 +1182,13 @@ impl Drop for Jit<'_> {
 
 impl<'m> Jit<'m> {
     /// `None` when Cranelift does not support this machine; the interpreter runs everything.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(ir: &'m Module) -> Option<Self> {
+        Self::with_budget(ir, true)
+    }
+
+    /// `new`, with step checks in the code only when `budget` is on (`Limits::step_budget`).
+    pub fn with_budget(ir: &'m Module, budget: bool) -> Option<Self> {
         // Arguments and return values are 64-bit words whose low byte holds a `boolean`.
         if cfg!(target_endian = "big") {
             return None;
@@ -1325,6 +1333,7 @@ impl<'m> Jit<'m> {
             calls: vec![0; ir.funcs.len()],
             hot: HOT.with(std::cell::Cell::get),
             inline_rc: rc_counts_inline(),
+            budget,
             broken: false,
             #[cfg(test)]
             inject_failure: false,
@@ -1494,6 +1503,7 @@ impl<'m> Jit<'m> {
             cache: std::collections::HashMap::new(),
             reg_slot: Vec::new(),
             inline_rc: self.inline_rc,
+            budget: self.budget,
             steps: Variable::from_u32(0),
             limit: Variable::from_u32(0),
         };
@@ -1630,6 +1640,7 @@ struct Gen<'a, 'b> {
     // The slot each borrowing register is loaded from.
     reg_slot: Vec<Option<u32>>,
     inline_rc: bool,
+    budget: bool,
     // `ctx.steps` and the first step count that needs `qx_charge` (`Gen::load_budget`), kept in
     // registers: written back before every call that reads or charges the budget (`qx_charge`,
     // `qx_heap`, native callees) and before returning, read again after those calls. A failure
@@ -1833,6 +1844,9 @@ impl Gen<'_, '_> {
 
     // `Machine::charge_all(total, parts)`: inline when no limit or poll is in reach.
     fn charge(&mut self, total: u64, parts: Vec<(u64, Span)>) {
+        if !self.budget {
+            return;
+        }
         self.charges.push(ChargeSite { total, parts });
         let site = (self.charges.len() - 1) as i64;
         let (after, fast) = self.steps_after(total);
@@ -2529,9 +2543,15 @@ impl Gen<'_, '_> {
             Some(op) => {
                 // `set_index` (src/lang/array.rs) and `set_field` (src/lang/record.rs): one step
                 // for the store, one for the operation.
-                let (after, ok) = self.steps_after(1 + u64::from(op.is_some()));
                 let store = self.b.create_block();
-                self.b.ins().brif(ok, store, &[], slow, &[]);
+                let after = if self.budget {
+                    let (after, ok) = self.steps_after(1 + u64::from(op.is_some()));
+                    self.b.ins().brif(ok, store, &[], slow, &[]);
+                    Some(after)
+                } else {
+                    self.b.ins().jump(store, &[]);
+                    None
+                };
                 self.b.switch_to_block(store);
                 let v = self.get(value)?;
                 let new = match op {
@@ -2561,7 +2581,9 @@ impl Gen<'_, '_> {
                     }
                 };
                 self.b.ins().store(flags, new, ptr, 0);
-                self.b.def_var(self.steps, after);
+                if let Some(after) = after {
+                    self.b.def_var(self.steps, after);
+                }
             }
         }
         self.b.ins().jump(done, &[]);

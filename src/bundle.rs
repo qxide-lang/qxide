@@ -32,6 +32,8 @@ pub struct Bundle {
     pub allow_fs: bool,
     /// `--allow ffi`: the program may call native functions (`extern`).
     pub allow_ffi: bool,
+    /// `--no-budget`: run without the step budget (`Limits::without_budget`).
+    pub no_budget: bool,
     pub project: Option<Project>,
     /// Every module file the linker read while checking, by the path it asked for.
     pub files: Vec<(String, String)>,
@@ -155,7 +157,9 @@ impl Bundle {
             None => w.u8(0),
         }
         // Permission bits: 1 = `--allow fs`, 2 = `--allow ffi`.
-        w.u8(u8::from(self.allow_fs) | (u8::from(self.allow_ffi) << 1));
+        w.u8(u8::from(self.allow_fs)
+            | (u8::from(self.allow_ffi) << 1)
+            | (u8::from(self.no_budget) << 2));
         match &self.project {
             None => w.u8(0),
             Some(p) => {
@@ -218,10 +222,11 @@ impl Bundle {
         let shots = r.u64()?;
         let seed = if r.flag()? { Some(r.u64()?) } else { None };
         let perms = r.u8()?;
-        if perms > 3 {
+        if perms > 7 {
             return Err(DAMAGED.into());
         }
         let (allow_fs, allow_ffi) = (perms & 1 != 0, perms & 2 != 0);
+        let no_budget = perms & 4 != 0;
         let project = if r.flag()? {
             let n = r.count(12)?;
             let mut packages = Vec::with_capacity(n);
@@ -282,6 +287,7 @@ impl Bundle {
             seed,
             allow_fs,
             allow_ffi,
+            no_budget,
             project,
             files,
         })
@@ -355,6 +361,7 @@ mod tests {
             seed: Some(7),
             allow_fs: true,
             allow_ffi: true,
+            no_budget: true,
             project: Some(Project {
                 packages: vec![
                     PackageRoot {

@@ -4,7 +4,7 @@ Build first (one heavy job at a time):
     cargo build --release --features jit
     cargo build --release --manifest-path bench/compare/rust/Cargo.toml
 Then:
-    python scripts/perf/rust_compare.py [--reps 5] [--ir-reps 3] [--only nbody,matmul] [--values]
+    python scripts/perf/rust_compare.py [--reps 5] [--ir-reps 3] [--only nbody,matmul] [--values] [--no-budget]
 
 `--values` adds a column for the programs of bench/compare/qx-values run with
 `--experimental value-semantics` on the jit engine (docs/design/memory-model.md).
@@ -74,6 +74,8 @@ def main():
     ap.add_argument('--ir-reps', type=int, default=3)
     ap.add_argument('--only', default='')
     ap.add_argument('--values', action='store_true')
+    # Also time `--engine jit --no-budget` (no step budget, no step checks in native code).
+    ap.add_argument('--no-budget', action='store_true')
     args = ap.parse_args()
     only = set(filter(None, args.only.split(',')))
     cases = [c for c in CASES if not only or c[0] in only]
@@ -85,11 +87,14 @@ def main():
         qxv = os.path.join(ROOT, 'bench', 'compare', 'qx-values', name + '.qx')
         values_cmd = [QXIDE, 'run', qxv, '--experimental', 'value-semantics', '--engine', 'jit',
                       '--trusted', '--', n]
-        times = {'rust': [], 'jit': [], 'ir': [], 'values': []}
+        free_cmd = [QXIDE, 'run', qx, '--engine', 'jit', '--no-budget', '--', n]
+        times = {'rust': [], 'jit': [], 'ir': [], 'values': [], 'free': []}
         results = set()
         for r in range(args.reps):
             for col, cmd in [('rust', rust_cmd), ('jit', qx_cmd('jit'))] + (
                 [('values', values_cmd)] if args.values else []
+            ) + (
+                [('free', free_cmd)] if args.no_budget else []
             ) + (
                 [('ir', qx_cmd('ir'))] if r < args.ir_reps else []
             ):
@@ -104,9 +109,11 @@ def main():
         pct = rust_med / jit_med * 100 if jit_med else float('inf')
         values_med = statistics.median(times['values']) if times['values'] else None
         values_pct = rust_med / values_med * 100 if values_med else None
+        free_med = statistics.median(times['free']) if times['free'] else None
+        free_pct = rust_med / free_med * 100 if free_med else None
         rows.append((name, n, fmt(times['rust']), fmt(times['jit']), fmt(times['ir']), pct,
                      ir_med / jit_med if ir_med and jit_med else None, match,
-                     fmt(times['values']), values_pct))
+                     fmt(times['values']), values_pct, fmt(times['free']), free_pct))
         print(f'{name}: done', file=sys.stderr)
     rustc = subprocess.run(['rustc', '--version'], capture_output=True, text=True).stdout.strip()
     commit = subprocess.run(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'],
@@ -118,13 +125,15 @@ def main():
           f'median (min-max, ± half the range as % of the median)')
     print()
     extra = ' Qxide jit, values ms | Rust % (values) |' if args.values else ''
+    extra += ' Qxide jit, no budget ms | Rust % (no budget) |' if args.no_budget else ''
     print('| Benchmark | Input | Rust ms | Qxide jit ms | Qxide ir ms | Rust % (jit) | jit / Rust | ir / jit |'
           + extra + ' Same result |')
-    print('| --- ' * (9 + (2 if args.values else 0)) + '|')
-    for name, n, rust, jit, ir, pct, ratio, match, values, values_pct in rows:
+    print('| --- ' * (9 + (2 if args.values else 0) + (2 if args.no_budget else 0)) + '|')
+    for name, n, rust, jit, ir, pct, ratio, match, values, values_pct, free, free_pct in rows:
         r = f'{ratio:.2f}' if ratio else '-'
         slow = f'{100 / pct:.1f}x' if pct else '-'
         v = f' {values} | {values_pct:.2f} % |' if args.values else ''
+        v += f' {free} | {free_pct:.2f} % |' if args.no_budget else ''
         print(f'| `{name}` | {n} | {rust} | {jit} | {ir} | {pct:.2f} % | {slow} | {r} |{v} {"yes" if match else "NO"} |')
 
 

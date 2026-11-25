@@ -1493,6 +1493,24 @@ fn fix_applies_value_semantics_fixes_in_place() {
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "1\n");
 }
 
+// `run --no-budget` runs past the step limit that stops the same program without it.
+#[test]
+fn no_budget_runs_past_the_step_limit() {
+    // The loop is in a function: `main` itself stays in the interpreter.
+    let src = "int count(int n) {\n    int i = 0;\n    while i < n {\n        i += 1;\n    }\n    return i;\n}\n\nvoid main() {\n    println(\"{}\", count(200000000));\n}\n";
+    // Without native code the interpreters would take minutes over these steps.
+    if !cfg!(feature = "jit") {
+        return;
+    }
+    let path = scratch_file("no_budget.qx", src);
+    let p = path.to_str().unwrap();
+    let limited = qxide(&["run", p, "--engine", "jit"]);
+    assert_eq!(limited.status.code(), Some(1));
+    assert!(String::from_utf8(limited.stderr).unwrap().contains("Q0413"));
+    let free = qxide(&["run", p, "--no-budget", "--engine", "jit"]);
+    assert_eq!(String::from_utf8(free.stdout).unwrap(), "200000000\n");
+}
+
 // The Rust comparison programs (bench/compare/qx) at small sizes: every engine prints the result
 // the Rust versions (bench/compare/rust) print for the same input.
 #[test]

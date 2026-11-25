@@ -845,6 +845,10 @@ pub struct Limits {
     pub max_line_chars: usize,
     /// `if` blocks on measured bits nested inside each other, counted across function calls.
     pub max_cond_depth: usize,
+    /// Whether steps are counted at all. `false` only for `qxide run --no-budget` and bundles
+    /// built with it (`without_budget`): no step is charged, compiled code has no step checks,
+    /// and `max_steps` and cancellation polls do not apply.
+    pub step_budget: bool,
 }
 
 // `Playground` is constructed only by crates/qxide-wasm.
@@ -873,7 +877,21 @@ impl Limits {
         max_diagnostics: 50,
         max_line_chars: 120,
         max_cond_depth: 64,
+        step_budget: true,
     };
+
+    /// These limits without the step budget (`qxide run --no-budget`, `qxide build
+    /// --no-budget`). Only the command line asks for it; the playground and the desktop app keep
+    /// their budgets, which is how they stop a runaway program. Provisional decision delegated by
+    /// the user (docs/design/step-budget.md).
+    #[allow(dead_code)]
+    pub fn without_budget(self) -> Limits {
+        Limits {
+            max_steps: u64::MAX,
+            step_budget: false,
+            ..self
+        }
+    }
 
     /// `qxide run --trusted` and `qxide qasm --trusted`: the CLI with larger execution budgets
     /// for local programs the user trusts (D7). Only the command line can select it, never a
@@ -903,6 +921,7 @@ impl Limits {
         max_diagnostics: 50,
         max_line_chars: 120,
         max_cond_depth: 64,
+        step_budget: true,
     };
 
     /// Each call of a desktop app (commands and `std.qxide.run`); the runtime bounds how many
@@ -924,6 +943,7 @@ impl Limits {
         max_diagnostics: 100,
         max_line_chars: 240,
         max_cond_depth: 128,
+        step_budget: true,
     };
 }
 

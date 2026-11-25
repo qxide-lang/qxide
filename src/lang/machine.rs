@@ -186,7 +186,12 @@ impl<'h> Machine<'h> {
         Machine {
             host,
             layouts,
-            next_poll: CANCEL_POLL,
+            // Without a budget no charge polls (`Limits::without_budget`).
+            next_poll: if limits.step_budget {
+                CANCEL_POLL
+            } else {
+                u64::MAX
+            },
             pool: Vec::new(),
             output: Vec::new(),
             measured: Vec::new(),
@@ -251,6 +256,9 @@ impl<'h> Machine<'h> {
     }
 
     pub fn charge(&mut self, steps: u64, at: Span) -> R<()> {
+        if !self.limits.step_budget {
+            return Ok(());
+        }
         self.steps = self.steps.saturating_add(steps);
         if self.steps > self.limits.max_steps {
             return Err(Diagnostic::new(
@@ -272,6 +280,9 @@ impl<'h> Machine<'h> {
     /// one: when no partial sum can reach the limit or the next cancellation poll, they are
     /// added in one step; otherwise they are replayed in order.
     pub fn charge_all(&mut self, total: u64, parts: &[(u64, Span)]) -> R<()> {
+        if !self.limits.step_budget {
+            return Ok(());
+        }
         let after = self.steps.saturating_add(total);
         if after < self.next_poll && after <= self.limits.max_steps {
             self.steps = after;

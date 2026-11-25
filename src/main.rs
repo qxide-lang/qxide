@@ -49,6 +49,7 @@ Commands:
 Options:
   --engine ast|ir|jit                {}
   --trusted                          {}
+  --no-budget                        {}
   --experimental value-semantics     {}
   -V, --version                      Print version
   -h, --help                         Print help
@@ -64,6 +65,7 @@ Options:
         app::usage(),
         ENGINE_HELP,
         TRUSTED_HELP,
+        NO_BUDGET_HELP,
         EXPERIMENTAL_HELP
     )
 }
@@ -87,6 +89,8 @@ const BENCH_HELP: &str =
     "Time void benchName() benchmarks in .qx files and report time per iteration and steps";
 
 const TRUSTED_HELP: &str = "Raise the step, operation, simulation and output limits of run and qasm (only for programs you trust)";
+
+const NO_BUDGET_HELP: &str = "Run (or build) without the step limit and its checks: fastest, but a program that loops forever runs until you stop it (Ctrl+C)";
 
 const LSP_HELP: &str = "Start a .qx language server (LSP) on stdin/stdout";
 
@@ -515,6 +519,8 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
     let mut engine = None;
     // `--trusted`: `Limits::TRUSTED` instead of `Limits::CLI`. A command-line flag only.
     let mut trusted = false;
+    // `run --no-budget`: no step budget (`Limits::without_budget`).
+    let mut no_budget = false;
     // `run --backend PROVIDER:DEVICE` (src/qpu): a quantum computer service instead of the simulator.
     let (mut backend, mut dry_run, mut yes) = (None, false, false);
     let (mut max_seconds, mut device_config) = (None, None);
@@ -532,6 +538,10 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
             }
             ("run" | "qasm", "--trusted") => {
                 trusted = true;
+                Ok(())
+            }
+            ("run", "--no-budget") => {
+                no_budget = true;
                 Ok(())
             }
             ("run", "--shots") => parse_count(arg, rest.next(), 1).map(|n| shots = n),
@@ -637,6 +647,11 @@ fn lang_command(cmd: &str, args: &[String]) -> ExitCode {
                 lang::Limits::TRUSTED
             } else {
                 lang::Limits::CLI
+            };
+            let limits = if no_budget {
+                limits.without_budget()
+            } else {
+                limits
             };
             let input = lang::Input {
                 name: &path,
@@ -1024,6 +1039,7 @@ fn build_command(args: &[String]) -> ExitCode {
     let (mut shots, mut seed, mut file, mut allow_fs) = (1, None, None, false);
     let mut allow_ffi = false;
     let (mut engine, mut out) = (None, None);
+    let mut no_budget = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let parsed = match arg.as_str() {
@@ -1034,6 +1050,10 @@ fn build_command(args: &[String]) -> ExitCode {
             "--shots" => parse_count(arg, rest.next(), 1).map(|n| shots = n),
             "--seed" => parse_count(arg, rest.next(), 0).map(|n| seed = Some(n)),
             "--allow" => parse_allow(rest.next(), &mut allow_fs, &mut allow_ffi),
+            "--no-budget" => {
+                no_budget = true;
+                Ok(())
+            }
             p if file.is_none() && !p.starts_with('-') => {
                 file = Some(p.to_string());
                 Ok(())
@@ -1137,6 +1157,7 @@ fn build_command(args: &[String]) -> ExitCode {
         seed,
         allow_fs,
         allow_ffi,
+        no_budget,
         project,
         files: bundled,
     };
@@ -1271,7 +1292,13 @@ fn run_bundle(b: bundle::Bundle) -> ExitCode {
         let mut host = lang::cli_host(PathBuf::from("data"));
         host.args = args;
         host.ffi.enabled = b.allow_ffi;
-        lang::run_input_report(&input, b.shots, seed, &mut host).map(|r| (r.text, r.exit_code))
+        let limits = if b.no_budget {
+            lang::Limits::CLI.without_budget()
+        } else {
+            lang::Limits::CLI
+        };
+        lang::run_input_report_with(&input, b.shots, seed, limits, &mut host)
+            .map(|r| (r.text, r.exit_code))
     });
     match result {
         Some(Ok((out, code))) => {

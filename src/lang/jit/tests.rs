@@ -820,6 +820,48 @@ fn reference_counts_are_updated_inline() {
     assert!(rc_counts_inline());
 }
 
+// `--no-budget` (`Limits::without_budget`): every engine prints what it prints with the budget,
+// the same runtime errors, and a loop past the CLI step limit runs to the end.
+#[test]
+fn programs_run_the_same_without_the_step_budget() {
+    let tests = super::super::tests::ARRAYS;
+    for src in [
+        tests,
+        super::super::tests::STRUCTS,
+        super::super::tests::ENUMS,
+    ] {
+        let want = outputs(Engine::Ast, src, Limits::CLI);
+        for e in [Engine::Ast, Engine::Ir, Engine::Jit] {
+            assert_eq!(
+                outputs(e, src, Limits::CLI.without_budget()),
+                want,
+                "{e:?}\n{src}"
+            );
+        }
+    }
+    let fail = "int f(int[] a) { return a[3]; }\nvoid main() { println(\"{}\", f(new int[2])); }";
+    let want = outputs(Engine::Ast, fail, Limits::CLI);
+    assert!(want.0.starts_with("error"));
+    for e in [Engine::Ast, Engine::Ir, Engine::Jit] {
+        assert_eq!(
+            outputs(e, fail, Limits::CLI.without_budget()),
+            want,
+            "{e:?}"
+        );
+    }
+    let long = "int spin(int n) { int s = 0; for i in 0..n { s = (s + i) % 7; } return s; }\nvoid main() { println(\"{}\", spin(40000)); }";
+    let small = Limits {
+        max_steps: 10_000,
+        ..Limits::CLI
+    };
+    assert!(outputs(Engine::Jit, long, small).0.starts_with("error"));
+    let want = outputs(Engine::Ast, long, Limits::CLI).0;
+    assert!(want.starts_with("ok"), "{want}");
+    for e in [Engine::Ast, Engine::Ir, Engine::Jit] {
+        assert_eq!(outputs(e, long, small.without_budget()).0, want, "{e:?}");
+    }
+}
+
 #[test]
 fn reference_counts_balance_in_native_code() {
     use super::super::array::ArrayData;

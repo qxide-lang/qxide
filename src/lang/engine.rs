@@ -135,7 +135,7 @@ pub fn run_lowered(
     #[cfg(feature = "jit")]
     if engine == Engine::Jit {
         // Machines Cranelift does not support run everything in the interpreter.
-        if let Some(mut jit) = super::jit::Jit::new(module) {
+        if let Some(mut jit) = super::jit::Jit::with_budget(module, limits.step_budget) {
             return ir::exec::run_with(module, name, args, host, limits, Some(&mut jit));
         }
     }
