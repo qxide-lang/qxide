@@ -409,6 +409,35 @@ fn fixed_programs_print_what_they_printed_before() {
     assert!(fixed.applied.is_empty() && fixed.remaining.is_some());
 }
 
+// A value of a type parameter is decided per instance after monomorphization: copied for a
+// small type, `.copy()` (or `consume`) needed for a large one, and `.copy()` on `T` is then
+// accepted for every instance that can be copied.
+#[test]
+fn type_parameter_values_are_decided_per_instance() {
+    on();
+    let first = "<T> T first(T[] items) {\n    return items[0];\n}\n\n";
+    let small = format!(
+        "{first}void main() {{\n    int[] a = {{4, 5}};\n    println(\"{{}}\", first(a));\n}}\n"
+    );
+    ok(&small);
+    assert_eq!(run_ok(&small), "4\n");
+    let large = format!("{first}void main() {{\n    String[] a = {{\"x\", \"y\"}};\n    println(\"{{}}\", first(a));\n}}\n");
+    assert_eq!(codes(&large), vec!["Q0322"]);
+    // The editor shows it too, with its quick fix.
+    let diags = ide::analyze(&Input::file("t.qx", &large)).diagnostics();
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!((diags[0].code, diags[0].fixes.len()), ("Q0322", 1));
+    let fixes = fixed(&large);
+    assert!(fixes[0].contains("return items[0].copy();"), "{}", fixes[0]);
+    // Both instances after the fix: `.copy()` of an `int` and of a `String`.
+    let both = "<T> T first(T[] items) {\n    return items[0].copy();\n}\n\nvoid main() {\n    int[] a = {4, 5};\n    String[] b = {\"x\", \"y\"};\n    println(\"{} {}\", first(a), first(b));\n}\n";
+    ok(both);
+    assert_eq!(run_ok(both), "4 x\n");
+    // An instance that cannot be copied at all reports `Q0326` at the `.copy()`.
+    let qubits = "<T> T first(T[] items) {\n    return items[0].copy();\n}\n\ninterface Named {\n    String name();\n}\n\nstruct A implements Named {\n    int n;\n\n    String name() {\n        return \"a\";\n    }\n}\n\nvoid main() {\n    Named[] xs = {new A(1)};\n    println(\"{}\", first(xs).name());\n}\n";
+    assert_eq!(codes(qubits), vec!["Q0326"]);
+}
+
 #[test]
 fn qubit_rules_are_the_same_with_the_feature() {
     // The catalog's examples of the qubit codes report the same code, and their fixes run.

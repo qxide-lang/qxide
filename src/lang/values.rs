@@ -137,12 +137,20 @@ impl<'p> Decls<'p> {
     /// Is `f` a method of the prelude's `Result` or `Option`? They are checked as library
     /// code: the rules do not apply, and `lower` copies the payloads they return.
     pub fn prelude_fn(&self, f: &FnDecl) -> bool {
-        f.method.is_some()
-            && f.name
-                .name
-                .split(['.', '<'])
-                .next()
-                .is_some_and(|owner| self.enums.get(owner).is_some_and(|e| e.prelude))
+        // `Option.orElse` before monomorphization, `Option.orElse<Json>` after it (a plain
+        // function there, of the instance enum `Option<Json>`, which keeps the `prelude` mark).
+        let Some((owner, _)) = f
+            .name
+            .name
+            .split('<')
+            .next()
+            .and_then(|n| n.rsplit_once('.'))
+        else {
+            return false;
+        };
+        self.enums
+            .values()
+            .any(|e| e.prelude && e.name.name.split('<').next() == Some(owner))
     }
 
     /// Can `lower` copy a value of type `t` (the checker's `uncopyable` agrees)?
@@ -891,6 +899,12 @@ impl Walker<'_, '_> {
         if !Self::classical(ty) || self.decls.implicit_copy(ty) || !self.is_place(e) {
             return self.read(e);
         }
+        // A value of a type parameter: whether it is copied or needs `.copy()` depends on the
+        // type, so the check of each instance after monomorphization decides (`values_lowered`
+        // in src/lang/mod.rs). Provisional decision delegated by the user (memory-model.md §11).
+        if matches!(ty, Ty::Param(_)) {
+            return self.read(e);
+        }
         // `v = opt?` keeps the payload of `opt`: the rules for keeping `opt` itself.
         if let ExprKind::Try { expr, .. } = &e.kind {
             if matches!(expr.kind, ExprKind::Var(_)) {
@@ -930,10 +944,6 @@ impl Walker<'_, '_> {
 
     fn copy_required(&self, e: &Expr, ty: Ty, message: String) -> Diagnostic {
         let mut d = Diagnostic::new(Code::CopyRequired, e.span, message);
-        if matches!(ty, Ty::Param(_)) {
-            d.help = Some(msg::vs_help_param_copy(ty.name()));
-            return d;
-        }
         // `r.get(k)?` copies the payload: `.copy()` goes before the `?`, and copies what is there.
         let (at, copied) = match &e.kind {
             ExprKind::Try { expr, .. } => (expr.span.end, self.ty(expr)),

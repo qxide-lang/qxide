@@ -545,6 +545,10 @@ pub fn analyze(input: &Input) -> Analysis {
     let (linked, diags) = match linked {
         Ok(program) => {
             let (mut errors, inferred) = check::check_infer(&program, !input.is_library());
+            // Value semantics: what the instances of generic code decide, as `check` reports it.
+            if errors.is_empty() {
+                errors = super::instance_errors(&program, &inferred, !input.is_library());
+            }
             // `Q0801` warnings follow the errors.
             errors.extend(inferred.warnings);
             (Some(program), errors)

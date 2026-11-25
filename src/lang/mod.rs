@@ -157,25 +157,57 @@ fn front_input(
         if !cycles.is_empty() {
             return Err(cycles);
         }
-        // Instances are ordinary declarations: the concrete program checks cleanly again.
+        // Instances are ordinary declarations: the concrete program checks cleanly again. With
+        // value semantics the instances decide what the generic check left open, and
+        // `values_lowered` reports what they find.
         #[cfg(debug_assertions)]
-        {
+        if !features::value_semantics() {
             let again = check::check_with(&program, require_main);
             debug_assert!(again.is_empty(), "monomorphized program: {again:?}");
         }
-        Ok(values_lowered(program, require_main))
+        values_lowered(program, require_main)
     });
     (map, checked)
 }
 
+// `--experimental value-semantics`: the errors the instances of generic code report once
+// monomorphized (`values_lowered`), for the editor, which stops after the generic check. Empty
+// without the feature.
+fn instance_errors(
+    program: &ast::Program,
+    inferred: &check::Inferred,
+    require_main: bool,
+) -> Vec<Diagnostic> {
+    if !features::value_semantics() {
+        return Vec::new();
+    }
+    let mut p = program.clone();
+    names::rename(&mut p, &inferred.renames);
+    match mono::monomorphize(p, inferred) {
+        Ok(p) => values_lowered(p, require_main).err().unwrap_or_default(),
+        Err(d) => vec![d],
+    }
+}
+
 // `--experimental value-semantics`: the program the engines run (src/lang/values/lower.rs).
 // Without the feature the program is returned as it is.
-fn values_lowered(mut program: ast::Program, require_main: bool) -> ast::Program {
+fn values_lowered(
+    mut program: ast::Program,
+    require_main: bool,
+) -> Result<ast::Program, Vec<Diagnostic>> {
     if !features::value_semantics() {
-        return program;
+        return Ok(program);
     }
-    // The concrete program's types, recorded by checking it again.
-    let (_, inferred) = check::check_infer(&program, require_main);
+    // The concrete program's types, recorded by checking it again. This check decides what the
+    // generic check left to the instances: whether a value of a type parameter is copied, needs
+    // `.copy()`, or can be copied at all. Instances of one function report at the same place,
+    // once per message.
+    let (mut errors, inferred) = check::check_infer(&program, require_main);
+    if !errors.is_empty() {
+        let mut seen = std::collections::HashSet::new();
+        errors.retain(|d| seen.insert((d.span.start, d.code.as_str(), d.message.clone())));
+        return Err(errors);
+    }
     if let Some(types) = inferred.values {
         values::lower::lower(&mut program, &types);
     }
@@ -187,7 +219,7 @@ fn values_lowered(mut program: ast::Program, require_main: bool) -> ast::Program
         features::set_value_semantics(true);
         debug_assert!(again.is_empty(), "lowered program: {again:?}");
     }
-    program
+    Ok(program)
 }
 
 thread_local! {
@@ -490,7 +522,7 @@ pub fn fix(input: &Input) -> Fixed {
     let mut out = strip_bom(src).to_string();
     let mut applied = Vec::new();
     let mut copies = Vec::new();
-    let mut last: Option<(Code, usize, String)> = None;
+    let mut last: Option<(Code, usize, String, String)> = None;
     let remaining = loop {
         let round = Input {
             name: input.name,
@@ -517,8 +549,17 @@ pub fn fix(input: &Input) -> Fixed {
         let Some((d, f)) = next.filter(|_| applied.len() < FIX_ROUNDS) else {
             break Some(render(&map, &errors, &Limits::CLI).0);
         };
-        // Fixes insert words, so the error's offset moves but its line and message do not.
-        let this = (d.code, map.line_col(d.span.start).0, d.message.clone());
+        // Fixes insert words, so the error's offset moves but its line, message and text do not.
+        let text = out
+            .get(d.span.start..d.span.end.min(out.len()))
+            .unwrap_or_default()
+            .to_string();
+        let this = (
+            d.code,
+            map.line_col(d.span.start).0,
+            d.message.clone(),
+            text,
+        );
         if last.as_ref() == Some(&this) {
             break Some(render(&map, &errors, &Limits::CLI).0);
         }

@@ -1836,15 +1836,16 @@ impl Checker {
     }
 
     // The first type inside `t` that `.copy()` cannot copy yet (`values::lower` writes the
-    // copy): qubits, type parameters, interfaces, `Random`, and enums holding values that can
-    // change. `None` if all of `t` can be copied.
+    // copy): qubits, interfaces, `Random`, and enums holding values that can change. `None` if
+    // all of `t` can be copied. A type parameter passes: each instance is checked again after
+    // monomorphization with its own type.
     fn uncopyable(&self, t: Ty, seen: &mut Vec<Ty>) -> Option<Ty> {
         if seen.contains(&t) {
             return None;
         }
         seen.push(t);
         let found = match t {
-            Ty::Int | Ty::Double | Ty::Boolean | Ty::String => None,
+            Ty::Int | Ty::Double | Ty::Boolean | Ty::String | Ty::Param(_) => None,
             Ty::Array(_) => t.elem().and_then(|e| self.uncopyable(e, seen)),
             Ty::Struct(_) => self
                 .field_types(t)

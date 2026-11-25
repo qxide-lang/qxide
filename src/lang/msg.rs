@@ -1140,10 +1140,6 @@ pub fn vs_copy_required(ty: &str) -> String {
     format!("keeping this `{ty}` needs `.copy()`: the value stays where it is")
 }
 
-pub fn vs_help_param_copy(ty: &str) -> String {
-    format!("a value of type parameter `{ty}` cannot be copied; take it as a `consume` parameter and move it")
-}
-
 pub fn vs_moved_in_loop(name: &str) -> String {
     format!("`{name}` is moved inside a loop, so the next iteration would find it gone")
 }
