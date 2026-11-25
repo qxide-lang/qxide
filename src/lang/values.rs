@@ -414,6 +414,7 @@ pub fn check(p: &Program, types: &Types) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
             errors: Vec::new(),
             warnings: Vec::new(),
             short_rhs: 0,
+            instance: f.name.name.contains('<'),
             refs: Vec::new(),
             aliases: Vec::new(),
             moved_uses: Vec::new(),
@@ -517,6 +518,9 @@ struct Walker<'a, 'p> {
     warnings: Vec<Diagnostic>,
     // Inside the right operand of `&&` or `||`, which may not run.
     short_rhs: usize,
+    // An instance of generic code (`first<int[]>`): its errors point into the generic source,
+    // where a fix naming a concrete type would be wrong for the other instances.
+    instance: bool,
     // Every mention of a local by name (`share_fixes`).
     refs: Vec<(usize, Span)>,
     // `T b = a;` moving the local `a` into the new local `b`.
@@ -965,10 +969,11 @@ impl Walker<'_, '_> {
         if !Self::classical(ty) || self.decls.implicit_copy(ty) || !self.is_place(e) {
             return self.read(e);
         }
-        // A value of a type parameter: whether it is copied or needs `.copy()` depends on the
-        // type, so the check of each instance after monomorphization decides (`values_lowered`
-        // in src/lang/mod.rs). Provisional decision delegated by the user (memory-model.md §11).
-        if matches!(ty, Ty::Param(_)) {
+        // A value whose type mentions a type parameter (`T`, `T[]`, `List<T>`, `Pair<A, B>`):
+        // whether it is copied, moves or needs `.copy()` depends on the type arguments, so the
+        // check of each instance after monomorphization decides (`values_lowered` in
+        // src/lang/mod.rs). Provisional decision delegated by the user (memory-model.md §11).
+        if ty.has_param() {
             return self.read(e);
         }
         // `v = opt?` keeps the payload of `opt`: the rules for keeping `opt` itself.
@@ -1050,10 +1055,9 @@ impl Walker<'_, '_> {
     fn place(&self, e: &Expr) -> Option<(usize, Vec<Step>)> {
         match &e.kind {
             ExprKind::Var(n) => self.lookup(n).map(|id| (id, Vec::new())),
+            // `h.value` of a `Shared<T>` handle is a place too (it can be an `inout` argument);
+            // changes through it are not checked (`root`), since the value is shared on purpose.
             ExprKind::Field { recv, name } => {
-                if self.ty(recv).is_some_and(|t| self.decls.is_shared(t)) {
-                    return None;
-                }
                 let (id, mut path) = self.place(recv)?;
                 path.push(Step::Field(name.name.clone()));
                 Some((id, path))
@@ -1159,6 +1163,9 @@ impl Walker<'_, '_> {
     // declared once in the function, so every mention is one of the two. Provisional decision
     // delegated by the user (memory-model.md §11).
     fn share_fixes(&mut self) {
+        if self.instance {
+            return;
+        }
         let shared = |t: Ty| format!("Shared<{}>", t.name());
         for &(k, was) in &self.moved_uses {
             let Some(a) = self.aliases.iter().find(|a| a.at == was) else {
@@ -1180,7 +1187,14 @@ impl Walker<'_, '_> {
                 continue;
             }
             let ty = shared(a.ty);
-            let first = format!("{}Init", from.name);
+            // A name no local of the function has.
+            let taken = |n: &str| self.locals.iter().any(|l| l.name == n);
+            let mut first = format!("{}Init", from.name);
+            let mut n = 2;
+            while taken(&first) {
+                first = format!("{}Init{n}", from.name);
+                n += 1;
+            }
             let mut edits = vec![
                 (from.decl, first.clone()),
                 (
@@ -1300,6 +1314,19 @@ impl Walker<'_, '_> {
     ) {
         // The places this call lends, for the overlap rule: (argument, place, `inout`).
         let mut lent: Vec<(Span, (usize, Vec<Step>), bool)> = Vec::new();
+        // With reference semantics a function of the program could change what it was lent
+        // (its parameter may still lack the `inout` it needs): `share_fixes` counts that.
+        if modes.is_some() {
+            for e in recv.map(|(r, _)| r).into_iter().chain(args) {
+                let e = match &e.kind {
+                    ExprKind::Inout { expr } => expr.as_ref(),
+                    _ => e,
+                };
+                if let Some(id) = self.root(e) {
+                    self.changes.push((id, e.span));
+                }
+            }
+        }
         if let Some((r, mode)) = recv {
             if mode == Mode::Inout {
                 self.write_place(r);

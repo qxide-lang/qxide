@@ -452,6 +452,36 @@ fn type_parameter_values_are_decided_per_instance() {
     assert_eq!(codes(qubits), vec!["Q0326"]);
 }
 
+// The `Shared<T>` fix for an alias changed afterwards: through `List.add`, a field, a changing
+// method, a function that changes its argument, `+=`, with `var` declarations and with a local
+// already named `aInit`. Each program checks after `fix` and prints what it printed before.
+#[test]
+fn shared_fixes_keep_aliases_working() {
+    let programs = [
+        "void main() {\n    List<int> a = new List<int>();\n    List<int> b = a;\n    a.add(3);\n    println(\"{} {}\", len(a), b.size());\n}\n",
+        "struct P {\n    String name;\n    int n;\n}\n\nvoid main() {\n    P a = new P(\"x\", 1);\n    P b = a;\n    a.n = 5;\n    println(\"{} {}\", a.n, b.n);\n}\n",
+        "struct P {\n    String name;\n    int n;\n\n    void bump() {\n        this.n += 1;\n    }\n}\n\nvoid main() {\n    P a = new P(\"x\", 1);\n    P b = a;\n    a.bump();\n    println(\"{} {}\", a.n, b.n);\n}\n",
+        "void set(int[] xs) {\n    xs[0] = 9;\n}\n\nvoid main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    set(a);\n    println(\"{} {}\", a[0], b[0]);\n}\n",
+        "void main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    a[0] += 1;\n    println(\"{} {}\", a[0], b[0]);\n}\n",
+        "void main() {\n    var a = new int[]{1, 2};\n    var b = a;\n    b[1] = 4;\n    println(\"{} {}\", a[1], b[1]);\n}\n",
+        "void main() {\n    int aInit = 3;\n    int[] a = {1, 2};\n    int[] b = a;\n    a[0] = aInit;\n    println(\"{} {}\", a[0], b[0]);\n}\n",
+    ];
+    for src in programs {
+        features::set_value_semantics(false);
+        let before = run_ok(src);
+        on();
+        let fixed = fix(&Input::file("t.qx", src));
+        assert!(
+            fixed.remaining.is_none(),
+            "{src}\n{:?}\n{}",
+            fixed.remaining,
+            fixed.src
+        );
+        assert!(fixed.src.contains("Shared<"), "{}", fixed.src);
+        assert_eq!(run_ok(&fixed.src), before, "{}", fixed.src);
+    }
+}
+
 #[test]
 fn qubit_rules_are_the_same_with_the_feature() {
     // The catalog's examples of the qubit codes report the same code, and their fixes run.
