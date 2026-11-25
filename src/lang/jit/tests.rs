@@ -768,6 +768,11 @@ double walk(int k) {
         s += math.sqrt(v.x) + math.floor(-v.x) + math.ceil(v.x) + math.trunc(-1.5) + math.abs(-v.x);
         s += math.sqrt(-1.0 * i) + math.sqrt(i);
     }
+    int[] pick = grid[0];
+    V w = vs[0];
+    if k > 1 { pick = grid[1]; w = vs[1]; }
+    pick[0] += 3;
+    w.x *= 2.0;
     for i in 0..k { s += vs[i].x + vs[i].n + grid[i][0]; }
     return s;
 }
