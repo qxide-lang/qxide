@@ -1027,16 +1027,21 @@ impl Walker<'_, '_> {
                     ));
                 } else {
                     d.help = Some(msg::vs_help_borrowed_write(&name));
-                    d.fixes.push(Fix::new(
-                        msg::vs_fix_param("inout", &name),
-                        Span::new(fix_at, fix_at),
-                        "inout ",
-                    ));
-                    d.fixes.push(Fix::new(
-                        msg::vs_fix_param("consume", &name),
-                        Span::new(fix_at, fix_at),
-                        "consume ",
-                    ));
+                    // The first fix keeps what the program did with reference semantics:
+                    // assigning the whole parameter changed only the function's own variable
+                    // (`consume`), a change inside it reached the caller (`inout`). Provisional
+                    // (docs/design/memory-model.md §11).
+                    let mut fixes = [("inout", "inout "), ("consume", "consume ")];
+                    if whole {
+                        fixes.reverse();
+                    }
+                    for (word, text) in fixes {
+                        d.fixes.push(Fix::new(
+                            msg::vs_fix_param(word, &name),
+                            Span::new(fix_at, fix_at),
+                            text,
+                        ));
+                    }
                 }
                 self.errors.push(d);
             }
@@ -1193,11 +1198,15 @@ impl Walker<'_, '_> {
                     if !marked {
                         let mut d =
                             Diagnostic::new(Code::InoutArgument, a.span, msg::vs_inout_unmarked());
-                        d.fixes.push(Fix::new(
-                            msg::vs_fix_add_inout(),
-                            Span::new(a.span.start, a.span.start),
-                            "inout ",
-                        ));
+                        // `inout` goes only before a variable, field or element (`inout 27`
+                        // does not parse).
+                        if self.place(inner).is_some() {
+                            d.fixes.push(Fix::new(
+                                msg::vs_fix_add_inout(),
+                                Span::new(a.span.start, a.span.start),
+                                "inout ",
+                            ));
+                        }
                         self.errors.push(d);
                     }
                     match self.place(inner) {

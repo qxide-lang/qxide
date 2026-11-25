@@ -39,6 +39,7 @@ Commands:
   bench [FILE|DIR] [--filter TEXT] [--iterations N]
                                      {}
   fmt <FILE> [--check]               Format a .qx file in place (--check exits non-zero if it would change)
+  fix <FILE> [--dry-run]             Apply the quick fixes of --experimental value-semantics in place
   repl [--seed S]                    Start an interactive .qx session (default: random seed, printed to stderr)
   explain <CODE>                     Explain an error code with an example and fix (e.g. Q0302)
   new <NAME>                         Create a new project folder with main.qx and README.md
@@ -191,6 +192,84 @@ fn read_source(path: &str) -> Result<String, ExitCode> {
         eprintln!("qxide: failed to read `{path}`: {e}");
         ExitCode::from(1)
     })
+}
+
+// `qxide fix FILE [--dry-run]`: the quick fixes of `--experimental value-semantics` applied in
+// place (`lang::fix`). Without the flag there is nothing to move to, so it refuses.
+fn fix_command(args: &[String]) -> ExitCode {
+    let (mut path, mut dry) = (None, false);
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry = true,
+            p if path.is_none() && !p.starts_with('-') => path = Some(p.to_string()),
+            _ => {
+                eprintln!("qxide: unexpected argument `{arg}` for `fix`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("qxide: command `fix` requires a .qx file path");
+        eprint!("{}", usage());
+        return ExitCode::from(2);
+    };
+    if !lang::features::value_semantics() {
+        eprintln!(
+            "qxide: `fix` applies the fixes of experimental value semantics; run `qxide fix --experimental value-semantics {path}`"
+        );
+        return ExitCode::from(2);
+    }
+    let src = match read_source(&path) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let project = match pkg::project::for_entry(Path::new(&path)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprint!("{}", e.render());
+            return ExitCode::from(1);
+        }
+    };
+    let (name, text) = (path.clone(), src.clone());
+    let Some(fixed) = on_lang_stack(move || {
+        // Nothing runs, so every module a program may be granted is allowed for the check.
+        let input = lang::Input {
+            name: &name,
+            src: &text,
+            project: project.as_ref(),
+            read: &lang::read_file,
+            perms: lang::stdlib::Permissions::cli(true).with_ffi(true),
+        };
+        let fixed = lang::fix(&input);
+        lang::take_warnings();
+        fixed
+    }) else {
+        return ExitCode::from(101);
+    };
+    let verb = if dry { "would apply" } else { "applied" };
+    for (line, title) in &fixed.applied {
+        println!("{path}:{line}: {verb}: {title}");
+    }
+    if !fixed.copies.is_empty() {
+        let lines: Vec<String> = fixed.copies.iter().map(usize::to_string).collect();
+        eprintln!(
+            "qxide: note: `.copy()` makes a separate value, so a change made later through one name no longer shows through the other; check {path} line {}",
+            lines.join(", ")
+        );
+    }
+    if !dry && fixed.src != src {
+        if let Err(e) = std::fs::write(&path, &fixed.src) {
+            eprintln!("qxide: failed to write `{path}`: {e}");
+            return ExitCode::from(1);
+        }
+    }
+    match fixed.remaining {
+        None => ExitCode::SUCCESS,
+        Some(errors) => {
+            eprint!("{errors}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn fmt_command(args: &[String]) -> ExitCode {
@@ -1249,6 +1328,7 @@ fn main() -> ExitCode {
         Some("doc") => return doc_command(&args[1..]),
         Some("bench") => return bench_command(&args[1..]),
         Some("fmt") => return fmt_command(&args[1..]),
+        Some("fix") => return fix_command(&args[1..]),
         Some("explain") => return explain_command(&args[1..]),
         Some("new") => return new_command(&args[1..]),
         Some("app") => return app::command(&args[1..]),

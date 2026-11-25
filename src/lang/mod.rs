@@ -464,6 +464,82 @@ pub fn format(name: &str, src: &str) -> Result<String, Failure> {
     Ok(out)
 }
 
+/// What `qxide fix` did to one file.
+pub struct Fixed {
+    /// The source with every applied fix.
+    pub src: String,
+    /// The applied fixes in order: the 1-based line of the first edit in the source as it was
+    /// then, and the title.
+    pub applied: Vec<(usize, String)>,
+    /// The errors left, rendered as `check` prints them, or `None` when the file checks.
+    pub remaining: Option<String>,
+    /// Lines of the applied fixes that add `.copy()`: with reference semantics both names saw
+    /// later changes, now only one does, so the program's output can differ there.
+    pub copies: Vec<usize>,
+}
+
+/// `qxide fix`: applies the first quick fix of the first error that has one, checks again, and
+/// repeats until no error offers a fix (at most `FIX_ROUNDS` times). Only fixes inside the file
+/// itself are applied. Re-checking after each fix keeps every edit's spans current, and an
+/// error whose fix did not remove it stops the loop instead of repeating.
+pub fn fix(input: &Input) -> Fixed {
+    const FIX_ROUNDS: usize = 200;
+    let src = input.src;
+    let bom = src.len() - strip_bom(src).len();
+    let mut out = strip_bom(src).to_string();
+    let mut applied = Vec::new();
+    let mut copies = Vec::new();
+    let mut last: Option<(Code, usize)> = None;
+    let remaining = loop {
+        let round = Input {
+            name: input.name,
+            src: &out,
+            project: input.project,
+            read: input.read,
+            perms: input.perms.clone(),
+        };
+        let (map, program) = front_input(&round, !round.is_library());
+        let errors = match program {
+            Ok(_) => break None,
+            Err(e) => e,
+        };
+        let next = errors.iter().find_map(|d| {
+            d.fixes
+                .iter()
+                .find(|f| f.edits.iter().all(|(s, _)| s.end <= out.len()))
+                .map(|f| (d, f))
+        });
+        let Some((d, f)) = next.filter(|_| applied.len() < FIX_ROUNDS) else {
+            break Some(render(&map, &errors, &Limits::CLI).0);
+        };
+        if last == Some((d.code, d.span.start)) {
+            break Some(render(&map, &errors, &Limits::CLI).0);
+        }
+        last = Some((d.code, d.span.start));
+        let at = f
+            .edits
+            .iter()
+            .map(|(s, _)| s.start)
+            .min()
+            .unwrap_or(d.span.start);
+        applied.push((map.line_col(at).0, f.title.clone()));
+        if f.edits.iter().any(|(_, t)| t.contains(".copy()")) {
+            copies.push(map.line_col(at).0);
+        }
+        let mut edits = f.edits.clone();
+        edits.sort_by_key(|(s, _)| std::cmp::Reverse(s.start));
+        for (s, t) in edits {
+            out.replace_range(s.start..s.end, &t);
+        }
+    };
+    Fixed {
+        src: format!("{}{out}", &src[..bom]),
+        applied,
+        remaining,
+        copies,
+    }
+}
+
 /// `std.X is not available in HOST` (Q0702), for hosts outside this module.
 #[allow(dead_code)]
 pub fn std_unavailable(what: &str, host: &str) -> String {

@@ -371,6 +371,44 @@ fn every_offered_fix_removes_its_error() {
     assert!(fixed(opt).is_empty());
 }
 
+// `qxide fix` (M2): a program that ran with reference semantics prints the same once its fixes
+// are applied and it runs with value semantics. The first fix of a changed parameter keeps the
+// old meaning: `consume` for a number (its own copy), `inout` for an array (the caller's).
+#[test]
+fn fixed_programs_print_what_they_printed_before() {
+    let programs = [
+        "struct C {\n    int n;\n\n    void bump() {\n        this.n += 1;\n    }\n}\n\nvoid push(int[] a) {\n    a[0] = 7;\n}\n\nvoid main() {\n    int[] a = {1, 2};\n    push(a);\n    C c = new C(0);\n    c.bump();\n    c.bump();\n    println(\"{} {}\", a[0], c.n);\n}\n",
+        "String tag(String s, int n) {\n    s += \"#\" + n;\n    return s;\n}\n\nvoid main() {\n    String s = \"a\";\n    println(\"{} {}\", tag(s, 1), s);\n}\n",
+        "int halve(int n) {\n    int k = 0;\n    while n > 1 {\n        n /= 2;\n        k += 1;\n    }\n    return k;\n}\n\nvoid main() {\n    int x = 40;\n    println(\"{} {} {}\", halve(27), halve(x), x);\n}\n",
+        "void fill(double[] d, double v) {\n    for i in 0..len(d) {\n        d[i] = v;\n    }\n}\n\nvoid main() {\n    double[] d = new double[3];\n    fill(d, 1.5);\n    println(\"{}\", d[2]);\n}\n",
+    ];
+    for src in programs {
+        features::set_value_semantics(false);
+        let before = run_ok(src);
+        on();
+        assert!(!codes(src).is_empty(), "nothing to fix in\n{src}");
+        let fixed = fix(&Input::file("t.qx", src));
+        assert!(fixed.remaining.is_none(), "{src}\n{:?}", fixed.remaining);
+        assert!(!fixed.applied.is_empty());
+        assert_eq!(run_ok(&fixed.src), before, "{}", fixed.src);
+    }
+    // An alias: `b` saw the change made through `a`. The `.copy()` fix makes `b` separate, so the
+    // output changes, and `fix` lists the line (`copies`) for the CLI to point out.
+    let alias = "void main() {\n    int[] a = {1, 2};\n    int[] b = a;\n    a[0] = 7;\n    println(\"{} {}\", a[0], b[0]);\n}\n";
+    features::set_value_semantics(false);
+    assert_eq!(run_ok(alias), "7 7\n");
+    on();
+    let fixed = fix(&Input::file("t.qx", alias));
+    assert!(fixed.remaining.is_none(), "{:?}", fixed.remaining);
+    assert_eq!(fixed.copies, vec![3]);
+    assert_eq!(run_ok(&fixed.src), "7 1\n");
+    // `27` cannot be an `inout` argument, so no fix inserts `inout` before it.
+    let lit = "void inc(inout int n) {\n    n += 1;\n}\n\nvoid main() {\n    inc(27);\n}\n";
+    assert_eq!(codes(lit), vec!["Q0325"]);
+    let fixed = fix(&Input::file("t.qx", lit));
+    assert!(fixed.applied.is_empty() && fixed.remaining.is_some());
+}
+
 #[test]
 fn qubit_rules_are_the_same_with_the_feature() {
     // The catalog's examples of the qubit codes report the same code, and their fixes run.

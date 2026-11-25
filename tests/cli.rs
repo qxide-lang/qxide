@@ -1445,8 +1445,6 @@ fn progress_example_redraws_a_line() {
         .contains("progress.qx"));
 }
 
-// The Rust comparison programs (bench/compare/qx) at small sizes: every engine prints the result
-// the Rust versions (bench/compare/rust) print for the same input.
 #[test]
 fn experimental_flags_are_named_and_kept_from_bundles() {
     let unknown = qxide_io(&["run", "--experimental", "nope", "x.qx"], &[], "");
@@ -1464,6 +1462,39 @@ fn experimental_flags_are_named_and_kept_from_bundles() {
     assert!(err.contains("does not support"), "{err}");
 }
 
+// `qxide fix` refuses without `--experimental value-semantics`, and with it rewrites the file in
+// place (`--dry-run` only lists the fixes).
+#[test]
+fn fix_applies_value_semantics_fixes_in_place() {
+    let src = "void push(int[] a) {\n    a[0] = 1;\n}\n\nvoid main() {\n    int[] a = {0};\n    push(a);\n    println(\"{}\", a[0]);\n}\n";
+    let path = scratch_file("fix_push.qx", src);
+    let p = path.to_str().unwrap();
+    let off = qxide(&["fix", p]);
+    assert_eq!(off.status.code(), Some(2));
+    let dry = qxide(&["fix", p, "--dry-run", "--experimental", "value-semantics"]);
+    assert_eq!(dry.status.code(), Some(0));
+    assert!(String::from_utf8(dry.stdout)
+        .unwrap()
+        .contains("would apply"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), src);
+    let out = qxide(&["fix", p, "--experimental", "value-semantics"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let fixed = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        fixed.contains("void push(inout int[] a)") && fixed.contains("push(inout a)"),
+        "{fixed}"
+    );
+    let run = qxide(&["run", p, "--experimental", "value-semantics"]);
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "1\n");
+}
+
+// The Rust comparison programs (bench/compare/qx) at small sizes: every engine prints the result
+// the Rust versions (bench/compare/rust) print for the same input.
 #[test]
 fn rust_comparison_programs_match_the_rust_results() {
     let root = env!("CARGO_MANIFEST_DIR");
