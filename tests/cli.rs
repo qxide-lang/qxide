@@ -1016,6 +1016,16 @@ fn engine_values_are_checked() {
     }
 }
 
+// Writes an executable copy: on Linux and macOS a new file has no execute permission.
+fn write_exe(path: &std::path::Path, data: &[u8]) {
+    std::fs::write(path, data).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 // Runs a bundled executable from `cwd` with `input` on stdin.
 fn run_exe(
     exe: &std::path::Path,
@@ -1167,7 +1177,7 @@ fn damaged_bundles_fail_cleanly() {
     cut.extend_from_slice(&bytes[n - 32..]);
     for (name, data) in [("flipped", flipped), ("cut", cut)] {
         let path = dir.join(exe_name(name));
-        std::fs::write(&path, data).unwrap();
+        write_exe(&path, &data);
         let out = run_exe(&path, &dir, &[], "");
         assert_eq!(out.status.code(), Some(1), "{name}: {out:?}");
         assert!(out.stdout.is_empty());
@@ -1176,7 +1186,7 @@ fn damaged_bundles_fail_cleanly() {
     }
     // Without its trailer the file is a plain `qxide` again.
     let plain = dir.join(exe_name("plain"));
-    std::fs::write(&plain, &bytes[..n - 1]).unwrap();
+    write_exe(&plain, &bytes[..n - 1]);
     let out = run_exe(&plain, &dir, &["--version"], "");
     assert!(String::from_utf8(out.stdout).unwrap().starts_with("qxide "));
 }

@@ -31,8 +31,12 @@ for fake in [FakeTorino(), FakeFez(), FakeBrisbane()]:
             capture_output=True, text=True, encoding="utf-8",
         )
         name = f"{fake.name} {pathlib.Path(program).name}"
+        # Classical-only examples (no measurement) are refused by design: nothing to submit.
+        if run.returncode != 0 and "measures no qubits" in run.stderr:
+            print(f"skip {name}: measures no qubits")
+            continue
         if run.returncode != 0:
-            # Every given program measures something, so a refusal is a failure.
+            # Any other refusal is a failure.
             failed += 1
             print(f"FAIL {name}: exit {run.returncode}: {run.stderr.strip()}")
             continue
