@@ -486,6 +486,35 @@ extern "C" fn qx_elem(w: u64, i: i64, kind: u32) -> u64 {
     }
 }
 
+// Element `i` of an array of arrays, structs, enums or `List`/`Map`/`Random` values as a new owned
+// word of ref `kind`; 0 when the index is out of bounds, the element is of another kind or the
+// array is borrowed, and native code takes `qx_heap`.
+extern "C" fn qx_elem_ref(w: u64, i: i64, kind: u32) -> u64 {
+    use super::array::ArrayData;
+    use std::cell::RefCell;
+    if w == 0 {
+        return 0;
+    }
+    // SAFETY: as in `qx_elem`.
+    let cell = unsafe { &*(w as *const RefCell<ArrayData>) };
+    let Ok(a) = cell.try_borrow() else {
+        return 0;
+    };
+    let ArrayData::Other(v) = &*a else {
+        return 0;
+    };
+    let Some(x) = usize::try_from(i).ok().and_then(|k| v.get(k)) else {
+        return 0;
+    };
+    match (x, u8::try_from(kind).unwrap_or(BOXED)) {
+        (Value::Array(x), ARRAY) => Rc::into_raw(x.clone()) as u64,
+        (Value::Struct(x), STRUCT) => Rc::into_raw(x.clone()) as u64,
+        (Value::Enum(x), ENUM) => Rc::into_raw(x.clone()) as u64,
+        (Value::Native(x), NATIVE) => Rc::into_raw(x.clone()) as u64,
+        _ => 0,
+    }
+}
+
 // The address of the number or `boolean` held by field `index` of a struct, as `qx_elem`; 0 when
 // the field holds another type (a `String`, an array, ...) or the struct is borrowed. The field
 // keeps its variant: native code writes only a value of the same type.
@@ -510,6 +539,54 @@ extern "C" fn qx_field(w: u64, index: i64, kind: u32) -> u64 {
         (Value::Bool(b), 2) => b as *mut bool as u64,
         _ => 0,
     }
+}
+
+// The buffer of an `int` (`kind` 0), `double` (1) or `boolean` (2) array, its length in
+// `ctx.ret`; 0 and length 0 when the word is null, the array holds another element type or is
+// borrowed. An array never changes its length, so the buffer stays where it is while the array
+// lives (`SlotCache`).
+extern "C" fn qx_span(ctx: *mut Ctx, w: u64, kind: u32) -> u64 {
+    use super::array::ArrayData;
+    use std::cell::RefCell;
+    // SAFETY: as in `qx_charge`.
+    let ctx = unsafe { &mut *ctx };
+    ctx.ret = 0;
+    if w == 0 {
+        return 0;
+    }
+    // SAFETY: as in `qx_elem`.
+    let cell = unsafe { &*(w as *const RefCell<ArrayData>) };
+    if cell.try_borrow_mut().is_err() {
+        return 0;
+    }
+    // SAFETY: as in `qx_elem`.
+    let a = unsafe { &mut *cell.as_ptr() };
+    let (p, n) = match (a, kind) {
+        (ArrayData::Int(v), 0) => (v.as_mut_ptr() as u64, v.len()),
+        (ArrayData::Double(v), 1) => (v.as_mut_ptr() as u64, v.len()),
+        (ArrayData::Bool(v), 2) => (v.as_mut_ptr() as u64, v.len()),
+        _ => return 0,
+    };
+    ctx.ret = n as u64;
+    p
+}
+
+// What native code keeps about the value of a local slot, refreshed whenever the slot is set
+// (`Gen::refresh`): the buffer and length of an `int`, `double` or `boolean` array, or the
+// addresses of the number and `boolean` fields of a struct (`qx_field`, 0 when unknown). Arrays
+// never change length and fields never change type, so these stay valid while the slot holds
+// the value, and an access through a register loaded from the slot (`borrowed_loads`) needs no
+// call. Only accesses the function makes are kept.
+#[derive(Clone)]
+enum SlotCache {
+    Array {
+        kind: u32,
+        ptr: Variable,
+        len: Variable,
+    },
+    Struct {
+        fields: Vec<(u32, u32, Variable)>,
+    },
 }
 
 // The `qx_elem` and `qx_field` kind of a register type.
@@ -1019,7 +1096,7 @@ pub struct Jit<'m> {
     // Cranelift ids of each compiled function's body and of its entry trampoline.
     ids: Vec<Option<(ClId, ClId)>>,
     entries: Vec<Option<Entry>>,
-    helpers: [ClId; 12],
+    helpers: [ClId; 14],
     charges: Vec<ChargeSite>,
     fails: Vec<Diagnostic>,
     maths: Vec<MathSite>,
@@ -1074,6 +1151,8 @@ impl<'m> Jit<'m> {
         b.symbol("qx_dyn", qx_dyn as *const u8);
         b.symbol("qx_elem", qx_elem as *const u8);
         b.symbol("qx_field", qx_field as *const u8);
+        b.symbol("qx_span", qx_span as *const u8);
+        b.symbol("qx_elem_ref", qx_elem_ref as *const u8);
         let mut cl = JITModule::new(b);
         let ptr = cl.target_config().pointer_type();
         let mut sig = cl.make_signature();
@@ -1149,6 +1228,19 @@ impl<'m> Jit<'m> {
         let field = cl
             .declare_function("qx_field", Linkage::Import, &esig)
             .ok()?;
+        let mut ssig = cl.make_signature();
+        ssig.params = vec![
+            AbiParam::new(ptr),
+            AbiParam::new(types::I64),
+            AbiParam::new(types::I32),
+        ];
+        ssig.returns = vec![AbiParam::new(types::I64)];
+        let span = cl
+            .declare_function("qx_span", Linkage::Import, &ssig)
+            .ok()?;
+        let elem_ref = cl
+            .declare_function("qx_elem_ref", Linkage::Import, &esig)
+            .ok()?;
         Some(Jit {
             ir,
             cl: Some(cl),
@@ -1157,6 +1249,7 @@ impl<'m> Jit<'m> {
             entries: vec![None; ir.funcs.len()],
             helpers: [
                 charge, fail, fmod, math, heap, retain, release, upcast, unbox, dynf, elem, field,
+                span, elem_ref,
             ],
             charges: Vec::new(),
             fails: Vec::new(),
@@ -1318,6 +1411,8 @@ impl<'m> Jit<'m> {
             dynf: helpers[9],
             elem: helpers[10],
             field: helpers[11],
+            span: helpers[12],
+            elem_ref: helpers[13],
             charges: &mut self.charges,
             fails: &mut self.fails,
             maths: &mut self.maths,
@@ -1329,6 +1424,8 @@ impl<'m> Jit<'m> {
             regs: Vec::new(),
             owned: Vec::new(),
             borrowed: borrowed_loads(src),
+            cache: std::collections::HashMap::new(),
+            reg_slot: Vec::new(),
         };
         g.function()
     }
@@ -1441,6 +1538,8 @@ struct Gen<'a, 'b> {
     dynf: cl::FuncRef,
     elem: cl::FuncRef,
     field: cl::FuncRef,
+    span: cl::FuncRef,
+    elem_ref: cl::FuncRef,
     charges: &'a mut Vec<ChargeSite>,
     fails: &'a mut Vec<Diagnostic>,
     maths: &'a mut Vec<MathSite>,
@@ -1456,6 +1555,9 @@ struct Gen<'a, 'b> {
     owned: Vec<(Variable, u8)>,
     // Registers that borrow the count of the slot they are loaded from (`borrowed_loads`).
     borrowed: Vec<bool>,
+    cache: std::collections::HashMap<u32, SlotCache>,
+    // The slot each borrowing register is loaded from.
+    reg_slot: Vec<Option<u32>>,
 }
 
 impl Gen<'_, '_> {
@@ -1494,9 +1596,11 @@ impl Gen<'_, '_> {
             }
             self.regs.push(var);
         }
+        self.plan_cache();
         for i in 0..src.params.len() {
             let p = self.b.block_params(entry)[i + 1];
             self.b.def_var(self.slots[i], p);
+            self.refresh(i as u32);
         }
         self.b.ins().jump(blocks[0], &[]);
         for (k, blk) in src.blocks.iter().enumerate() {
@@ -1648,6 +1752,7 @@ impl Gen<'_, '_> {
                     let old = self.b.use_var(var);
                     self.b.def_var(var, v);
                     self.count(old, kind, false);
+                    self.refresh(*slot);
                 } else {
                     self.b.def_var(var, v);
                 }
@@ -1962,6 +2067,26 @@ impl Gen<'_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let function = name.strip_prefix("std.math.").ok_or("not std.math")?;
+        // Functions with one exact IEEE result and no errors run as one instruction, with the
+        // `int` argument widened as `pure::math` does.
+        if let ([(r, _)], "sqrt" | "floor" | "ceil" | "trunc" | "abs") = (args, function) {
+            if self.src.regs[dst as usize] == IrTy::F64 {
+                let x = self.get(*r)?;
+                let x = match self.src.regs[*r as usize] {
+                    IrTy::F64 => x,
+                    IrTy::I64 => self.b.ins().fcvt_from_sint(types::F64, x),
+                    _ => return Err("std.math argument".into()),
+                };
+                let v = match function {
+                    "sqrt" => self.b.ins().sqrt(x),
+                    "floor" => self.b.ins().floor(x),
+                    "ceil" => self.b.ins().ceil(x),
+                    "trunc" => self.b.ins().trunc(x),
+                    _ => self.b.ins().fabs(x),
+                };
+                return self.set(dst, v);
+            }
+        }
         let mut words = Vec::with_capacity(MATH_ARGS);
         let mut tys = Vec::with_capacity(args.len());
         for (r, _) in args {
@@ -2001,6 +2126,159 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    // `a[i]` of an array, struct, enum or `List`/`Map`/`Random` element through `qx_elem_ref`,
+    // else `qx_heap`.
+    fn elem_ref(&mut self, i: &Inst, kind: u8) -> Result<(), String> {
+        let Inst::Index {
+            dst, base, index, ..
+        } = i
+        else {
+            return Err("element of reference type".into());
+        };
+        let (regs, d, span) = heap_operands(i).ok_or("element operands")?;
+        let (a, k) = (self.get(*base)?, self.get(*index)?);
+        let kind = self.b.ins().iconst(types::I32, i64::from(kind));
+        let call = self.b.ins().call(self.elem_ref, &[a, k, kind]);
+        let w = self.b.inst_results(call)[0];
+        let (fast, slow, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().brif(w, fast, &[], slow, &[]);
+        self.b.switch_to_block(fast);
+        self.set(*dst, w)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(slow);
+        self.heap(i, regs, d, span)?;
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok(())
+    }
+
+    // The slots whose array buffer or struct field addresses this function keeps (`SlotCache`):
+    // those whose borrowing registers are the base of an element or field access of a number or
+    // `boolean`.
+    fn plan_cache(&mut self) {
+        let src = self.src;
+        self.reg_slot = vec![None; src.regs.len()];
+        for i in src.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::Load { dst, slot } = i {
+                if self.borrowed[*dst as usize] {
+                    self.reg_slot[*dst as usize] = Some(*slot);
+                }
+            }
+        }
+        let mut arrays: std::collections::HashMap<u32, Option<u32>> = Default::default();
+        let mut structs: std::collections::HashMap<u32, Vec<(u32, u32)>> = Default::default();
+        for i in src.blocks.iter().flat_map(|b| &b.insts) {
+            let (base, field, value) = match i {
+                Inst::Index { dst, base, .. } => (*base, None, *dst),
+                Inst::SetIndex { base, value, .. } => (*base, None, *value),
+                Inst::GetField {
+                    dst, recv, index, ..
+                } => (*recv, Some(*index), *dst),
+                Inst::SetField {
+                    base, index, value, ..
+                } => (*base, Some(*index), *value),
+                _ => continue,
+            };
+            let (Some(slot), Some(kind)) = (
+                self.reg_slot[base as usize],
+                elem_kind(src.regs[value as usize]),
+            ) else {
+                continue;
+            };
+            match (src.slots[slot as usize].ty, field) {
+                (IrTy::Array(_), None) => {
+                    let e = arrays.entry(slot).or_insert(Some(kind));
+                    if *e != Some(kind) {
+                        *e = None;
+                    }
+                }
+                (IrTy::Struct(_), Some(f)) => {
+                    let fs = structs.entry(slot).or_default();
+                    if !fs.contains(&(f, kind)) {
+                        fs.push((f, kind));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let var = |b: &mut FunctionBuilder<'_>| {
+            let v = b.declare_var(types::I64);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.def_var(v, zero);
+            v
+        };
+        for (slot, kind) in arrays {
+            if let Some(kind) = kind {
+                let (ptr, len) = (var(&mut self.b), var(&mut self.b));
+                self.cache.insert(slot, SlotCache::Array { kind, ptr, len });
+            }
+        }
+        for (slot, fs) in structs {
+            let fields = fs
+                .into_iter()
+                .map(|(f, k)| (f, k, var(&mut self.b)))
+                .collect();
+            self.cache.insert(slot, SlotCache::Struct { fields });
+        }
+    }
+
+    // Recomputes the `SlotCache` of `slot` from its value.
+    fn refresh(&mut self, slot: u32) {
+        let Some(c) = self.cache.get(&slot).cloned() else {
+            return;
+        };
+        let w = self.b.use_var(self.slots[slot as usize]);
+        match c {
+            SlotCache::Array { kind, ptr, len } => {
+                let k = self.b.ins().iconst(types::I32, i64::from(kind));
+                let call = self.b.ins().call(self.span, &[self.ctx, w, k]);
+                let p = self.b.inst_results(call)[0];
+                let n = self
+                    .b
+                    .ins()
+                    .load(types::I64, MemFlagsData::trusted(), self.ctx, RET);
+                self.b.def_var(ptr, p);
+                self.b.def_var(len, n);
+            }
+            SlotCache::Struct { fields } => {
+                for (f, kind, var) in fields {
+                    let f = self.b.ins().iconst(types::I64, i64::from(f));
+                    let k = self.b.ins().iconst(types::I32, i64::from(kind));
+                    let call = self.b.ins().call(self.field, &[w, f, k]);
+                    let p = self.b.inst_results(call)[0];
+                    self.b.def_var(var, p);
+                }
+            }
+        }
+    }
+
+    // The address of the accessed number from the `SlotCache` of the slot `base` was loaded from
+    // (0 when out of bounds or unknown), or `None` without one.
+    fn cached(&mut self, base: Reg, at: Result<Reg, u32>, kind: u32) -> Option<cl::Value> {
+        let slot = self.reg_slot.get(base as usize).copied().flatten()?;
+        match (self.cache.get(&slot)?.clone(), at) {
+            (SlotCache::Array { kind: k, ptr, len }, Ok(index)) if k == kind => {
+                let i = self.get(index).ok()?;
+                let (p, n) = (self.b.use_var(ptr), self.b.use_var(len));
+                let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, i, n);
+                let shift = if kind == 2 { 0 } else { 3 };
+                let off = self.b.ins().ishl_imm_u(i, shift);
+                let addr = self.b.ins().iadd(p, off);
+                let zero = self.b.ins().iconst(types::I64, 0);
+                Some(self.b.ins().select(inside, addr, zero))
+            }
+            (SlotCache::Struct { fields }, Err(f)) => {
+                let (_, _, var) = fields.iter().find(|(g, k, _)| *g == f && *k == kind)?;
+                Some(self.b.use_var(*var))
+            }
+            _ => None,
+        }
+    }
+
     // `a[i]`, `a[i] = v`, `a[i] op= v` on an `int`, `double` or `boolean` array and `p.f`,
     // `p.f = v`, `p.f op= v` on a field of those types in native code: `qx_elem` or `qx_field`
     // gives the element's address, and a store charges its steps inline like `charge`. Whenever
@@ -2035,6 +2313,10 @@ impl Gen<'_, '_> {
             _ => return Ok(false),
         };
         let t = src.regs[value as usize];
+        if let (Inst::Index { .. }, Some(rk @ (ARRAY | STRUCT | ENUM | NATIVE))) = (i, ref_kind(t))
+        {
+            return self.elem_ref(i, rk).map(|()| true);
+        }
         let (Some(kind), Some(ct)) = (elem_kind(t), cl_ty(t)) else {
             return Ok(false);
         };
@@ -2056,17 +2338,22 @@ impl Gen<'_, '_> {
         let Some((regs, dst, span)) = heap_operands(i) else {
             return Ok(false);
         };
-        let a = self.get(base)?;
-        let (helper, k) = match at {
-            Ok(index) => (self.elem, self.get(index)?),
-            Err(field) => (
-                self.field,
-                self.b.ins().iconst(types::I64, i64::from(field)),
-            ),
+        let ptr = match self.cached(base, at, kind) {
+            Some(p) => p,
+            None => {
+                let a = self.get(base)?;
+                let (helper, k) = match at {
+                    Ok(index) => (self.elem, self.get(index)?),
+                    Err(field) => (
+                        self.field,
+                        self.b.ins().iconst(types::I64, i64::from(field)),
+                    ),
+                };
+                let kind = self.b.ins().iconst(types::I32, i64::from(kind));
+                let call = self.b.ins().call(helper, &[a, k, kind]);
+                self.b.inst_results(call)[0]
+            }
         };
-        let kind = self.b.ins().iconst(types::I32, i64::from(kind));
-        let call = self.b.ins().call(helper, &[a, k, kind]);
-        let ptr = self.b.inst_results(call)[0];
         let (fast, slow, done) = (
             self.b.create_block(),
             self.b.create_block(),

@@ -740,6 +740,75 @@ void main() {
     fail("Q q = new Q(4611686018427387904); q.n *= 2; return q.n;");
 }
 
+// Slots keep the buffer of their array and the addresses of their struct's fields while they hold
+// the value (`SlotCache`), also when the slot is set again in a loop; elements that are arrays or
+// structs come from `qx_elem_ref`; `sqrt`, `floor`, `ceil`, `trunc` and `abs` are one native
+// instruction. All with the interpreters' results, errors and step positions.
+#[test]
+fn cached_slots_reference_elements_and_native_math_agree() {
+    let src = "import std.math;
+struct V { double x; int n; }
+double walk(int k) {
+    V[] vs = new V[k];
+    for i in 0..k { vs[i] = new V(i * 1.5, i); }
+    int[][] grid = new int[k][k];
+    double s = 0.0;
+    for i in 0..k {
+        V v = vs[i];
+        int[] row = grid[i];
+        for j in 0..k {
+            row[j] = i * j;
+            v.x += row[j];
+            v.n *= 2;
+        }
+        v = vs[k - 1 - i];
+        v.x -= 0.5;
+        row = grid[k - 1 - i];
+        row[0] += 7;
+        s += math.sqrt(v.x) + math.floor(-v.x) + math.ceil(v.x) + math.trunc(-1.5) + math.abs(-v.x);
+        s += math.sqrt(-1.0 * i) + math.sqrt(i);
+    }
+    for i in 0..k { s += vs[i].x + vs[i].n + grid[i][0]; }
+    return s;
+}
+void main() {
+    println(\"{}\", walk(2));
+}
+";
+    let m = module(src);
+    let jit = Jit::new(&m).expect("Cranelift supports this machine");
+    assert!(jit.compiles(m.index["walk"]));
+    let total = engine::with(Engine::Ast, || {
+        let p = front(src).unwrap();
+        let mut host = super::super::stdlib::LogOnly::default();
+        super::super::interp::elaborate(&p, &mut host, &Limits::CLI)
+            .unwrap()
+            .usage
+            .steps
+    });
+    assert!(total > 300, "{total}");
+    for max in 0..=total + 1 {
+        same(
+            src,
+            Limits {
+                max_steps: max,
+                ..Limits::CLI
+            },
+        );
+    }
+    let fail = |body: &str| {
+        let src = format!(
+            "struct Q {{ int n; }}\nint f(int n) {{ {body} }}\nvoid main() {{ println(\"{{}}\", f(1)); }}"
+        );
+        let out = same(&src, Limits::CLI);
+        assert!(out.starts_with("error"), "{out}");
+    };
+    fail("int[] a = new int[2]; int s = 0; for i in 0..3 { s += a[i]; } return s;");
+    fail("int[] a = new int[2]; for i in 0..3 { a[i] = i; } return 0;");
+    fail("Q[] qs = new Q[2]; qs[0] = new Q(1); Q q = qs[0]; q.n = 4611686018427387904; q.n += q.n; return 0;");
+    fail("int[][] g = new int[2][2]; int[] r = g[n + 1]; return r[0];");
+}
+
 #[test]
 fn reference_counts_balance_in_native_code() {
     use super::super::array::ArrayData;
