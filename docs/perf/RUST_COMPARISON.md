@@ -60,7 +60,7 @@ No tuning was done to remove these differences; they are part of what later stag
 - `binarytrees` and `strings` are allocation-bound on both sides, so the gap is smaller.
 - Reaching 95 % is expected to need changes such as the memory model, removing the step budget from compiled code, and better code generation (possibly an LLVM backend; that Cranelift generates slower code than LLVM is the user's premise, not measured here); which of these matter most has not been measured.
 
-## Measured changes (2026-11-24, branch `worktree-mm`)
+## Measured changes (2026-11-24 and 2026-11-25, branch `worktree-mm`)
 
 **Measured on the same shared Windows PC while other jobs were running.** Spreads reach about ±46 % (`binarytrees`), so differences under about 20 % are not meaningful. Re-measure on a quiet machine before relying on them. Each row is one run of `python scripts/perf/rust_compare.py --reps 5 --values` (5 interleaved rounds, medians); "values" runs `bench/compare/qx-values` with `--experimental value-semantics`.
 
@@ -73,15 +73,41 @@ Rust % on the `jit` engine (Rust time / Qxide time × 100):
 | `cb2c00b` | same, flag on | 0.20 % | 14.44 % | 0.16 % | 5.56 % |
 | `69ad055` | JIT: scalar stores without the interpreter, borrowed loads; flag off | 0.39 % | 13.44 % | 0.30 % | 5.72 % |
 | `69ad055` | same, flag on | 0.26 % | 13.83 % | 0.30 % | 5.56 % |
+| `753819a` | JIT: numbers in arrays and fields loaded and stored natively, addresses kept per slot, inline reference counts, native `sqrt`; IR: charges merged across instructions that cannot fail; flag off | 3.95 % | 15.92 % | 3.20 % | 5.75 % |
+| `753819a` | same, flag on | 2.03 % | 15.92 % | 3.20 % | 5.65 % |
+| `2fb866e` | JIT: step count kept in a register; flag off | 5.80 % | 16.30 % | 6.16 % | 5.53 % |
+| `2fb866e` | same, flag on | 2.74 % | 16.33 % | 6.29 % | 5.59 % |
 
 Kernel times behind the `69ad055` rows (ms, median of 5): Rust `nbody` 28.2, `binarytrees` 210.0, `matmul` 11.9, `strings` 21.7; Qxide jit 7316 / 1563 / 3979 / 380 with the flag off and 11007 / 1519 / 3912 / 391 with it on. Against `cb2c00b` (12539 / 1928 / 8488 / 416 ms) the JIT change made `matmul` 2.1x and `nbody` 1.7x faster; `binarytrees` and `strings` moved within the noise.
+
+Kernel times behind the 2026-11-25 rows (ms, median of 5, `--ir-reps 1`): at `753819a` Rust 28.4 / 236.7 / 10.3 / 23.5 and Qxide jit 718 / 1487 / 323 / 408 (flag on 1400 / 1487 / 323 / 415); at `2fb866e` Rust 39.6 / 260.6 / 11.7 / 22.8 and Qxide jit 684 / 1599 / 190 / 412 (flag on 1445 / 1596 / 186 / 407). The machine was busier during the `2fb866e` run: the Rust `nbody` time rose from 28.4 to 39.6 ms with a spread of ±50 %, so its Rust % moved more than the Qxide time did. Rust % compares times taken in the same interleaved rounds, which cancels part of the load. Against `69ad055` (7316 / 1563 / 3979 / 380 ms) `matmul` is about 21x and `nbody` about 11x faster on the jit engine; `binarytrees` and `strings` did not change.
 
 What these rows say:
 
 - Value semantics as implemented now does not make anything faster, and it was not expected to: it runs on the same shared-reference representation and adds copies and write-back cells (`docs/design/memory-model.md` §12). The flag-on `nbody` is slower (0.26 % against 0.39 %). A likely reason, not measured: the value-semantics version reads `bs[i].x` through the array on every access instead of through a local `Body` reference, so it makes more helper calls.
 - The JIT change is independent of the memory model and is the larger effect so far.
+- From `753819a` on, the flag-on `nbody` is about half as fast as the flag-off one (2.74 % against 5.80 %). The value-semantics version reads `bs[i].x`. The base of that field access is an array element, not a local variable, so it gets none of the per-slot addresses and still makes a helper call per access. `matmul`, `binarytrees` and `strings` are the same with the flag on or off.
 
-## Where the time goes (profile, 2026-11-24)
+## Where the time goes (2026-11-25, `2fb866e`)
+
+This section replaces the conclusions of the 2026-11-24 profile below: element and field access no longer calls a helper on the paths the kernels use, so most of the time is now in the native code itself. The profiler cannot split native code by instruction, so the remaining costs were measured with throwaway builds (not committed) that leave one kind of check out, on top of `2fb866e`. Three runs each, Windows only, measured while other jobs were running; the full build ran slower here than in the table above, so compare within a row only.
+
+| Build | `matmul` n = 400 ms | `nbody` 1M ms |
+| --- | --- | --- |
+| as committed | 189-223 | 596-629 |
+| no step charges | 123-139 | 468-530 |
+| no step charges, no `int` overflow checks | 109-112 | 432-476 |
+| also no bounds checks | 107-112 | 436-476 |
+
+- **Step charges**: removing them would save about a third of `matmul` and about a sixth of `nbody`. Before the count was kept in a register (`2fb866e`) the same experiment saved about two thirds of `matmul` (300 to 107 ms), which is why that change came first. This is the ceiling for removing the budget from compiled code (`docs/design/step-budget.md`). Nothing measured here says the budget must go: what is left is one add, one compare and one branch per charge.
+- **`int` overflow checks**: about 15 % of `matmul` (index arithmetic `i * n + j`) and a few percent of `nbody`. Taking them out would change the language (overflow is an error), so this only marks what bounds-check style elimination of provably safe index arithmetic could give.
+- **Bounds checks**: no measurable cost any more.
+- **What is left in `nbody`** (about 440 ms against 30-40 ms for Rust): each `Body b = bs[j]` takes a new reference out of the array through `qx_elem_ref`, refreshes the field addresses of the slot through `qx_fields`, and gives up the previous value's count; the interpreter's `charge` per expression node also stays. Closing this needs structs stored inline in the array, which is the M5 layout of the memory-model proposal.
+- **What is left in `matmul`** (about 110 ms against 10-12 ms for Rust): Cranelift does not vectorise loops, which `rustc` can do for this one, and every access still checks its bounds and computes its index with overflow checks. Checking once per loop instead would need loop analysis the JIT does not have.
+
+## Earlier profile (2026-11-24, `69ad055`)
+
+Kept for the record; its conclusions no longer hold after the changes above.
 
 `scripts/perf/sample_profile.py` on a release build with debug symbols (`69ad055`), 1 ms sampling, `--engine jit --trusted`, Windows only. `matmul` at n = 300 and `nbody` at 200,000 steps.
 
@@ -102,4 +128,4 @@ What this answers:
 - **Bounds checks**: about 2 % of the helper time.
 - **Boxing**: numbers are passed as raw words, so there is no boxing in native code. Inside the helpers, each read builds a `Value` and converts it (`to_word`, `from_word`, drops), about 15 %. Struct elements (`nbody`) also touch reference counts and the allocator.
 
-What would close most of the gap is reading and writing elements and fields from native code without a call. That needs a memory layout native code may rely on: a `repr(C)` header with a pointer and a length for `int`/`double`/`boolean` arrays (H2 of the memory-model proposal, which does not need value semantics) and inline struct fields (which value semantics makes much easier). It is planned as M5 and was not done here. These are profile shares on one machine; the speed-up such a change gives has not been measured.
+At the time, the conclusion was that reading and writing elements and fields without a call needs a new memory layout (M5). It turned out not to: an array never changes length and a field never changes type, so native code can keep the addresses for as long as a local variable holds the value (`SlotCache` in `src/lang/jit/mod.rs`), with no change to the representation. M5 is still what would remove the remaining per-element reference counts and let struct arrays be stored inline.

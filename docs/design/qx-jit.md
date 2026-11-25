@@ -161,3 +161,12 @@ Cranelift가 지원하지 않는 머신에서는 `Jit::new`가 JIT 인스턴스�
 - 테스트로 `interface_values_compile`(구조체·열거형 구현체, 인터페이스 배열·구조체 필드·`List` 원소, 인터페이스 값을 반환하는 메서드, `ast`/`ir`과 동일한 결과, 매 7번째 스텝 제한 및 마지막 두 스텝 검증, 인터페이스 호출 내부의 오버플로 `Q0401`)과 `interface_reference_counts_balance`(전달받은 인터페이스 값 반환 후, 재귀 후, 호출 내부 `Q0402` 발생 후의 `Rc::strong_count` 균형)을 추가했고, `methods_and_interface_calls_run_alongside_native_code`는 이제 `total<Shape>`가 컴파일되기를 기대한다. 디스패치 테이블 순서를 한 차례 뒤집었을 때 테스트가 실패함을 확인한 뒤 원복했다.
 - 측정(Windows x86-64, 릴리스 빌드, `bench_suite`, 7회 실행 최솟값, elaboration 시간; 측정 당시 동일 머신에서 다른 세션 작업이 함께 실행 중이었으므로 한 실행 내 비교만 유효하다): 새 벤치마크 `bench/qx/shapes.qx`(구조체와 열거형으로 구성된 `List<Shape>`에 대한 인터페이스 기반 넓이 합산과 인터페이스 값을 반환하는 `scaled` 반복 호출)에서 `ast` 217.4 ms, `ir` 90.0 ms, `jit` 49.3 ms를 기록했다. 동일 빌드에서 인터페이스 지원을 비활성화한 측정에서는 `jit` 105.4 ms(해당 실행의 `ir` 101.3 ms)였다.
 - 미결 과제로 헬퍼 호출 없는 인라인 배열 접근과 박싱 없는 `String`·인터페이스 값 표현이 남아 있다. 인라인 배열 접근은 배열의 안정적인 메모리 배치(`Rc<RefCell<ArrayData>>`는 `repr(C)`가 아닌 Rust 기본 배치)가 필요해 모든 엔진과 플레이그라운드가 공유하는 값 표현 변경을 수반하므로 별도 결정으로 남겼으며 이득은 측정하지 않았다. 이번 변경은 Windows에서만 검증했다.
+
+## 헬퍼 호출 없는 원소·필드 접근과 레지스터 과금 (2026-11-25)
+
+- `int`·`double`·`boolean` 배열 원소와 그런 타입의 구조체 필드는 네이티브 코드가 직접 읽고 쓴다. 값 표현은 바꾸지 않았다. 배열은 길이가 바뀌지 않고 필드는 타입이 바뀌지 않으므로, 슬롯에 값이 들어갈 때(함수 진입과 `Store`) 배열 버퍼와 길이, 쓰는 필드들의 주소를 구해 두고(`qx_span`, `qx_fields`, `SlotCache`), 그 슬롯에서 읽은 빌린 레지스터(`borrowed_loads`)로 접근하면 범위 검사와 로드·스토어만 한다. 주소를 모르는 접근은 원소 하나의 주소를 주는 `qx_elem`·`qx_field`를 부른다. 범위 밖, 다른 원소 타입, 한도나 취소 확인이 가까운 저장, `int` 넘침은 `qx_heap`이 처음부터 다시 실행하므로 결과와 진단, 스텝 수가 같다.
+- 배열·구조체·열거형·`List` 원소 읽기는 `qx_elem_ref`가 새 워드를 준다. `std.math`의 `sqrt`·`floor`·`ceil`·`trunc`·`abs`는 Cranelift 명령 하나다.
+- 참조 카운트는 `Rc::into_raw` 포인터의 두 워드 앞에 있는 강한 카운트를 네이티브 코드가 직접 바꾸고, 마지막 카운트를 놓을 때만 `qx_release`를 부른다. 이 배치는 std 내부라서 `Jit::new`가 실제 `Rc` 값으로 한 번 확인하고(`rc_counts_inline`), 맞지 않으면 예전처럼 매번 헬퍼를 부른다.
+- 스텝 수와 한도(다음 취소 확인과 `max_steps + 1` 중 작은 값)는 레지스터에 둔다. 예산을 읽는 호출 앞과 반환 앞에서만 `ctx`에 쓰고, 그 호출 뒤에 다시 읽는다. 실패는 실행을 끝내므로 오류 경로에서는 쓰지 않는다.
+- IR 낮추기는 실패할 수 없는 명령어만 사이에 있는 과금을 하나로 합친다(`qx-ir.md`).
+- 테스트: `primitive_array_elements_run_in_native_code`, `cached_slots_reference_elements_and_native_math_agree`(모든 스텝 한도에서 세 엔진 일치, 범위 밖·넘침 오류), `reference_counts_are_updated_inline`. 측정은 `docs/perf/RUST_COMPARISON.md`. 검증은 Windows에서만 했다.
