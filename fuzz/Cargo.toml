@@ -93,3 +93,8 @@ test = false
 doc = false
 bench = false
 required-features = ["libfuzzer"]
+
+# src/lang (compiled here too) has code for the CLI-only `jit` and `ffi` features, which are never
+# on here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("jit", "ffi"))'] }

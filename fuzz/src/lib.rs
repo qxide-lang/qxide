@@ -10,15 +10,11 @@ pub mod lang;
 #[path = "../../src/pkg/mod.rs"]
 pub mod pkg;
 
-// Lexer + parser only, without linking or checking (`lang` keeps them private).
-#[allow(dead_code, unused_imports, clippy::duplicate_mod)]
-pub mod front;
-
 pub mod targets {
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{front, lang, pkg};
+    use super::{lang, pkg};
 
     const NAME: &str = "fuzz.qx";
 
@@ -26,12 +22,11 @@ pub mod targets {
         std::str::from_utf8(data).ok()
     }
 
-    /// Lexer and parser.
+    /// Lexer and parser, without linking or checking. `lang` keeps both private, so this goes
+    /// through `lang::format`, which lexes, parses and prints the tokens back.
     pub fn parse(data: &[u8]) {
         if let Some(src) = text(data) {
-            if let Ok(toks) = front::lexer::lex(src) {
-                let _ = front::parser::parse(toks);
-            }
+            let _ = lang::format(NAME, src);
         }
     }
 

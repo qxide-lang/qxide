@@ -12,7 +12,7 @@ The `cargo-fuzz` targets live under `fuzz/fuzz_targets/*.rs` and each calls `qxi
 
 | Target | What it exercises | Invariant |
 | --- | --- | --- |
-| `parse` | Lexer and parser only (`fuzz/src/front` includes `src/lang/{ast,diag,lexer,msg,parser}.rs`). | Does not panic or crash. |
+| `parse` | Lexer and parser only, through `lang::format` (no linking or checking; the `fmt` target adds the idempotence check). | Does not panic or crash. |
 | `check` | Lex, parse, link (no project; imports are errors), and static checks via `lang::check`. | Does not panic or crash. |
 | `fmt` | `lang::format`. | Output formats again to the same text (idempotence) and still parses; does not panic or crash. |
 | `run_limits` | `qxide_wasm::execute(Run)` with the playground limits (20 state-vector qubits, 512 MiB tableau, `<=100k` shots). Input byte `0` selects shots `1..=64`, bytes `1..9` select the seed, and the remaining bytes are the `.qx` source. | Respects playground limits; does not panic or crash. |

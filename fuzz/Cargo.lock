@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "qxide"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "qxide-fuzz"
