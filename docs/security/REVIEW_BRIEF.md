@@ -1,5 +1,7 @@
 # Qxide Security Review Brief
 
+> **Note (2026-11-26):** This brief was written for the review of 0.7.0 (`b8c385e`), and that review is done (`MYTHOS_FINDINGS.md`). Since then the `app-framework` branch has been merged into `main`, so read it from `main`. For a new review, start from the current `main` and use the `Status on main` sections of `BASELINE_FINDINGS.md` and `MYTHOS_FINDINGS.md` to see which findings are still open.
+
 Follow these instructions when conducting a defensive security review of the Qxide repository (`github.com/qxide-lang/qxide`, Rust crate `qxide` 0.7.0, tag `v0.7.0`, released 2026-11-21). These rules apply to any AI security reviewer (for example, Claude Mythos) starting with no prior context and define the contract with the human maintainer.
 
 ## Mission

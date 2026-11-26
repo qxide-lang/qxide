@@ -23,8 +23,8 @@ Include the following details in your report:
 
 | Version | Supported |
 | --- | --- |
-| 0.7.x (latest release: 0.7.0) | Yes |
-| < 0.7.0 | No |
+| 0.8.x (latest release: 0.8.0) | Yes |
+| < 0.8.0 | No |
 
 Qxide is pre-1.0. Security fixes are released in a new patch or minor version and are not backported to older minor versions.
 
@@ -37,6 +37,8 @@ Qxide is pre-1.0. Security fixes are released in a new patch or minor version an
 - The package manager
 - The playground at `qxide.dev`
 - The registry tooling
+- Desktop apps: `qxide app`, the `qxide-app` runtime, and Qxide Studio
+- Editor support: the `qxide lsp` language server and the VS Code extension
 
 Problems in a package published to the registry (malicious or vulnerable package content) should be reported through the same private vulnerability reporting process and may lead to the package being yanked.
 

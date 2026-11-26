@@ -14,23 +14,47 @@ Following the maintainer's standing rule for this repository that prose is writt
 
 The reproduction generators and inputs are in `target/mythos-repro/` (`gen.py`, `gen_nest.py`, `build_reg.py`, `regrepo_test.py`, `hand.py`, `run.ps1`, `wasm_run.mjs`, and `play_test.mjs`), which is ignored by git and removed by `cargo clean`. The inputs needed to repeat each finding are also given inline in its section.
 
+## Status on `main` (2026-11-26, `8d61b54`)
+
+This report describes `b8c385e` (0.7.0). The fixes have since been merged and released in 0.8.0. Each finding was checked again against the code at `8d61b54` and against the fix records. None was re-run. The `Now` column in the summary gives the result:
+
+- **Fixed:** the issue no longer occurs. The record named in the note has the change and its regression tests.
+- **Partial:** part of the issue remains, as the note says.
+- **Open:** unchanged.
+
+| ID | Now | Note |
+| --- | --- | --- |
+| M-01 | Fixed | Diagnostics are capped and long lines cut around the error, `Q0418` (`EXECUTION_LIMITS_FIXES.md`). |
+| M-02 | Fixed | `PKG_CLIENT_FIXES.md`. |
+| M-03 | Fixed | `index::valid_dl`, and `file://` is rejected (`PKG_CLIENT_FIXES.md`). |
+| M-04 | Partial | Package messages, `qxide search` rows, and diagnostics escape control characters (`PKG_CLIENT_FIXES.md`). The rest of the finding is still open. |
+| M-05 | Partial | The call-chain path is fixed (`docs/perf/CHECKER_LARGE_FILES.md`); the rest is still open. |
+| M-06 | Open | The Counts view still depends on the shape of stdout (`site/src/pages/Playground.tsx:218`) and spreads every row into `Math.max` (`:96`). |
+| M-07 | Partial | Output is capped at 1 MiB and 50 diagnostics before it leaves the worker (`EXECUTION_LIMITS_FIXES.md`). Processing after the reply still runs on the main thread with no time limit. |
+| M-08 | Fixed | Registry CI requires the manifest dependencies to equal the index (`REGISTRY_TEMPLATE_FIXES.md`). |
+| M-09 | Fixed | Registry CI reads archives the way the client does and rejects extra gzip members (`REGISTRY_TEMPLATE_FIXES.md`). |
+| M-10 | Fixed | Nesting limit across calls, `Q0416`, and the output limit (`EXECUTION_LIMITS_FIXES.md`). |
+| M-11 | Open | `src/pkg/index.rs:287` still compares each line with all earlier ones. |
+| M-12 | Open | `pypi.yml:129` and `release.yml:67` are unchanged. |
+| M-13 | Fixed | `Limits::APP` and the worker pool (`APP_FRAMEWORK_FIXES.md`). |
+
 ## Summary
 
-| ID | Severity | Status | Location | One-line title |
-| --- | --- | --- | --- | --- |
-| M-01 | Medium | Reproduced | `src/lang/diag.rs:221-244` | Quadratic `qxide check` output from reprinted diagnostic lines (100 KB, over 3.4 GB) |
-| M-02 | Medium | Reproduced (GNU long-name); Suspected (PAX) | `src/pkg/archive.rs:235-249` | Unbounded memory reads for tar long-name and PAX headers before archive checks |
-| M-03 | Medium | Reproduced (local file, loopback UNC); Suspected (remote SMB) | `src/pkg/index.rs:331-345` | Index `dl` value lets the client read any local file or UNC path |
-| M-04 | Low | Reproduced | `src/pkg/cli.rs:278-283` | Registry text, archive paths, and echoed source lines retain terminal escape sequences |
-| M-05 | Low | Reproduced | `src/lang/check.rs:283-301` | Quadratic checker runtime in `qxide check` (about 1 MB takes 41 s) |
-| M-06 | Low | Reproduced (Node); Suspected (browser) | `site/src/pages/Playground.tsx:90` | Playground Counts view trusts stdout shape, allowing spoofed charts and render exceptions |
-| M-07 | Low | Suspected | `site/src/pages/Playground.tsx:472-496` | Playground processes large results on main thread outside the 30 s worker limit |
-| M-08 | Low | Reproduced | `src/pkg/project.rs:67-80` | Mismatched manifest and index dependencies leave dependents permanently out of date (Q0612) |
-| M-09 | Info | Reproduced (gzip members); Suspected (entry size) | `src/pkg/archive.rs:235` | Client and `validate.py` parse archives differently (gzip members, entry sizes) |
-| M-10 | Low | Reproduced | `src/lib.rs:720-739` | Conditional nesting across calls: 297 MB `qxide qasm` output and playground wasm stack overflow |
-| M-11 | Info | Reproduced | `src/pkg/index.rs:282` | Duplicate-version scan of an index file runs in quadratic time |
-| M-12 | Low | Suspected | `.github/workflows/pypi.yml:129` | Branch-pinned PyPI action and cargo-dist installer piped into `sh` without a digest |
-| M-13 | Info | Suspected | `app-framework`: `crates/qxide-app-runtime/src/main.rs:302-319` | App runtime and Qxide Studio run with CLI limits (`app-framework` branch) |
+| ID | Now | Severity | Status | Location | One-line title |
+| --- | --- | --- | --- | --- | --- |
+| M-01 | Fixed | Medium | Reproduced | `src/lang/diag.rs:221-244` | Quadratic `qxide check` output from reprinted diagnostic lines (100 KB, over 3.4 GB) |
+| M-02 | Fixed | Medium | Reproduced (GNU long-name); Suspected (PAX) | `src/pkg/archive.rs:235-249` | Unbounded memory reads for tar long-name and PAX headers before archive checks |
+| M-03 | Fixed | Medium | Reproduced (local file, loopback UNC); Suspected (remote SMB) | `src/pkg/index.rs:331-345` | Index `dl` value lets the client read any local file or UNC path |
+| M-04 | Partial | Low | Reproduced | `src/pkg/cli.rs:278-283` | Registry text, archive paths, and echoed source lines retain terminal escape sequences |
+| M-05 | Partial | Low | Reproduced | `src/lang/check.rs:283-301` | Quadratic checker runtime in `qxide check` (about 1 MB takes 41 s) |
+| M-06 | Open | Low | Reproduced (Node); Suspected (browser) | `site/src/pages/Playground.tsx:90` | Playground Counts view trusts stdout shape, allowing spoofed charts and render exceptions |
+| M-07 | Partial | Low | Suspected | `site/src/pages/Playground.tsx:472-496` | Playground processes large results on main thread outside the 30 s worker limit |
+| M-08 | Fixed | Low | Reproduced | `src/pkg/project.rs:67-80` | Mismatched manifest and index dependencies leave dependents permanently out of date (Q0612) |
+| M-09 | Fixed | Info | Reproduced (gzip members); Suspected (entry size) | `src/pkg/archive.rs:235` | Client and `validate.py` parse archives differently (gzip members, entry sizes) |
+| M-10 | Fixed | Low | Reproduced | `src/lib.rs:720-739` | Conditional nesting across calls: 297 MB `qxide qasm` output and playground wasm stack overflow |
+| M-11 | Open | Info | Reproduced | `src/pkg/index.rs:282` | Duplicate-version scan of an index file runs in quadratic time |
+| M-12 | Open | Low | Suspected | `.github/workflows/pypi.yml:129` | Branch-pinned PyPI action and cargo-dist installer piped into `sh` without a digest |
+| M-13 | Fixed | Info | Suspected | `app-framework`: `crates/qxide-app-runtime/src/main.rs:302-319` | App runtime and Qxide Studio run with CLI limits (`app-framework` branch) |
 
 Environment for every reproduction unless stated: Windows 11, PowerShell 5.1 and Git Bash, the release CLI `target/release/qxide.exe` (0.7.0, built from `b8c385e`), and the playground module `target/wasm32-unknown-unknown/wasm/qxide_wasm.wasm` loaded in Node 24.21. Commands ran under a wrapper that kills the process at a time limit or a working-set cap and samples the working set every 200 ms, so runs shorter than that report a peak of 0 MB. Scratch files are under `target/mythos-repro/` (ignored, not committed).
 

@@ -1,5 +1,7 @@
 # Qxide Threat Model
 
+> **Note (2026-11-26):** This model describes 0.7.0 (`b8c385e`). The `app-framework` branch has since been merged and released in 0.8.0. 0.8.0 also added a typed IR engine, an optional Cranelift JIT, IBM Quantum submission, the `qxide lsp` language server, and the VS Code extension, which this model does not cover yet. Findings cited here may already be fixed. The current status of each finding is in the `Status on main` section of `BASELINE_FINDINGS.md` and `MYTHOS_FINDINGS.md`.
+
 ## 1. Scope and Baseline
 
 - **Project:** Qxide (`github.com/qxide-lang/qxide`), Rust crate `qxide` `0.7.0` (released `2026-11-21`, tag `v0.7.0`).
