@@ -672,7 +672,16 @@ mod tests {
     }
 
     fn call(app: &App) -> Result<String, String> {
-        call_app(app, "pair", &[], 200, 1, &mut LogOnly::default(), &command::Cache::default()).unwrap()
+        call_app(
+            app,
+            "pair",
+            &[],
+            200,
+            1,
+            &mut LogOnly::default(),
+            &command::Cache::default(),
+        )
+        .unwrap()
     }
 
     // M-13: command calls run under the desktop app limits, not the CLI's 1 GiB state vector.
@@ -680,9 +689,17 @@ mod tests {
     fn app_calls_use_app_limits() {
         let src = "public BitReg big() {\n    QReg q = qreg(25);\n    t(q[0]);\n    return measure(q);\n}\n";
         let app = bundled_app(src, "big", "public void unused() {\n}\n", &["log"]);
-        let e = call_app(&app, "big", &[], 1, 0, &mut LogOnly::default(), &command::Cache::default())
-            .unwrap()
-            .unwrap_err();
+        let e = call_app(
+            &app,
+            "big",
+            &[],
+            1,
+            0,
+            &mut LogOnly::default(),
+            &command::Cache::default(),
+        )
+        .unwrap()
+        .unwrap_err();
         assert!(e.contains("\"code\":\"Q0406\""), "{e}");
         assert!(e.contains("desktop app limit"), "{e}");
     }
@@ -732,7 +749,16 @@ mod tests {
             &["log", "time", "fs"],
         );
         let shots = lang::command::MAX_SHOTS;
-        let r = call_app(&app, "measure_bell", &[], shots, 1, &mut LogOnly::default(), &command::Cache::default()).unwrap();
+        let r = call_app(
+            &app,
+            "measure_bell",
+            &[],
+            shots,
+            1,
+            &mut LogOnly::default(),
+            &command::Cache::default(),
+        )
+        .unwrap();
         let json = r.unwrap_or_else(|e| panic!("{e}"));
         assert!(json.contains("\"counts\":["), "{json}");
     }
@@ -750,7 +776,15 @@ mod tests {
         let w = Workers::new(1).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         w.submit(Box::new(move || {
-            let r = call_app(&app, "deep", &[], 1, 0, &mut LogOnly::default(), &command::Cache::default());
+            let r = call_app(
+                &app,
+                "deep",
+                &[],
+                1,
+                0,
+                &mut LogOnly::default(),
+                &command::Cache::default(),
+            );
             tx.send(r).unwrap();
         }));
         let r = rx.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
@@ -925,5 +959,48 @@ mod tests {
         assert_eq!(percent_decode("%\u{e9}x"), "%\u{e9}x");
         assert_eq!(percent_decode("a%1\u{e9}"), "a%1\u{e9}");
         assert_eq!(percent_decode("%%41\u{d050}"), "%A\u{d050}");
+    }
+
+    // B-A4: `app.json` in a bundle is checked again when the app starts, not taken as written by
+    // `qxide app build`.
+    #[test]
+    fn bundled_manifest_is_checked_again() {
+        let manifest = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = serde_json::json!({
+                "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": false,
+                "title": "t", "identifier": "dev.qxide.app.test", "module": "app",
+                "commands": ["f"], "permissions": ["log", "fs"],
+                "width": 400, "height": 300, "resizable": true,
+                "packages": [
+                    {"name": "x", "src": "pkg/0/x/src", "deps": [1]},
+                    {"name": "y", "src": "pkg/1/y/src", "deps": []}
+                ],
+                "entry": "pkg/0/x/src/app.qx", "ui": "ui", "data": null
+            });
+            edit(&mut v);
+            App::parse(
+                v.to_string().as_bytes(),
+                app::Files::Bundle(BTreeMap::new()),
+            )
+        };
+        assert!(manifest(&|_| {}).is_ok());
+        let bad: [(&str, serde_json::Value); 9] = [
+            ("identifier", serde_json::json!("..\\..\\x")),
+            ("identifier", serde_json::json!("a/b")),
+            ("identifier", serde_json::json!("")),
+            ("dev", serde_json::json!(true)),
+            ("data", serde_json::json!("C:\\Users\\x")),
+            ("permissions", serde_json::json!(["log", "everything"])),
+            ("module", serde_json::json!("../app")),
+            ("module", serde_json::json!("a..b")),
+            (
+                "packages",
+                serde_json::json!([{"name": "x", "src": "s", "deps": [7]}]),
+            ),
+        ];
+        for (key, value) in bad {
+            let r = manifest(&|v| v[key] = value.clone());
+            assert!(r.is_err(), "{key} = {value} was accepted");
+        }
     }
 }

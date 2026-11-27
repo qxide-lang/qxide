@@ -83,7 +83,32 @@ fn user_dirs(identifier: &str) -> (PathBuf, PathBuf) {
     )
 }
 
+// The permissions `[app] permissions` may name (`PERMISSIONS` in src/app/config.rs).
+const PERMISSIONS: &[&str] = &["log", "time", "fs", "app", "http", "qxide"];
+
+/// Dot-separated parts of ASCII letters, digits and `-`, at most 128 characters: the rule
+/// src/app/config.rs applies to `[app] identifier`, which names the app's data folders.
+fn valid_identifier(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .split('.')
+            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+}
+
+/// A dotted module path such as `app` or `ui.commands`.
+fn valid_module(module: &str) -> bool {
+    module.split('.').all(|s| {
+        s.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 impl App {
+    /// Reads `app.json`. A bundle's copy is checked again here (B-A4): the executable may have
+    /// been edited after `qxide app build` wrote it.
     pub fn parse(json: &[u8], files: Files) -> Result<App, String> {
         let v: Value =
             serde_json::from_slice(json).map_err(|e| msg::bad_manifest(&e.to_string()))?;
@@ -93,6 +118,10 @@ impl App {
             return Err(msg::version_mismatch(&built_by, ours));
         }
         let dev = v["dev"].as_bool().unwrap_or(false);
+        // Only `qxide app dev` writes `dev` or a data folder; a built app uses the user folders.
+        if matches!(files, Files::Bundle(_)) && (dev || !v["data"].is_null()) {
+            return Err(msg::bad_manifest(if dev { "dev" } else { "data" }));
+        }
         let packages = v["packages"]
             .as_array()
             .ok_or_else(|| msg::bad_manifest("packages"))?
@@ -112,11 +141,28 @@ impl App {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        if packages.is_empty() {
+        if packages.is_empty()
+            || packages
+                .iter()
+                .any(|p| p.deps.iter().any(|&d| d >= packages.len()))
+        {
             return Err(msg::bad_manifest("packages"));
         }
         let module = s(&v, "module")?;
+        if !valid_module(&module) {
+            return Err(msg::bad_manifest("module"));
+        }
         let identifier = s(&v, "identifier")?;
+        if !valid_identifier(&identifier) {
+            return Err(msg::bad_manifest("identifier"));
+        }
+        let permissions = strings(&v, "permissions")?;
+        if !permissions
+            .iter()
+            .all(|p| PERMISSIONS.contains(&p.as_str()))
+        {
+            return Err(msg::bad_manifest("permissions"));
+        }
         let (data, webview_data) = match v["data"].as_str() {
             Some(d) => {
                 let d = PathBuf::from(d);
@@ -135,7 +181,7 @@ impl App {
             },
             module,
             commands: strings(&v, "commands")?,
-            permissions: strings(&v, "permissions")?,
+            permissions,
             // Absent in manifests written before `std.http`.
             http_hosts: match v.get("http_hosts") {
                 None => Vec::new(),

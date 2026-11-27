@@ -55,7 +55,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-A1 | Fixed | `APP_FRAMEWORK_FIXES.md`. |
 | B-A2 | Fixed | `APP_FRAMEWORK_FIXES.md`. |
 | B-A3 | Fixed | Built apps refuse `--dev` (`APP_FRAMEWORK_FIXES.md`). |
-| B-A4 | Open | The runtime still trusts `app.json` from the bundle (`crates/qxide-app-runtime/src/app.rs`); only `http_hosts` is checked again. |
+| B-A4 | Partial | Since 2026-11-27 the runtime checks a bundle's `app.json` again: identifier, module, permissions, package indices, and no `dev` or `data` (runtime test `bundled_manifest_is_checked_again`). The bundle still has no integrity check; that needs a signing design (see B-A6). |
 | B-A5 | Fixed | Empty loop bodies cost a step and `Machine::charge` polls for cancellation. Since 2026-11-27 Studio's `std.qxide.qasm` can be cancelled too (`lang::app_tests::studio_qasm_can_be_cancelled`). |
 | B-A6 | Open | `src/app/bundle.rs` still expects the bundle trailer at the end of the file. |
 | B-A7 | Fixed | Fixed worker pool, panics caught, and call ids that are still running cannot be reused (M-13 in `APP_FRAMEWORK_FIXES.md`). |
@@ -102,7 +102,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-A1 | Fixed | Medium | READ | App framework (`std.fs`) | `std.fs` escape through a dangling symlink |
 | B-A2 | Fixed | Medium | READ | App framework (`std.fs`) | The data root itself may be a symlink |
 | B-A3 | Fixed | Low-Medium | READ | App framework (runtime) | Every built app exe accepts `--dev <json>` |
-| B-A4 | Open | Low | READ | App framework (runtime) | Runtime trusts `app.json`; bundle has no integrity check |
+| B-A4 | Partial | Low | READ | App framework (runtime) | Runtime trusts `app.json`; bundle has no integrity check |
 | B-A5 | Fixed | Low-Medium | READ | App framework (interpreter) | Empty loop bodies cannot be cancelled |
 | B-A6 | Open | Info | READ | App framework (distribution) | Authenticode signing would break built apps |
 | B-A7 | Fixed | Low | READ | App framework (IPC) | IPC worker robustness |
