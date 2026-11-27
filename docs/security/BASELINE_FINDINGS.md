@@ -21,7 +21,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 - **Partial:** part of the issue remains, as the note says.
 - **Open:** unchanged.
 
-Notes that start with "Fixed 2026-11-27" or "since 2026-11-27" were fixed after `8d61b54`; each names the test that failed before the change. The items still open need a decision outside the code: a PyPI setting (B-S2), cargo-dist configuration (B-S5, B-S6), or a design for signed app bundles (B-A4, B-A6).
+Notes that start with "Fixed 2026-11-27" or "since 2026-11-27" were fixed after `8d61b54`; each names the test that failed before the change. What is still open or partial needs a decision outside the code: a PyPI setting (B-S2), the cargo-dist configuration of `release.yml` (B-S3, B-S5, B-S6), a script and style CSP tested on every page (B-S1), or a design for signed app bundles (B-A4, B-A6). B-A12 stays open by design.
 
 | ID | Now | Note |
 | --- | --- | --- |
