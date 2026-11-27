@@ -23,6 +23,22 @@ impl Host for StudioHost<'_> {
     }
 }
 
+// `std.qxide.qasm`: no effects, as for `qxide qasm`, but Stop still cancels the build.
+struct QasmHost<'a> {
+    inner: NoEffects,
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl Host for QasmHost<'_> {
+    fn call(&mut self, module: &str, function: &str, args: Vec<HostValue>) -> StdResult {
+        self.inner.call(module, function, args)
+    }
+
+    fn cancelled(&self) -> bool {
+        (self.cancelled)()
+    }
+}
+
 fn input(src: &str) -> Input<'_> {
     let mut input = Input::file("main.qx", src);
     input.perms = Permissions::playground();
@@ -72,8 +88,11 @@ pub fn call(function: &str, args: &[HostValue], cancelled: &dyn Fn() -> bool) ->
             }
         }
         "qasm" => {
-            let mut host = NoEffects {
-                what: "`qxide qasm`",
+            let mut host = QasmHost {
+                inner: NoEffects {
+                    what: "`qxide qasm`",
+                },
+                cancelled,
             };
             let (map, r) = build_input(&input(src), &mut host, &Limits::APP);
             let r = r.and_then(|(program, e)| {
@@ -82,6 +101,9 @@ pub fn call(function: &str, args: &[HostValue], cancelled: &dyn Fn() -> bool) ->
             });
             match r {
                 Ok(e) => ok_json(&[("qasm", quoted(&e.circuit.to_qasm()))]),
+                Err(d) if d.iter().any(|d| d.code == Code::Cancelled) => {
+                    return Err(StdError::new(StdErrorKind::Cancelled, msg::cancelled()))
+                }
                 Err(d) => err_json(&map, &d),
             }
         }

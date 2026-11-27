@@ -745,6 +745,15 @@ fn studio_qasm_uses_the_app_output_limit() {
     );
 }
 
+// B-A5 in Studio: Stop cancels `std.qxide.qasm` as it does `std.qxide.run`, instead of letting
+// the program run on until a budget ends it.
+#[test]
+fn studio_qasm_can_be_cancelled() {
+    let src = "void main() {\n    QReg q = qreg(1);\n    while true {\n        h(q[0]);\n    }\n}\n";
+    let r = super::studio::call("qasm", &[HostValue::Str(src.into())], &|| true);
+    assert_eq!(r.map_err(|e| e.kind), Err(super::stdlib::StdErrorKind::Cancelled));
+}
+
 // `extern` declarations (src/lang/ffi.rs): only the CLI with `--allow ffi` in a build that can
 // call native code; every other host refuses them before anything is loaded.
 #[test]
