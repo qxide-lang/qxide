@@ -98,6 +98,40 @@ fn lf(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
+/// `s` as a TOML basic string, quotes included.
+fn toml_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `s` as HTML text, safe inside elements and quoted attributes.
+fn html_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn new(args: &[String]) -> Result<ExitCode> {
     let [dir] = args else {
         return Err(Failure::usage(msg::new_needs_name()));
@@ -117,15 +151,17 @@ fn new(args: &[String]) -> Result<ExitCode> {
     let (major, minor) = VERSION.split_once('.').map_or((VERSION, "0"), |(a, rest)| {
         (a, rest.split('.').next().unwrap_or("0"))
     });
+    // The folder name is user text: escape it for each file it lands in (B-A13).
+    let title = toml_string(&folder);
     let manifest = format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nqxide = \">={major}.{minor}\"\n\n[dependencies]\n\n[app]\ntitle = \"{folder}\"\nmodule = \"app\"\ncommands = [\"measure_bell\", \"save_result\"]\npermissions = [\"log\", \"time\", \"fs\"]\nwidth = 720\nheight = 560\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nqxide = \">={major}.{minor}\"\n\n[dependencies]\n\n[app]\ntitle = {title}\nmodule = \"app\"\ncommands = [\"measure_bell\", \"save_result\"]\npermissions = [\"log\", \"time\", \"fs\"]\nwidth = 720\nheight = 560\n"
     );
     let files = [
         ("qxide.toml", manifest),
         ("src/app.qx", lf(TEMPLATE_APP)),
         (
             "ui/index.html",
-            lf(TEMPLATE_HTML).replace("{title}", &folder),
+            lf(TEMPLATE_HTML).replace("{title}", &html_text(&folder)),
         ),
         ("ui/app.js", lf(TEMPLATE_JS)),
         ("ui/style.css", lf(TEMPLATE_CSS)),

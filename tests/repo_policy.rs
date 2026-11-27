@@ -88,7 +88,9 @@ fn ci_token_is_read_only() {
 #[test]
 fn site_sends_security_headers() {
     let text = read("site/public/_headers");
-    let mut lines = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#'));
+    let mut lines = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'));
     assert_eq!(lines.next(), Some("/*"), "headers must apply to every path");
     let headers: Vec<(String, String)> = lines
         .map(|l| {
@@ -107,7 +109,11 @@ fn site_sends_security_headers() {
     assert_eq!(get("x-frame-options"), "DENY");
     assert!(get("referrer-policy").starts_with("strict-origin"));
     let csp = get("content-security-policy");
-    for part in ["frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'"] {
+    for part in [
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "base-uri 'self'",
+    ] {
         assert!(csp.contains(part), "CSP lacks {part}: {csp}");
     }
 }

@@ -117,6 +117,34 @@ fn load_reports_bad_app_sections_and_commands() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+// B-A13: the folder name lands in TOML and HTML as text, not as syntax.
+#[test]
+fn new_escapes_the_folder_name() {
+    let base = temp("escape");
+    let dir = base.join("Tom & Jerry's <lab>");
+    if new(&[dir.display().to_string()]).is_err() {
+        // `<` and `>` are not allowed in Windows file names.
+        let dir = base.join("Tom & Jerry's lab");
+        assert!(new(&[dir.display().to_string()]).is_ok());
+        let html = std::fs::read_to_string(dir.join("ui/index.html")).unwrap();
+        assert!(
+            html.contains("<title>Tom &amp; Jerry&#39;s lab</title>"),
+            "{html}"
+        );
+    } else {
+        let html = std::fs::read_to_string(dir.join("ui/index.html")).unwrap();
+        assert!(
+            html.contains("<title>Tom &amp; Jerry&#39;s &lt;lab&gt;</title>"),
+            "{html}"
+        );
+    }
+    assert_eq!(toml_string("a\"b\\c\n\u{7f}"), r#""a\"b\\c\n\u007F""#);
+    assert_eq!(
+        html_text("<a href='x'>&\"</a>"),
+        "&lt;a href=&#39;x&#39;&gt;&amp;&quot;&lt;/a&gt;"
+    );
+}
+
 #[test]
 fn usage_errors() {
     assert!(new(&[]).is_err());
