@@ -537,6 +537,19 @@ impl Linker<'_> {
             );
             return None;
         }
+        // A device name would open the device instead of a file on older Windows (B-07).
+        if let Some(seg) = key.1.iter().find(|s| stdlib::reserved_name(s)) {
+            let d = self.err(
+                Code::ModuleNotFound,
+                imp.span,
+                msg::module_not_found(&display),
+            );
+            d.notes.push(Note {
+                span: None,
+                message: msg::note_device_module(seg),
+            });
+            return None;
+        }
         let file = module_file(&root.src_dir, &key.1);
         let src = match (self.read)(&file) {
             Ok(s) => s,

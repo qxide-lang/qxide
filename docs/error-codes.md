@@ -2332,7 +2332,7 @@ import bell_utils.bell_pair;
 
 ## Q0502: module file not found
 
-An `import` statement refers to a module whose corresponding `.qx` file under `src/` does not exist or cannot be read. Each module path maps to a file relative to the package's `src/` directory (for example, `app.gates` maps to `src/gates.qx` and the package root `app` maps to `src/lib.qx`), and the diagnostic note shows the path the compiler tried to open. Checking that every imported module resolves to an existing source file catches typos and missing files before type checking.
+An `import` statement refers to a module whose corresponding `.qx` file under `src/` does not exist or cannot be read. Each module path maps to a file relative to the package's `src/` directory (for example, `app.gates` maps to `src/gates.qx` and the package root `app` maps to `src/lib.qx`), and the diagnostic note shows the path the compiler tried to open. A module path with a Windows device name as a part (`con`, `nul`, `aux`, `prn`, `COM1`, and similar) is refused without reading anything, since no Windows system can store such a file. Checking that every imported module resolves to an existing source file catches typos and missing files before type checking.
 
 Erroneous code example:
 

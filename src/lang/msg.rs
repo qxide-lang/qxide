@@ -772,6 +772,12 @@ pub fn note_module_file(path: &str, err: &str) -> String {
     format!("tried reading `{path}`: {err}")
 }
 
+pub fn note_device_module(segment: &str) -> String {
+    format!(
+        "`{segment}` is a Windows device name, so it cannot be the name of a module file or folder"
+    )
+}
+
 pub fn unknown_import(name: &str, module: &str) -> String {
     format!("cannot find function `{name}` in module `{module}`")
 }

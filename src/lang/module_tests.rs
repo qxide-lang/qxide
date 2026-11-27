@@ -525,3 +525,29 @@ fn fix_edits_only_the_entry_file() {
     assert_eq!(fixed.applied.len(), 2, "{:?}", fixed.applied);
     super::features::set_value_semantics(false);
 }
+
+// B-07 (docs/security/BASELINE_FINDINGS.md): module paths that name a Windows device (`con`,
+// `nul`, `COM1`) would open the device on older Windows and cannot be files on any Windows, so
+// the linker refuses them before reading anything.
+#[test]
+fn device_names_are_not_module_names() {
+    let files = [
+        ("app/src/con.qx", "public void f() {}\n"),
+        ("app/src/nul/x.qx", "public void f() {}\n"),
+        ("app/src/COM1.qx", "public void f() {}\n"),
+        ("app/src/console.qx", "public void f() {}\n"),
+    ];
+    for import in [
+        "import app.con.f;",
+        "import app.nul.x.f;",
+        "import app.COM1.f;",
+    ] {
+        let e = errs(&format!("{import}\nvoid main() {{}}\n"), &files);
+        assert_eq!(
+            e.iter().map(|d| d.0).collect::<Vec<_>>(),
+            ["Q0502"],
+            "{import}: {e:?}"
+        );
+    }
+    assert!(errs("import app.console.f;\nvoid main() {}\n", &files).is_empty());
+}
