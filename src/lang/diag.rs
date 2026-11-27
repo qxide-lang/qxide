@@ -422,9 +422,10 @@ impl SourceMap {
     }
 }
 
-/// `s` with every control character except tab (C0, DEL, and C1 such as CSI) shown as a
-/// `\u{..}` escape, so text from a source file, an archive, or a registry cannot drive the
-/// terminal. Used for everything printed that did not come from this binary.
+/// `s` with every control character except tab (C0, DEL, and C1 such as CSI) and every
+/// bidirectional formatting character shown as a `\u{..}` escape, so text from a source file, an
+/// archive, or a registry cannot drive the terminal or reorder what it shows. Used for everything
+/// printed that did not come from this binary.
 pub fn printable(s: &str) -> Cow<'_, str> {
     if !s.chars().any(hidden) {
         return Cow::Borrowed(s);
@@ -440,9 +441,11 @@ pub fn printable(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Control characters other than tab, which `printable` shows as escapes.
+/// Control characters other than tab, and the bidirectional formatting characters (marks,
+/// embeddings, overrides, isolates), which `printable` shows as escapes.
 fn hidden(c: char) -> bool {
-    c.is_control() && c != '\t'
+    (c.is_control() && c != '\t')
+        || matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Renders `errors` one after another, separated by blank lines. At most `max_diagnostics` are
@@ -497,6 +500,20 @@ pub fn render_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // B-P4: bidirectional formatting characters reorder the text a terminal shows, so they are
+    // escaped like control characters. Other format characters (the joiner in emoji) stay.
+    #[test]
+    fn printable_escapes_controls_and_bidi_formatting() {
+        assert_eq!(printable("a\u{1b}[2Jb\tc"), "a\\u{1b}[2Jb\tc");
+        for c in ['\u{202e}', '\u{2066}', '\u{2069}', '\u{200f}', '\u{61c}'] {
+            assert_eq!(
+                printable(&format!("a{c}b")),
+                format!("a{}b", c.escape_unicode())
+            );
+        }
+        assert_eq!(printable("x\u{200d}y 큐"), "x\u{200d}y 큐");
+    }
 
     #[test]
     fn line_col_counts_chars_and_accepts_crlf() {

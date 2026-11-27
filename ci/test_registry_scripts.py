@@ -437,6 +437,11 @@ class ValidateEntries(unittest.TestCase):
             "carriage\rreturn",
             "tab\there",
             "nul\x00",
+            # Bidirectional formatting characters reorder what the terminal shows.
+            "safe‮exe.qx",
+            "a⁦b⁩",
+            "rtl‏mark",
+            "arabic؜mark",
         ]:
             with self.subTest(desc=repr(desc)):
                 reg = Registry(self)

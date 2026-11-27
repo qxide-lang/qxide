@@ -35,7 +35,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-P1 | Fixed | `validate.yml` runs on `pull_request_target` with the base branch's scripts (`REGISTRY_TEMPLATE_FIXES.md`). |
 | B-P2 | Fixed | Deleted index files are rejected (`REGISTRY_TEMPLATE_FIXES.md`). |
 | B-P3 | Fixed | Every version needs an archive in the repository that passes the checks (`REGISTRY_TEMPLATE_FIXES.md`). |
-| B-P4 | Partial | Client output escapes control characters (`PKG_CLIENT_FIXES.md`), and CI rejects control characters in descriptions (`REGISTRY_TEMPLATE_FIXES.md`). One part is still open. |
+| B-P4 | Fixed | Client output escapes control characters (`PKG_CLIENT_FIXES.md`) and, since 2026-11-27, bidirectional formatting characters (`lang::diag::tests::printable_escapes_controls_and_bidi_formatting`). Registry CI rejects both in descriptions (`ci/test_registry_scripts.py`). |
 | B-P5 | Fixed | Only an owner can yank by pull request, and no pull request can un-yank (`REGISTRY_TEMPLATE_FIXES.md`, `registry-template/scripts/validate.py`). |
 | B-P6 | Fixed | Hostile input is reported as an error, with depth and size caps (`REGISTRY_TEMPLATE_FIXES.md`). |
 | B-P7 | Fixed | Look-alike folding table, reserved names, and device names (`REGISTRY_TEMPLATE_FIXES.md`). |
@@ -82,7 +82,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-P1 | Fixed | Medium | READ | Package system / Registry CI | Registry PR can disable its own validation |
 | B-P2 | Fixed | Medium | READ | Package system / Registry CI | Deleting a whole index file passes validation |
 | B-P3 | Fixed | Medium-Low | READ | Package system / Registry CI | Externally hosted `dl` skips every archive check in CI |
-| B-P4 | Partial | Low-Medium | READ | Package system / CLI | Package descriptions can carry terminal escape sequences |
+| B-P4 | Fixed | Low-Medium | READ | Package system / CLI | Package descriptions can carry terminal escape sequences |
 | B-P5 | Fixed | Low | READ | Package system / Registry | Anyone can flip `yanked` in either direction for any package |
 | B-P6 | Fixed | Low | READ | Package system / Registry CI | `validate.py` reads archive members without a per-member cap |
 | B-P7 | Fixed | Low/Info | READ | Package system / Registry CI | Look-alike name check only strips hyphens |

@@ -34,20 +34,29 @@ fn actions_are_pinned_to_commit_hashes() {
     for path in workflows() {
         let text = std::fs::read_to_string(&path).unwrap();
         for (i, line) in text.lines().enumerate() {
-            let Some(rest) = line.trim_start().trim_start_matches("- ").strip_prefix("uses: ")
+            let Some(rest) = line
+                .trim_start()
+                .trim_start_matches("- ")
+                .strip_prefix("uses: ")
             else {
                 continue;
             };
             let spec = rest.split_whitespace().next().unwrap_or_default();
             let pinned = spec.rsplit_once('@').is_some_and(|(_, r)| {
-                r.len() == 40 && r.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                r.len() == 40
+                    && r.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             });
             if !pinned && !spec.starts_with("./") {
                 bad.push(format!("{}:{}: {spec}", path.display(), i + 1));
             }
         }
     }
-    assert!(bad.is_empty(), "actions not pinned to a commit:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "actions not pinned to a commit:\n{}",
+        bad.join("\n")
+    );
 }
 
 // B-S4: without a `permissions:` block a job gets the repository's default token scope, which
@@ -61,9 +70,15 @@ fn ci_token_is_read_only() {
         .skip(1)
         .take_while(|l| l.starts_with("  "))
         .collect();
-    assert_eq!(block, ["  contents: read"], "top-level permissions of ci.yml");
+    assert_eq!(
+        block,
+        ["  contents: read"],
+        "top-level permissions of ci.yml"
+    );
     assert!(
-        !text.lines().any(|l| l.trim_start().starts_with("permissions:") && l.starts_with(' ')),
+        !text
+            .lines()
+            .any(|l| l.trim_start().starts_with("permissions:") && l.starts_with(' ')),
         "a job in ci.yml widens the permissions"
     );
 }
