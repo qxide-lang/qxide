@@ -1560,3 +1560,29 @@ fn rust_comparison_programs_match_the_rust_results() {
         }
     }
 }
+
+// B-05 (docs/security/BASELINE_FINDINGS.md): a reader that closes the pipe early, as `| head`
+// does, must not make qxide panic. The command keeps its normal exit status.
+#[test]
+fn closed_stdout_pipe_is_not_a_panic() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let path = tmp_qx(
+        "b05_closed_pipe.qx",
+        "void main() {\n    for i in 0..200000 {\n        println(\"line {}\", i);\n    }\n}\n",
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_qxide"))
+        .args(["run", &path, "--seed", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run qxide");
+    let mut stdout = child.stdout.take().unwrap();
+    let mut first = [0u8; 100];
+    stdout.read_exact(&mut first).unwrap();
+    drop(stdout);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+}

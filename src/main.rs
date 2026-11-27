@@ -3,6 +3,46 @@
 //! The crate is a library first; this binary is a thin wrapper so the project
 //! can be installed as a standalone tool (cargo-dist installers, PyPI wheel).
 
+// The binary's own `print!` family, defined before the modules so that they use it too. std's
+// macros panic when the reader has closed the pipe (`qxide run x.qx | head`); these drop the rest
+// of that write instead, so the command still ends with its normal exit status. Any other write
+// error panics as std's would.
+macro_rules! print {
+    ($($t:tt)*) => { $crate::write_std(false, false, ::std::format_args!($($t)*)) };
+}
+macro_rules! println {
+    () => { $crate::write_std(false, true, ::std::format_args!("")) };
+    ($($t:tt)*) => { $crate::write_std(false, true, ::std::format_args!($($t)*)) };
+}
+macro_rules! eprint {
+    ($($t:tt)*) => { $crate::write_std(true, false, ::std::format_args!($($t)*)) };
+}
+macro_rules! eprintln {
+    () => { $crate::write_std(true, true, ::std::format_args!("")) };
+    ($($t:tt)*) => { $crate::write_std(true, true, ::std::format_args!($($t)*)) };
+}
+
+fn write_std(to_stderr: bool, newline: bool, args: std::fmt::Arguments) {
+    use std::io::Write;
+    fn emit(w: &mut dyn Write, newline: bool, args: std::fmt::Arguments) -> std::io::Result<()> {
+        w.write_fmt(args)?;
+        if newline {
+            w.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+    let (r, name) = if to_stderr {
+        (emit(&mut std::io::stderr().lock(), newline, args), "stderr")
+    } else {
+        (emit(&mut std::io::stdout().lock(), newline, args), "stdout")
+    };
+    if let Err(e) = r {
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            panic!("failed printing to {name}: {e}");
+        }
+    }
+}
+
 mod app;
 mod bundle;
 mod lang;
