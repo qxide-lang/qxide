@@ -49,3 +49,21 @@ fn actions_are_pinned_to_commit_hashes() {
     }
     assert!(bad.is_empty(), "actions not pinned to a commit:\n{}", bad.join("\n"));
 }
+
+// B-S4: without a `permissions:` block a job gets the repository's default token scope, which
+// can include write access.
+#[test]
+fn ci_token_is_read_only() {
+    let text = read(".github/workflows/ci.yml");
+    let block: Vec<&str> = text
+        .lines()
+        .skip_while(|l| *l != "permissions:")
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .collect();
+    assert_eq!(block, ["  contents: read"], "top-level permissions of ci.yml");
+    assert!(
+        !text.lines().any(|l| l.trim_start().starts_with("permissions:") && l.starts_with(' ')),
+        "a job in ci.yml widens the permissions"
+    );
+}
