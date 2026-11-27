@@ -117,3 +117,18 @@ fn site_sends_security_headers() {
         assert!(csp.contains(part), "CSP lacks {part}: {csp}");
     }
 }
+
+// B-S7: the Vite dev server may read only the site and the examples it bundles, not the whole
+// repository (target/, .git/, local files).
+#[test]
+fn dev_server_reads_only_the_site_and_examples() {
+    let text = read("site/vite.config.ts");
+    let start = text.find("allow: [").expect("server.fs.allow") + "allow: [".len();
+    let list = &text[start..start + text[start..].find(']').unwrap()];
+    let dirs: Vec<&str> = list
+        .split(',')
+        .map(|s| s.trim().trim_matches('\''))
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert_eq!(dirs, [".", "../examples/qx"], "server.fs.allow");
+}
