@@ -67,6 +67,8 @@ fn new_then_build_attaches_a_bundle_to_the_runtime() {
     assert_eq!(m["permissions"], serde_json::json!(["log", "time", "fs"]));
     assert_eq!(m["packages"][0]["src"], "pkg/0/bell_lab/src");
     assert_eq!(m["dev"], false);
+    // The runtime refuses a bundled manifest with a data folder (B-A4).
+    assert!(m["data"].is_null());
     let _ = std::fs::remove_dir_all(&base);
 }
 
