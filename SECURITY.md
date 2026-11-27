@@ -49,6 +49,17 @@ Problems in a package published to the registry (malicious or vulnerable package
 - Denial-of-service against `qxide.dev` or GitHub infrastructure
 - Findings that require an already-compromised machine
 
+## Verifying releases
+
+Releases after 0.8.0 list every file in `SHA256SUMS` and carry a GitHub build provenance attestation made by `.github/workflows/release.yml` in this repository:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify <file> --repo qxide-lang/qxide
+```
+
+A file whose checksum or attestation does not verify was not built by this repository's release workflow; please report it. PyPI wheels are published with Trusted Publishing, so PyPI shows which workflow uploaded each file.
+
 ## Testing guidelines
 
 - Do not test against `qxide.dev` or the live registry beyond normal use.

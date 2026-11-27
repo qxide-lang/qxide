@@ -24,6 +24,7 @@ Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` languag
 - **Warn on adjacent unary minus (`--x`)**: Writing two minus signs together as `--x` remains valid double negation (existing programs keep working), but now reports warning `Q0802` because `--i;` silently does nothing, suggesting `x -= 1;` or `-(-x)`. `qxide fmt` now keeps `- -a` apart rather than joining it into `--a`.
 - **Standard module import hints**: `Q0508` (import outside a project) and unknown-package errors now suggest `import std.<name>;` when the first segment is a standard module name such as `time`. Standard library imports already work without a project.
 - **CI and site**: Hand-written workflows pin actions to commits and CI runs with a read-only token. qxide.dev sends security headers from `site/public/_headers`, and the Vite dev server reads only the site and `examples/qx`.
+- **Release checks**: GitHub Releases now include `SHA256SUMS` for every file, the install scripts included, and a build provenance attestation for each file (`gh attestation verify FILE --repo qxide-lang/qxide`). PyPI uploads use Trusted Publishing instead of an API token. The release workflow is kept by hand from now on (`allow-dirty = ["ci"]` in `dist-workspace.toml`).
 
 ### Fixed
 

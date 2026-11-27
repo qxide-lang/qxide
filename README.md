@@ -47,6 +47,20 @@ Verify the installation with:
 qxide --version
 ```
 
+### Checking a download
+
+From the release after 0.8.0 on, every file of a GitHub Release is listed in `SHA256SUMS` and has a build provenance attestation from this repository's release workflow. To check the install script before running it, or an archive you downloaded by hand (`gh` is the GitHub CLI):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSfO https://github.com/qxide-lang/qxide/releases/latest/download/qxide-installer.sh
+curl --proto '=https' --tlsv1.2 -LsSfO https://github.com/qxide-lang/qxide/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify qxide-installer.sh --repo qxide-lang/qxide
+sh qxide-installer.sh
+```
+
+On Windows, compare `(Get-FileHash qxide-installer.ps1).Hash` with its line in `SHA256SUMS`, and run `gh attestation verify` the same way. PyPI wheels are uploaded with Trusted Publishing, and PyPI shows their provenance on each file's page.
+
 ## Quick start with `.qx`
 
 The following `.qx` program entangles two qubits into a Bell pair using Java/C-style declarations. Additional examples (`bell.qx`, `ghz.qx`, `teleport.qx`) are in `examples/qx/`.

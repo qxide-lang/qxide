@@ -5,6 +5,9 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.34.0"
+# release.yml is kept by hand (read-only token outside `host`, checked tag names, pinned actions,
+# checksums and attestations; see the comment at its top), so `dist generate` must not rewrite it.
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # Release binaries include the Cranelift JIT (`--engine jit`); see docs/design/qx-jit.md.
