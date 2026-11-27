@@ -13,13 +13,15 @@
 - **Repro files:** The exact `.qx` inputs are reproduced inline below; scratch copies live under `target/sec-repro/` (ignored, not committed).
 - **Paths:** Bare `validate.py`, `build_search.py`, and `scripts/...` paths refer to `registry-template/scripts/`; paths in the app-framework section are on the `app-framework` branch.
 
-## Status on `main` (2026-11-26, `8d61b54`)
+## Status on `main` (2026-11-26, `8d61b54`; updated 2026-11-27)
 
 The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_LIMITS_FIXES.md`, `PKG_CLIENT_FIXES.md`, `REGISTRY_TEMPLATE_FIXES.md`, and `APP_FRAMEWORK_FIXES.md` have since been merged and released in 0.8.0, and the `app-framework` branch is now part of `main`. Each finding was checked again against the code at `8d61b54` and against the fix records. B-05 and B-06 were also re-run with a debug build of that commit. The `Now` column in the summary gives the result:
 
 - **Fixed:** the issue no longer occurs. The record named in the note has the change and its regression tests.
 - **Partial:** part of the issue remains, as the note says.
 - **Open:** unchanged.
+
+Notes that start with "Fixed 2026-11-27" or "since 2026-11-27" were fixed after `8d61b54`; each names the test that failed before the change. The items still open need a decision outside the code: a PyPI setting (B-S2), cargo-dist configuration (B-S5, B-S6), or a design for signed app bundles (B-A4, B-A6).
 
 | ID | Now | Note |
 | --- | --- | --- |
