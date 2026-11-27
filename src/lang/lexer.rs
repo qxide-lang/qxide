@@ -7,6 +7,9 @@ use super::msg;
 pub enum Tok {
     Ident(String),
     Int(i64),
+    // `9223372036854775808`, one past `i64::MAX`. The parser accepts it only right after a unary
+    // minus, which makes `i64::MIN` (as in Java); anywhere else it is `Q0104`.
+    IntMinAbs,
     // f64 bit pattern, so `Tok` can stay `Eq`.
     Double(u64),
     Str(String),
@@ -152,7 +155,7 @@ impl Tok {
             Ge => ">=",
             AndAnd => "&&",
             OrOr => "||",
-            Ident(_) | Int(_) | Double(_) | Str(_) | Eof => return None,
+            Ident(_) | Int(_) | IntMinAbs | Double(_) | Str(_) | Eof => return None,
         })
     }
 
@@ -161,6 +164,7 @@ impl Tok {
         match self {
             Tok::Ident(s) => format!("`{s}`"),
             Tok::Int(n) => format!("`{n}`"),
+            Tok::IntMinAbs => "`9223372036854775808`".to_string(),
             Tok::Double(b) => format!("`{:?}`", f64::from_bits(*b)),
             Tok::Str(_) => msg::desc_string(),
             Tok::Eof => msg::desc_eof(),
@@ -291,6 +295,9 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Span>), Diagnosti
             } else {
                 match digits.parse::<i64>() {
                     Ok(n) => Tok::Int(n),
+                    Err(_) if digits.trim_start_matches('0') == "9223372036854775808" => {
+                        Tok::IntMinAbs
+                    }
                     Err(_) => {
                         return Err(Diagnostic::new(
                             Code::IntTooLarge,

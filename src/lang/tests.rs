@@ -2894,3 +2894,23 @@ fn std_imports_need_no_project() {
         "{err}"
     );
 }
+
+// B-06 (docs/security/BASELINE_FINDINGS.md): the smallest `int` can be written as a literal, as
+// in Java: 9223372036854775808 is allowed right after a unary minus and nowhere else.
+#[test]
+fn smallest_int_literal_follows_a_unary_minus() {
+    let src = "void main() {\n    int b = -9223372036854775808;\n    int c = - 9_223_372_036_854_775_808;\n    println(\"{} {}\", b, b == c);\n    match b {\n        -9223372036854775808 => {\n            println(\"min\");\n        }\n        _ => {}\n    }\n}\n";
+    assert_eq!(run_ok(src, 1), "-9223372036854775808 true\nmin\n");
+    for body in [
+        "    int b = 9223372036854775808;",
+        "    int b = 1 - 9223372036854775808;",
+        "    int b = -(9223372036854775808);",
+        "    int b = -9223372036854775809;",
+    ] {
+        assert_eq!(codes(&main_body(body)), ["Q0104"], "{body}");
+    }
+    assert_eq!(
+        format("t.qx", "void main() { int b = -9223372036854775808; }\n").unwrap(),
+        "void main() {\n    int b = -9223372036854775808;\n}\n"
+    );
+}

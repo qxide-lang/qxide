@@ -26,6 +26,8 @@ Notable changes to qxide (the Rust crate, the `qxide` CLI, and the `.qx` languag
 ### Fixed
 
 - **Complete standard module list in `Q0701`**: The help text for `Q0701` (unknown standard module) previously listed only five modules and now lists every standard module of the build.
+- **Closed output pipes**: `qxide` no longer panics (exit status 101) when the reader of its output stops early, as `qxide run x.qx | head` does. It exits with the command's usual status.
+- **Smallest `int` literal**: `-9223372036854775808` is now accepted. The literal `9223372036854775808` is valid only right after a unary minus, as in Java; elsewhere it is still `Q0104`.
 
 ## [0.8.0] - 2026-11-22
 

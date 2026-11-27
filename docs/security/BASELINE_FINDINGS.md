@@ -28,7 +28,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-03 | Fixed | Output limit counts every shot, `Q0415` (`EXECUTION_LIMITS_FIXES.md`). |
 | B-04 | Open | `site/src/playground/share.ts:50-54` still inflates the whole hash before the `MAX_CODE` check. |
 | B-05 | Fixed | Fixed 2026-11-27: the binary's `print!` family drops output once the reader closes the pipe, and the command keeps its exit status (`tests/cli.rs::closed_stdout_pipe_is_not_a_panic`). |
-| B-06 | Open | Re-run: still `Q0104`. Correctness only. |
+| B-06 | Fixed | Fixed 2026-11-27: `9223372036854775808` is accepted right after a unary minus, as in Java (`lang::tests::smallest_int_literal_follows_a_unary_minus`). |
 | B-07 | Open | `src/lang/link.rs` still has no device-name check. Windows 11 treats these names as ordinary missing files. |
 | B-08 | Fixed | Estimated simulation work limit, `Q0417` (`EXECUTION_LIMITS_FIXES.md`). |
 | B-09 | Fixed | Registers are shared slices (`Rc<[T]>`), so indexing no longer copies them (`EXECUTION_LIMITS_FIXES.md`). |
@@ -75,7 +75,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-03 | Fixed | Medium | REPRODUCED | Multi-shot runtime | Multi-shot output amplification |
 | B-04 | Open | Low | REPRODUCED | Site / Playground | Share link is fully inflated before the size check |
 | B-05 | Fixed | Info | REPRODUCED | CLI | CLI panics when stderr/stdout is closed early |
-| B-06 | Open | Info | REPRODUCED | Parser | Smallest i64 literal cannot be written |
+| B-06 | Fixed | Info | REPRODUCED | Parser | Smallest i64 literal cannot be written |
 | B-07 | Open | Info | SUSPECTED (Windows before 11) | Linker | Module names that are Windows device names |
 | B-08 | Fixed | Medium-Low | REPRODUCED | Simulator | Stabilizer simulation time grows roughly cubically with qubit count inside the memory limit |
 | B-09 | Fixed | Medium-Low | REPRODUCED timing; cause READ | Interpreter | Each register index copies the whole register |

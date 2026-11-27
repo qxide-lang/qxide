@@ -402,9 +402,13 @@ impl<'a> Printer<'a> {
             return true;
         };
         match &self.toks[p].tok {
-            Tok::Ident(_) | Tok::Int(_) | Tok::Double(_) | Tok::Str(_) | Tok::True | Tok::False => {
-                false
-            }
+            Tok::Ident(_)
+            | Tok::Int(_)
+            | Tok::IntMinAbs
+            | Tok::Double(_)
+            | Tok::Str(_)
+            | Tok::True
+            | Tok::False => false,
             Tok::RBracket => false,
             Tok::RParen => self.cast_close[p],
             _ => true,

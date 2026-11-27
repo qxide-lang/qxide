@@ -906,6 +906,12 @@ impl Parser {
                     };
                     PatKind::Int(-n)
                 }
+                Tok::Minus if matches!(self.peek_at(1), Tok::IntMinAbs) => {
+                    self.bump();
+                    self.bump();
+                    PatKind::Int(i64::MIN)
+                }
+                Tok::IntMinAbs => return Err(int_min_abs(start)),
                 Tok::True | Tok::False => PatKind::Bool(self.bump().tok == Tok::True),
                 Tok::Str(text) => {
                     self.bump();
@@ -1348,6 +1354,19 @@ impl Parser {
             };
             return Err(self.incdec_error(op, &target));
         }
+        // `-9223372036854775808` is `i64::MIN`, unless a postfix `[i]` or `.m()` would apply to
+        // the out-of-range literal first.
+        if self.peek() == &Tok::Minus
+            && self.peek_at(1) == &Tok::IntMinAbs
+            && !matches!(self.peek_at(2), Tok::Dot | Tok::LBracket)
+        {
+            let start = self.bump().span;
+            let span = start.to(self.bump().span);
+            return Ok(Expr {
+                kind: ExprKind::Int(i64::MIN),
+                span,
+            });
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Bang => UnOp::Not,
@@ -1443,6 +1462,7 @@ impl Parser {
                 self.bump();
                 ExprKind::Int(n)
             }
+            Tok::IntMinAbs => return Err(int_min_abs(span)),
             Tok::Double(bits) => {
                 self.bump();
                 ExprKind::Double(f64::from_bits(bits))
@@ -1566,6 +1586,11 @@ impl Parser {
         let end = self.expect(Tok::RParen)?;
         Ok((args, end))
     }
+}
+
+/// `9223372036854775808` without the unary minus that would make it `i64::MIN`.
+fn int_min_abs(span: Span) -> Diagnostic {
+    Diagnostic::new(Code::IntTooLarge, span, msg::int_too_large())
 }
 
 /// Splits a decoded string literal into text and `{}` holes; `{{`/`}}` are literal braces.

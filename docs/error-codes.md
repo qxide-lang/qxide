@@ -66,7 +66,7 @@ void main() {
 
 ## Q0104: integer literal out of range for `int`
 
-An integer literal exceeds the range representable by a 64-bit signed integer (`i64`), which backs the `int` type. Because the value cannot fit without overflowing, the compiler rejects the literal instead of truncating or wrapping it silently. This ensures that integer constants always represent the exact value written in the source code.
+An integer literal exceeds the range representable by a 64-bit signed integer (`i64`), which backs the `int` type. Because the value cannot fit without overflowing, the compiler rejects the literal instead of truncating or wrapping it silently. This ensures that integer constants always represent the exact value written in the source code. The smallest `int` is written `-9223372036854775808`: the literal `9223372036854775808` is accepted only right after a unary minus.
 
 Erroneous code example:
 
