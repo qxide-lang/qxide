@@ -82,3 +82,32 @@ fn ci_token_is_read_only() {
         "a job in ci.yml widens the permissions"
     );
 }
+
+// B-S1: Cloudflare Pages sends the headers of `site/public/_headers` (copied into the build) with
+// every page of qxide.dev.
+#[test]
+fn site_sends_security_headers() {
+    let text = read("site/public/_headers");
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#'));
+    assert_eq!(lines.next(), Some("/*"), "headers must apply to every path");
+    let headers: Vec<(String, String)> = lines
+        .map(|l| {
+            let (k, v) = l.trim().split_once(':').expect("`Name: value`");
+            (k.to_ascii_lowercase(), v.trim().to_string())
+        })
+        .collect();
+    let get = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    assert_eq!(get("x-content-type-options"), "nosniff");
+    assert_eq!(get("x-frame-options"), "DENY");
+    assert!(get("referrer-policy").starts_with("strict-origin"));
+    let csp = get("content-security-policy");
+    for part in ["frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'"] {
+        assert!(csp.contains(part), "CSP lacks {part}: {csp}");
+    }
+}
