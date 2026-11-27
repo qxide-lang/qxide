@@ -60,7 +60,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-A6 | Open | `src/app/bundle.rs` still expects the bundle trailer at the end of the file. |
 | B-A7 | Fixed | Fixed worker pool, panics caught, and call ids that are still running cannot be reused (M-13 in `APP_FRAMEWORK_FIXES.md`). |
 | B-A8 | Fixed | `String` text costs steps per byte before it is allocated (`STR_BYTE_STEPS`, part 2 of `EXECUTION_LIMITS_FIXES.md`). |
-| B-A9 | Open | `percent_decode` still slices by bytes (`crates/qxide-app-runtime/src/main.rs:125`); whether a request path can hold non-ASCII bytes is still unchecked. |
+| B-A9 | Fixed | Fixed 2026-11-27: `percent_decode` reads the hex digits as bytes (`crates/qxide-app-runtime` test `percent_decode_keeps_non_ascii_after_percent`, which panicked before). |
 | B-A10 | Open | Dev-mode `ui_file` still reads with `std::fs::read` (`crates/qxide-app-runtime/src/app.rs:215`). |
 | B-A11 | Open | The `RESERVED` list in `src/lang/stdlib.rs` is still shorter than the one in `src/pkg/archive.rs`. |
 | B-A12 | Open | Info, kept by design. The token is now capped at 64 characters, but the page still generates it. |
@@ -107,7 +107,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-A6 | Open | Info | READ | App framework (distribution) | Authenticode signing would break built apps |
 | B-A7 | Fixed | Low | READ | App framework (IPC) | IPC worker robustness |
 | B-A8 | Fixed | Low-Medium | READ | App framework (interpreter) | Unbounded `String` growth |
-| B-A9 | Open | Low | SUSPECTED | App framework (runtime) | `percent_decode` slices `&str` by bytes |
+| B-A9 | Fixed | Low | SUSPECTED | App framework (runtime) | `percent_decode` slices `&str` by bytes |
 | B-A10 | Open | Info | READ | App framework (dev) | Dev-mode UI serving follows symlinks, has no reserved-name filter and no size cap |
 | B-A11 | Open | Low | SUSPECTED | App framework (`std.fs`) | Reserved-name list in stdlib `confine` is shorter than `archive.rs`'s |
 | B-A12 | Open | Info | READ | App framework (IPC) | The page token in `bridge.js:11` is page-generated and compared only in JS |

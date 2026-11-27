@@ -121,9 +121,11 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
+        // Hex digits are read as bytes: `s[i + 1..i + 3]` could end inside a multi-byte character.
         if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
+            let hex = |c: u8| char::from(c).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
                 i += 3;
                 continue;
             }
@@ -914,5 +916,14 @@ mod tests {
         assert!(!same_origin("https://example.com/"));
         assert_eq!(percent_decode("a%20b%2F"), "a b/");
         assert_eq!(percent_decode("bad%2"), "bad%2");
+    }
+
+    // B-A9: a `%` followed by a non-ASCII character is kept as text instead of slicing the
+    // string inside that character.
+    #[test]
+    fn percent_decode_keeps_non_ascii_after_percent() {
+        assert_eq!(percent_decode("%\u{e9}x"), "%\u{e9}x");
+        assert_eq!(percent_decode("a%1\u{e9}"), "a%1\u{e9}");
+        assert_eq!(percent_decode("%%41\u{d050}"), "%A\u{d050}");
     }
 }
