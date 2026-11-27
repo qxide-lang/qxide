@@ -26,7 +26,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-01 | Fixed | Step limit, `Q0413` (`EXECUTION_LIMITS_FIXES.md`). `qxide run --no-budget` turns it off on request. |
 | B-02 | Fixed | Operation and output limits, `Q0414` and `Q0415` (`EXECUTION_LIMITS_FIXES.md`). |
 | B-03 | Fixed | Output limit counts every shot, `Q0415` (`EXECUTION_LIMITS_FIXES.md`). |
-| B-04 | Open | `site/src/playground/share.ts:50-54` still inflates the whole hash before the `MAX_CODE` check. |
+| B-04 | Fixed | Fixed 2026-11-27: `share.ts` inflates chunk by chunk and stops past `MAX_CODE` (`site/scripts/share-test.mjs`; the report's 140 MiB link grew memory by 426 MiB before). |
 | B-05 | Fixed | Fixed 2026-11-27: the binary's `print!` family drops output once the reader closes the pipe, and the command keeps its exit status (`tests/cli.rs::closed_stdout_pipe_is_not_a_panic`). |
 | B-06 | Fixed | Fixed 2026-11-27: `9223372036854775808` is accepted right after a unary minus, as in Java (`lang::tests::smallest_int_literal_follows_a_unary_minus`). |
 | B-07 | Open | `src/lang/link.rs` still has no device-name check. Windows 11 treats these names as ordinary missing files. |
@@ -73,7 +73,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-01 | Fixed | Medium | REPRODUCED | Interpreter | Unbounded loop/recursion: no step or time limit in the interpreter |
 | B-02 | Fixed | Medium | REPRODUCED | Interpreter / Circuit | Unbounded memory from gates or output produced in a loop |
 | B-03 | Fixed | Medium | REPRODUCED | Multi-shot runtime | Multi-shot output amplification |
-| B-04 | Open | Low | REPRODUCED | Site / Playground | Share link is fully inflated before the size check |
+| B-04 | Fixed | Low | REPRODUCED | Site / Playground | Share link is fully inflated before the size check |
 | B-05 | Fixed | Info | REPRODUCED | CLI | CLI panics when stderr/stdout is closed early |
 | B-06 | Fixed | Info | REPRODUCED | Parser | Smallest i64 literal cannot be written |
 | B-07 | Open | Info | SUSPECTED (Windows before 11) | Linker | Module names that are Windows device names |

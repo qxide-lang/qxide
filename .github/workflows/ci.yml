@@ -31,7 +31,7 @@ jobs:
       - run: cargo clippy --all-targets --features unstable-lang -- -D warnings
       - run: cargo test --features unstable-lang --test lang_api
 
-  # The built playground module must print exactly what the CLI prints. Both scripts use only Node
+  # The built playground module must print exactly what the CLI prints. These scripts use only Node
   # built-ins, so no npm install is needed.
   wasm-parity:
     runs-on: ubuntu-latest
@@ -47,6 +47,8 @@ jobs:
       - run: node scripts/build-wasm.mjs
         working-directory: site
       - run: node scripts/parity.mjs
+        working-directory: site
+      - run: node --expose-gc scripts/share-test.mjs
         working-directory: site
 
   # Release binaries are built with the Cranelift JIT (`jit` feature), so it is linted and tested on

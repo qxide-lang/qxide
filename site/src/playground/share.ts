@@ -24,7 +24,33 @@ async function pipe(bytes: Uint8Array, stream: CompressionStream | Decompression
   return new Uint8Array(await out.arrayBuffer());
 }
 
-const canCompress = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
+/** Inflates `bytes`, giving up as soon as the output passes `MAX_CODE`, so a small link cannot
+ * make the page hold a huge program in memory first. */
+async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_CODE) {
+      await reader.cancel();
+      throw new Error('shared program too large');
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+const canCompress =typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
 
 export async function encodeShare({code, shots, seed}: Shared): Promise<string> {
   const params = new URLSearchParams();
@@ -47,7 +73,7 @@ export async function decodeShare(hash: string): Promise<Shared | null> {
   let bytes: Uint8Array;
   if (zipped !== null) {
     if (!canCompress) throw new Error('this browser cannot decompress share links');
-    bytes = await pipe(fromBase64Url(zipped), new DecompressionStream('deflate-raw'));
+    bytes = await inflate(fromBase64Url(zipped));
   } else {
     bytes = fromBase64Url(plain!);
   }
