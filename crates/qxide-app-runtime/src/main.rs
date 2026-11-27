@@ -1003,4 +1003,46 @@ mod tests {
             assert!(r.is_err(), "{key} = {value} was accepted");
         }
     }
+
+    // B-A10: in dev mode the page reads `ui/` from disk. Only regular files inside that folder are
+    // served, no device names, and nothing larger than `qxide app build` would bundle.
+    #[test]
+    fn dev_ui_files_stay_inside_the_folder() {
+        let base = std::env::temp_dir().join(format!("qxide-rt-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ui = base.join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), b"<p>hi</p>").unwrap();
+        std::fs::write(base.join("secret.txt"), b"secret").unwrap();
+        let big = std::fs::File::create(ui.join("big.bin")).unwrap();
+        big.set_len((64 << 20) + 1).unwrap();
+        drop(big);
+        let manifest = serde_json::json!({
+            "format": 1, "qxide": env!("CARGO_PKG_VERSION"), "dev": true,
+            "title": "t", "identifier": "dev.qxide.app.test", "module": "app",
+            "commands": [], "permissions": [], "width": 400, "height": 300,
+            "packages": [{"name": "x", "src": base.join("src").display().to_string(), "deps": []}],
+            "entry": base.join("src/app.qx").display().to_string(),
+            "ui": ui.display().to_string(), "data": base.join("data").display().to_string()
+        });
+        let app = App::parse(manifest.to_string().as_bytes(), app::Files::Disk).unwrap();
+        assert_eq!(
+            app.ui_file("index.html").as_deref(),
+            Some(&b"<p>hi</p>"[..])
+        );
+        assert!(app.ui_file("big.bin").is_none());
+        assert!(app.ui_file("con").is_none());
+        assert!(app.ui_file("NUL.txt").is_none());
+        let link = ui.join("leak.txt");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(base.join("secret.txt"), &link).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(base.join("secret.txt"), &link).is_ok();
+        if linked {
+            assert!(app.ui_file("leak.txt").is_none());
+        } else {
+            eprintln!("skipped the symlink case: this account cannot create symlinks");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -83,6 +83,9 @@ fn user_dirs(identifier: &str) -> (PathBuf, PathBuf) {
     )
 }
 
+/// Largest `ui/` file served, the limit `qxide app build` applies to bundled files.
+const MAX_UI_FILE: u64 = 64 << 20;
+
 // The permissions `[app] permissions` may name (`PERMISSIONS` in src/app/config.rs).
 const PERMISSIONS: &[&str] = &["log", "time", "fs", "app", "http", "qxide"];
 
@@ -258,7 +261,20 @@ impl App {
             return None;
         }
         match &self.files {
-            Files::Disk => std::fs::read(Path::new(&self.ui).join(rel)).ok(),
+            // Dev mode reads the project's `ui/` folder: regular files inside it only, after
+            // links are resolved, and no device names (B-A10).
+            Files::Disk => {
+                if rel.split('/').any(crate::lang::stdlib::reserved_name) {
+                    return None;
+                }
+                let root = std::fs::canonicalize(&self.ui).ok()?;
+                let path = std::fs::canonicalize(root.join(rel)).ok()?;
+                let meta = std::fs::metadata(&path).ok()?;
+                if !path.starts_with(&root) || !meta.is_file() || meta.len() > MAX_UI_FILE {
+                    return None;
+                }
+                std::fs::read(path).ok()
+            }
             Files::Bundle(map) => map.get(&format!("{}/{rel}", self.ui)).cloned(),
         }
     }

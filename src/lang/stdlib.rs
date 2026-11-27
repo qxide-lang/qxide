@@ -991,6 +991,13 @@ pub fn allowed_url<'a>(url: &'a str, hosts: &[String]) -> Result<&'a str, StdErr
     Ok(url)
 }
 
+/// Whether path segment `seg` names a Windows device (`CON`, `nul.txt`, `COM1`), with or without
+/// an extension. Windows ignores spaces at the end of the stem too, so `CON .txt` is `CON`.
+pub fn reserved_name(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or(seg).trim_end_matches(' ');
+    RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
+
 /// Resolves a `std.fs` path inside `root`. Only plain relative paths are accepted: no absolute
 /// paths, drive letters, UNC prefixes, `..`, reserved device names or empty segments, and no
 /// existing part of the path may lead (through a symlink) outside `root`.
@@ -1011,10 +1018,7 @@ pub fn confine(root: &Path, rel: &str) -> Result<PathBuf, StdError> {
             }
             continue;
         }
-        // Windows ignores spaces at the end of the stem too, so `CON .txt` is `CON`.
-        let stem = seg.split('.').next().unwrap_or(seg).trim_end_matches(' ');
-        let reserved = RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r));
-        if seg == ".." || reserved || seg.ends_with(['.', ' ']) {
+        if seg == ".." || reserved_name(seg) || seg.ends_with(['.', ' ']) {
             return Err(bad());
         }
         out.push(seg);
