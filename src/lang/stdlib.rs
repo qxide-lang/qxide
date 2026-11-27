@@ -903,9 +903,39 @@ pub fn iso_utc(ms: i64) -> String {
     )
 }
 
+// Device names Windows reserves in every directory, with or without an extension; the same list
+// as `RESERVED` in src/pkg/archive.rs.
 const RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
 ];
 
 /// Whether `h` may appear in `[app] http_hosts`: a lowercase DNS name (letters, digits, `-` and
@@ -981,8 +1011,10 @@ pub fn confine(root: &Path, rel: &str) -> Result<PathBuf, StdError> {
             }
             continue;
         }
-        let stem = seg.split('.').next().unwrap_or(seg).to_ascii_uppercase();
-        if seg == ".." || RESERVED.contains(&stem.as_str()) || seg.ends_with(['.', ' ']) {
+        // Windows ignores spaces at the end of the stem too, so `CON .txt` is `CON`.
+        let stem = seg.split('.').next().unwrap_or(seg).trim_end_matches(' ');
+        let reserved = RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r));
+        if seg == ".." || reserved || seg.ends_with(['.', ' ']) {
             return Err(bad());
         }
         out.push(seg);
@@ -1049,6 +1081,14 @@ mod tests {
             "x.",
             "x ",
             "a\0b",
+            // B-A11: the rest of the device names `src/pkg/archive.rs` rejects, and a stem with
+            // trailing spaces, which Windows strips.
+            "CONIN$",
+            "conout$.txt",
+            "COM\u{b9}",
+            "lpt\u{b3}.log",
+            "CON .txt",
+            "a/nul  .x",
         ] {
             assert!(confine(&root, bad).is_err(), "{bad:?} should be rejected");
         }

@@ -62,7 +62,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-A8 | Fixed | `String` text costs steps per byte before it is allocated (`STR_BYTE_STEPS`, part 2 of `EXECUTION_LIMITS_FIXES.md`). |
 | B-A9 | Fixed | Fixed 2026-11-27: `percent_decode` reads the hex digits as bytes (`crates/qxide-app-runtime` test `percent_decode_keeps_non_ascii_after_percent`, which panicked before). |
 | B-A10 | Open | Dev-mode `ui_file` still reads with `std::fs::read` (`crates/qxide-app-runtime/src/app.rs:215`). |
-| B-A11 | Open | The `RESERVED` list in `src/lang/stdlib.rs` is still shorter than the one in `src/pkg/archive.rs`. |
+| B-A11 | Fixed | Fixed 2026-11-27: `confine` uses the device-name list of `src/pkg/archive.rs` and trims spaces at the end of the stem (`lang::stdlib::tests::confine_rejects_escapes`). |
 | B-A12 | Open | Info, kept by design. The token is now capped at 64 characters, but the page still generates it. |
 | B-A13 | Open | `src/app/mod.rs` still writes the folder name unescaped into the generated files. |
 
@@ -109,7 +109,7 @@ The findings below describe `b8c385e` (0.7.0). The fixes recorded in `EXECUTION_
 | B-A8 | Fixed | Low-Medium | READ | App framework (interpreter) | Unbounded `String` growth |
 | B-A9 | Fixed | Low | SUSPECTED | App framework (runtime) | `percent_decode` slices `&str` by bytes |
 | B-A10 | Open | Info | READ | App framework (dev) | Dev-mode UI serving follows symlinks, has no reserved-name filter and no size cap |
-| B-A11 | Open | Low | SUSPECTED | App framework (`std.fs`) | Reserved-name list in stdlib `confine` is shorter than `archive.rs`'s |
+| B-A11 | Fixed | Low | SUSPECTED | App framework (`std.fs`) | Reserved-name list in stdlib `confine` is shorter than `archive.rs`'s |
 | B-A12 | Open | Info | READ | App framework (IPC) | The page token in `bridge.js:11` is page-generated and compared only in JS |
 | B-A13 | Open | Info | READ | App framework (CLI) | `qxide app new` puts the folder name unescaped into TOML and HTML templates |
 
